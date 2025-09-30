@@ -7,12 +7,17 @@ This document outlines the **Minimum Viable Product (MVP)** implementation strat
 ## MVP Goals
 
 ### Primary Objective
-**Validate the core hypothesis**: Can io_uring provide measurable performance improvements over safetensors for tensor loading?
+**Validate the core hypothesis**: Can io_uring provide measurable performance improvements for tensor loading compared to traditional async I/O approaches?
+
+**Note**: The real innovation is in the io_uring loading approach, not the file format. We include a custom TensorStore format for learning purposes, but the main comparison should be:
+- **Baseline**: safetensors with tokio::fs
+- **Test**: safetensors with tokio-uring
+- **Bonus**: TensorStore format with tokio-uring (educational)
 
 ### MVP Success Criteria
-1. **Basic functionality**: Load tensors from a simple TensorStore format using io_uring
-2. **Performance validation**: Demonstrate measurable improvement over safetensors baseline
-3. **Proof of concept**: Show that the approach is technically viable
+1. **Primary**: Demonstrate io_uring performance improvement loading safetensors vs tokio::fs
+2. **Secondary**: Load tensors from custom TensorStore format using io_uring (learning)
+3. **Proof of concept**: Show that io_uring approach is technically viable and beneficial
 
 ### Explicitly OUT OF SCOPE for MVP
 - NUMA awareness
@@ -108,211 +113,41 @@ pub const TENSOR_ALIGNMENT: usize = 64;
 
 ### 2. Basic io_uring Loader
 
-```rust
-// loader.rs
-use tokio_uring::fs::File;
-use std::collections::HashMap;
-
-pub struct TensorStoreLoader {
-    file: File,
-    metadata: TensorStoreMetadata,
-    data_offset: u64,
-}
-
-impl TensorStoreLoader {
-    pub async fn new(path: &str) -> Result<Self, crate::error::Error> {
-        let file = File::open(path).await?;
-
-        // Read header
-        let header_bytes = vec![0u8; std::mem::size_of::<TensorStoreHeader>()];
-        let (result, header_bytes) = file.read_at(header_bytes, 0).await;
-        result?;
-
-        let header: TensorStoreHeader = bytemuck::from_bytes(&header_bytes);
-
-        // Read metadata
-        let metadata_bytes = vec![0u8; header.metadata_size as usize];
-        let (result, metadata_bytes) = file.read_at(
-            metadata_bytes,
-            std::mem::size_of::<TensorStoreHeader>() as u64
-        ).await;
-        result?;
-
-        let metadata: TensorStoreMetadata = serde_json::from_slice(&metadata_bytes)?;
-
-        Ok(Self {
-            file,
-            metadata,
-            data_offset: header.data_offset,
-        })
-    }
-
-    pub async fn load_tensor(&self, name: &str) -> Result<Vec<u8>, crate::error::Error> {
-        let tensor_info = self.metadata.tensors
-            .iter()
-            .find(|t| t.name == name)
-            .ok_or_else(|| crate::error::Error::TensorNotFound(name.to_string()))?;
-
-        // Allocate aligned buffer
-        let mut buffer = vec![0u8; tensor_info.size_bytes];
-
-        // Read tensor data using io_uring
-        let offset = self.data_offset + tensor_info.data_offset;
-        let (result, buffer) = self.file.read_at(buffer, offset).await;
-        result?;
-
-        Ok(buffer)
-    }
-
-    pub fn list_tensors(&self) -> Vec<&str> {
-        self.metadata.tensors.iter().map(|t| t.name.as_str()).collect()
-    }
-}
-```
+The loader implementation provides:
+- **File opening** using tokio-uring File API
+- **Header reading** to parse format metadata
+- **Metadata parsing** from JSON section
+- **Tensor loading** with async read operations at specific offsets
+- **Buffer management** with proper alignment
+- **Error handling** for I/O operations and format validation
 
 ### 3. Simple Converter
 
-```rust
-// converter.rs
-use safetensors::SafeTensors;
-use std::path::Path;
-use tokio::fs;
-
-pub struct SafetensorsConverter;
-
-impl SafetensorsConverter {
-    pub async fn convert(
-        input_path: &Path,
-        output_path: &Path,
-    ) -> Result<(), crate::error::Error> {
-        // Read safetensors file
-        let data = fs::read(input_path).await?;
-        let safetensors = SafeTensors::deserialize(&data)?;
-
-        let mut tensors = Vec::new();
-        let mut tensor_data = Vec::new();
-        let mut current_offset = 0u64;
-
-        // Process each tensor
-        for (name, tensor) in safetensors.tensors() {
-            let shape = tensor.shape().to_vec();
-            let dtype = format!("{:?}", tensor.dtype());
-            let data = tensor.data();
-
-            // Add padding for alignment
-            let aligned_offset = align_to(current_offset, TENSOR_ALIGNMENT as u64);
-            let padding = aligned_offset - current_offset;
-
-            tensor_data.extend(vec![0u8; padding as usize]);
-            tensor_data.extend_from_slice(data);
-
-            tensors.push(TensorInfo {
-                name: name.to_string(),
-                dtype,
-                shape,
-                data_offset: aligned_offset,
-                size_bytes: data.len(),
-            });
-
-            current_offset = aligned_offset + data.len() as u64;
-        }
-
-        // Create metadata
-        let metadata = TensorStoreMetadata { tensors };
-        let metadata_json = serde_json::to_vec(&metadata)?;
-
-        // Calculate offsets
-        let header_size = std::mem::size_of::<TensorStoreHeader>();
-        let data_offset = align_to(
-            (header_size + metadata_json.len()) as u64,
-            TENSOR_ALIGNMENT as u64
-        );
-
-        // Create header
-        let header = TensorStoreHeader {
-            magic: *b"TNSRSTR\0",
-            version: 1,
-            metadata_size: metadata_json.len() as u64,
-            data_offset,
-        };
-
-        // Write file
-        let mut output = Vec::new();
-        output.extend_from_slice(bytemuck::bytes_of(&header));
-        output.extend_from_slice(&metadata_json);
-
-        // Pad to data section
-        let padding = data_offset - output.len() as u64;
-        output.extend(vec![0u8; padding as usize]);
-
-        output.extend_from_slice(&tensor_data);
-
-        fs::write(output_path, output).await?;
-        Ok(())
-    }
-}
-
-fn align_to(value: u64, alignment: u64) -> u64 {
-    (value + alignment - 1) & !(alignment - 1)
-}
-```
+The converter implementation handles:
+- **Safetensors parsing** to extract tensor metadata and data
+- **Alignment calculations** to ensure 64-byte boundaries
+- **Metadata generation** with tensor information and I/O hints
+- **Binary layout** with proper padding between sections
+- **File writing** using standard async I/O for the conversion process
 
 ### 4. Basic Error Types
 
-```rust
-// error.rs
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("I/O error: {0}")]
-    Io(#[from] std::io::Error),
-
-    #[error("JSON error: {0}")]
-    Json(#[from] serde_json::Error),
-
-    #[error("Safetensors error: {0}")]
-    SafeTensors(#[from] safetensors::SafeTensorError),
-
-    #[error("Tensor not found: {0}")]
-    TensorNotFound(String),
-
-    #[error("Invalid format")]
-    InvalidFormat,
-}
-```
+The error handling covers:
+- **I/O errors** from file operations
+- **JSON parsing errors** from metadata deserialization
+- **Safetensors errors** from format conversion
+- **Tensor lookup errors** for missing tensors
+- **Format validation errors** for corrupted files
 
 ## MVP Testing Strategy
 
 ### Basic Functionality Test
 
-```rust
-// tests/basic.rs
-#[tokio::test]
-async fn test_convert_and_load() {
-    // Create a simple safetensors file
-    let temp_dir = tempfile::tempdir().unwrap();
-    let safetensors_path = temp_dir.path().join("test.safetensors");
-    let tensorstore_path = temp_dir.path().join("test.tensorstore");
-
-    // Create dummy tensor data
-    create_test_safetensors(&safetensors_path).await;
-
-    // Convert to TensorStore format
-    SafetensorsConverter::convert(&safetensors_path, &tensorstore_path)
-        .await
-        .unwrap();
-
-    // Load tensor using io_uring
-    let loader = TensorStoreLoader::new(tensorstore_path.to_str().unwrap())
-        .await
-        .unwrap();
-
-    let tensors = loader.list_tensors();
-    assert!(!tensors.is_empty());
-
-    let tensor_data = loader.load_tensor(tensors[0]).await.unwrap();
-    assert!(!tensor_data.is_empty());
-}
-```
+Test workflow:
+1. **Create test safetensors file** with dummy tensor data
+2. **Convert to TensorStore format** using the converter
+3. **Load tensors using io_uring** with the async loader
+4. **Verify functionality** by checking tensor list and data integrity
 
 ### Performance Comparison Benchmark
 
@@ -324,17 +159,26 @@ use std::time::Duration;
 fn benchmark_loading(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
 
-    c.bench_function("safetensors_loading", |b| {
+    // Primary comparison: io_uring vs standard async I/O
+    c.bench_function("safetensors_tokio_fs", |b| {
         b.to_async(&rt).iter(|| async {
-            // Load using safetensors
-            load_with_safetensors("test.safetensors").await
+            // Baseline: Load safetensors using tokio::fs
+            load_safetensors_with_tokio_fs("test.safetensors").await
         })
     });
 
-    c.bench_function("tensorstore_loading", |b| {
+    c.bench_function("safetensors_tokio_uring", |b| {
         b.to_async(&rt).iter(|| async {
-            // Load using TensorStore
-            load_with_tensorstore("test.tensorstore").await
+            // Test: Load safetensors using tokio-uring
+            load_safetensors_with_uring("test.safetensors").await
+        })
+    });
+
+    // Educational comparison: custom format
+    c.bench_function("tensorstore_tokio_uring", |b| {
+        b.to_async(&rt).iter(|| async {
+            // Learning: Load custom format using tokio-uring
+            load_tensorstore_with_uring("test.tensorstore").await
         })
     });
 }
@@ -356,8 +200,8 @@ criterion_main!(benches);
 3. **Day 5-7**: Performance testing and validation
 
 ### Success Metrics for MVP
-- **Functionality**: Successfully convert and load tensors
-- **Performance**: Show measurable improvement over safetensors (target: >20% faster)
+- **Primary Goal**: Show measurable improvement of tokio-uring vs tokio::fs loading safetensors (target: >20% faster)
+- **Secondary Goal**: Successfully implement custom TensorStore format (learning exercise)
 - **Reliability**: Basic tests pass consistently
 
 ## Decision Points

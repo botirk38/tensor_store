@@ -13,4 +13,7 @@
 - Created research documentation structure in /research/ with 5 detailed analysis documents
 - Updated roadmap.md to reflect completed research phase and MVP-focused next steps
 - Research shows io_uring can eliminate 70-80% of CPU cycles in userspace, target >20% improvement over safetensors
+- Verified all research claims with proper citations from DeepWiki and web sources
+- Clarified project scope: custom TensorStore format is for learning, real innovation is io_uring loading approach
+- Updated MVP to focus on safetensors + tokio-uring vs safetensors + tokio::fs comparison
 

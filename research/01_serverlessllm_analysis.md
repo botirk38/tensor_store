@@ -85,30 +85,25 @@ class Model {
 ### Performance Characteristics
 
 #### Measured Improvements
-- **5-10x faster** than safetensors and PyTorch checkpoint loader
-- **5-100x lower** startup latency than Ray Serve and KServe
-- Successfully saturates storage bandwidth on modern NVMe drives
+**Source: DeepWiki analysis of ServerlessLLM/ServerlessLLM repository**
+- **5-10x faster** loading speeds compared to Safetensors and PyTorch Checkpoint Loader
+- **5-100x lower** startup latency compared to Ray Serve and KServe (achieved by optimized model loading scheduler)
+- Utilizes configurable I/O threads (default 4, configurable via `--num-thread` parameter)
 
 #### Bottleneck Analysis
+
+**Source: Direct codebase analysis of ServerlessLLM C++ implementation**
 
 From the codebase analysis, identified bottlenecks include:
 
 1. **Thread Management Overhead**:
-   ```cpp
-   // From checkpoint_store.cpp:84
-   LOG(INFO) << "I/O threads: " << num_thread
-             << ", chunk size: " << chunk_size / MB << "MB";
-   ```
    - CPU cycles spent on thread creation and destruction
    - Context switching overhead with high thread counts
-   - Synchronization primitive overhead (`std::mutex`, `std::condition_variable`)
+   - Synchronization primitive overhead using mutexes and condition variables
 
 2. **Sequential Model Processing**:
-   ```python
-   # From sllm_store/server.py - models processed one at a time
-   async def LoadModelAsync(self, request, context):
-       # Each model loading is sequential despite internal parallelization
-   ```
+   - Models processed one at a time despite internal parallelization
+   - LoadModelAsync processes requests sequentially
 
 3. **Memory Copy Stages**:
    - Disk → Pinned Memory (multi-threaded)
@@ -139,14 +134,11 @@ def load_model(model_path, fully_parallel=False):
 ### Configuration and Tuning
 
 #### Key Parameters
-```bash
-sllm-store start \
-    --storage-path /path/to/models \
-    --mem-pool-size 8GB \
-    --chunk-size 32MB \
-    --num-thread 16 \
-    --port 8073
-```
+- `--storage-path`: Path to model storage directory
+- `--mem-pool-size`: Memory pool size (e.g., 8GB)
+- `--chunk-size`: I/O chunk size (e.g., 32MB)
+- `--num-thread`: Number of I/O threads (default 4, configurable to 16+)
+- `--port`: Server port (default 8073)
 
 #### Hardware Considerations
 - **NVMe SSDs**: Higher thread counts (16-32) for maximum bandwidth
@@ -182,3 +174,12 @@ sllm-store start \
 5. **Async Pipeline**: Overlap disk I/O with GPU transfers
 
 These findings form the foundation for TensorStore's io_uring-native approach to achieve similar performance gains with better CPU efficiency.
+
+## Sources and References
+
+1. **DeepWiki Analysis**: ServerlessLLM/ServerlessLLM repository documentation and code analysis
+2. **Direct Codebase Review**: ServerlessLLM C++ source code in sllm_store/csrc/
+3. **Performance Claims**: DeepWiki queries on ServerlessLLM performance benchmarks
+4. **Architecture Details**: Direct examination of ServerlessLLM checkpoint format and multi-threaded implementation
+
+**Note**: All performance numbers and architectural details are sourced from official ServerlessLLM documentation and codebase analysis via DeepWiki MCP tool.

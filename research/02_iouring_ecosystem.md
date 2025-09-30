@@ -64,21 +64,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #### Performance Characteristics
 
-From web search results and documentation:
+**Sources: Official Tokio blog post (2021-07-tokio-uring) and web research**
 
 1. **CPU Efficiency**:
-   - Eliminates 70-80% of CPU cycles spent in userspace syscalls
-   - Reduces context switching overhead compared to epoll-based approaches
+   - **Source: Tokio official blog**: "With epoll, a tuned TCP proxy will spend 70% to 80% of CPU cycles outside of userspace, including cycles spent performing syscalls and copying data between the kernel and userspace"
+   - **Source: Tokio official blog**: "Io-uring reduces overhead by eliminating most syscalls and mapping memory regions for byte buffers ahead of time"
 
 2. **I/O Performance**:
-   - Up to 60% improvement over epoll for TCP workloads
-   - Significant gains for file I/O intensive applications
-   - Better scaling with concurrent operations
+   - **Source: Tokio official blog**: "Early benchmarks comparing io-uring against epoll are promising; a TCP echo client and server implemented in C show up to 60% improvement"
+   - Better scaling with concurrent operations (general io_uring benefit)
 
 3. **Memory Management**:
-   - Maps memory regions for byte buffers ahead of time
-   - Reduces memory allocation overhead
-   - Supports zero-copy operations
+   - **Source: Tokio official blog**: Maps memory regions for byte buffers ahead of time
+   - Reduces memory allocation overhead (general io_uring benefit)
+   - Supports zero-copy operations (general io_uring benefit)
 
 ### Development Status and Concerns (2025)
 

@@ -4,7 +4,9 @@ This directory contains comprehensive research findings that form the foundation
 
 ## Research Overview
 
-TensorStore aims to develop a high-performance storage engine for Large Language Model (LLM) loading using Linux's modern io_uring interface. The research demonstrates that replacing ServerlessLLM's multi-threaded pipeline with an io_uring-native event loop can achieve significant CPU efficiency gains while maintaining 5-10x loading performance improvements.
+TensorStore aims to develop a high-performance tensor loading approach for Large Language Model (LLM) loading using Linux's modern io_uring interface. The research demonstrates that replacing traditional async I/O approaches with an io_uring-native event loop can achieve significant CPU efficiency gains.
+
+**Key Insight**: The performance benefits come from the io_uring loading approach, not from a custom file format. We include a custom TensorStore format design for educational purposes, but the main innovation is applying io_uring to existing formats like safetensors.
 
 ## Research Documents
 

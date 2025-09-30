@@ -2,7 +2,9 @@
 
 ## Design Philosophy
 
-TensorStore format is designed as an evolution of safetensors and ServerlessLLM checkpoint formats, optimized specifically for io_uring-based asynchronous I/O and high-performance tensor loading scenarios.
+**Note: This custom format is primarily for educational purposes** to understand binary format design, memory alignment, and I/O optimization. The real performance gains in this project come from the io_uring loading approach, which works effectively with existing formats like safetensors.
+
+TensorStore format is designed as a learning exercise inspired by safetensors and ServerlessLLM checkpoint formats, exploring optimizations for io_uring-based asynchronous I/O and high-performance tensor loading scenarios.
 
 ## Design Goals
 
@@ -36,19 +38,16 @@ TensorStore File (.tensorstore):
 
 ### File Header (64 bytes)
 
-```c
-struct TensorStoreHeader {
-    char magic[8];           // "TNSRSTR\0"
-    uint32_t version;        // Format version (0x00000001)
-    uint32_t header_size;    // Size of this header (64)
-    uint64_t metadata_size;  // Size of metadata section
-    uint64_t data_offset;    // Offset to tensor data section
-    uint64_t total_size;     // Total file size
-    uint32_t num_tensors;    // Number of tensors in file
-    uint32_t checksum;       // CRC32 of metadata section
-    uint8_t reserved[24];    // Reserved for future use (zero-filled)
-};
-```
+The header contains:
+- Magic number: "TNSRSTR\0" (8 bytes)
+- Format version: 0x00000001 (4 bytes)
+- Header size: 64 (4 bytes)
+- Metadata size in bytes (8 bytes)
+- Data section offset (8 bytes)
+- Total file size (8 bytes)
+- Number of tensors (4 bytes)
+- CRC32 checksum of metadata (4 bytes)
+- Reserved space for future use (24 bytes, zero-filled)
 
 ### Metadata Section
 
@@ -56,61 +55,21 @@ The metadata is stored as JSON for human readability and debugging, followed by 
 
 #### Metadata Schema
 
-```json
-{
-  "format_version": "1.0.0",
-  "created_timestamp": "2025-01-15T10:30:00Z",
-  "source_format": "safetensors",
-  "conversion_metadata": {
-    "converter_version": "1.0.0",
-    "optimization_level": "high_performance"
-  },
-  "model_metadata": {
-    "model_name": "llama-7b",
-    "model_type": "transformer",
-    "parameter_count": 7000000000,
-    "precision": "float16"
-  },
-  "tensors": {
-    "embedding.weight": {
-      "dtype": "float16",
-      "shape": [32000, 4096],
-      "data_offset": 4096,
-      "data_size": 262144000,
-      "alignment": 64,
-      "chunk_info": {
-        "chunk_size": 32768,
-        "num_chunks": 8000,
-        "optimal_batch_size": 16
-      },
-      "numa_hints": {
-        "preferred_node": 0,
-        "gpu_affinity": [0, 1]
-      },
-      "io_hints": {
-        "access_pattern": "sequential",
-        "prefetch_size": 1048576,
-        "priority": "high"
-      }
-    }
-  },
-  "io_optimization": {
-    "vectored_io_groups": [
-      {
-        "group_id": 0,
-        "tensor_names": ["embedding.weight", "lm_head.weight"],
-        "total_size": 524288000,
-        "recommended_batch_size": 16
-      }
-    ],
-    "prefetch_order": [
-      "embedding.weight",
-      "transformer.layers.0.attention.query.weight",
-      "transformer.layers.0.attention.key.weight"
-    ]
-  }
-}
-```
+The JSON metadata contains:
+- **Format version and timestamps**
+- **Source format information** (e.g., converted from safetensors)
+- **Model metadata**: name, type, parameter count, precision
+- **Per-tensor information**:
+  - Data type and shape
+  - Data offset and size within file
+  - Alignment requirements (64 bytes)
+  - Chunk information for batched I/O
+  - NUMA hints for memory allocation
+  - I/O access patterns and priorities
+- **I/O optimization hints**:
+  - Vectored I/O groups for batch operations
+  - Recommended prefetch order
+  - Optimal batch sizes for different storage types
 
 ### Tensor Data Section
 
@@ -137,9 +96,15 @@ Tensor Data Layout:
 
 ### Memory Alignment Issues
 
-From research, safetensors has critical alignment problems:
+**Sources: DeepWiki analysis of huggingface/safetensors and 2024 web research on CUDA alignment issues**
 
-> "The safetensors format does not define data alignment and can cause alignment errors due to constraints of both GDS and CUDA kernels. When the header of a safetensors file is odd-sized, GDS still has to transfer tensors at the odd offset within GPU memory due to its 512-byte alignment for direct data transfer."
+From DeepWiki research, safetensors has documented alignment considerations:
+
+**Source: DeepWiki on safetensors**: "SafeTensors addresses alignment by sorting tensors during serialization by descending dtype alignment and then by name. The JSON header is also padded to ensure 8-byte alignment for the subsequent binary data."
+
+However, 2024 web search reveals ongoing alignment issues in practice:
+- **Source: GitHub Issue #36961**: "Gemma3: Cuda error: misaligned address" with safetensors version 0.5.3
+- **Source: Safetensors documentation**: "Sub 1 bytes dtypes: Dtypes can now have lower than 1 byte size, this makes alignment&addressing tricky. For now, the library will simply error out whenever an operation triggers a non aligned read."
 
 #### TensorStore Solution
 1. **Fixed 64-byte alignment** for all tensor data
@@ -148,8 +113,8 @@ From research, safetensors has critical alignment problems:
 
 ### Sub-byte Datatypes
 
-Safetensors issue:
-> "Sub 1 bytes dtypes: Dtypes can now have lower than 1 byte size, this makes alignment&addressing tricky. For now, the library will simply error out whenever an operation triggers a non aligned read."
+**Source: Safetensors documentation (DeepWiki analysis)**
+Safetensors documented limitation: "Sub 1 bytes dtypes: Dtypes can now have lower than 1 byte size, this makes alignment&addressing tricky. For now, the library will simply error out whenever an operation triggers a non aligned read."
 
 #### TensorStore Approach
 1. **Minimum 8-bit alignment** for all tensor elements
