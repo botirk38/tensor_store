@@ -19,3 +19,7 @@
 - Updated implementation strategy to prioritize empirical testing over features
 - Established Week 6 go/no-go decision point for performance validation
 - Revised time estimates to be more realistic for competent engineer (300 hours → MVP in weeks 3-4, analysis weeks 5-7)
+
+## 2025-10-09
+
+- Setup io_uring loaders and basic tokio loaders, beat sync loading by 5%
