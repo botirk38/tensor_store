@@ -23,3 +23,18 @@
 ## 2025-10-09
 
 - Setup io_uring loaders and basic tokio loaders, beat sync loading by 5%
+
+## 2025-10-18
+
+- Implemented high-performance buffer pool achieving 70% speedup over no-pool baseline
+- Custom pool implementation beats io_uring without pool: 176ms → 52ms (3.36x faster)
+- Key optimizations applied:
+  - Thread-local storage for lock-free fast path
+  - parking_lot::Mutex instead of std::sync::Mutex
+  - First-fit (O(1)) allocation instead of best-fit (O(n))
+  - Unsafe set_len() to avoid zero-filling 500MB buffers
+  - Data-driven defaults: 1MB min buffer, 16 buffer max pool size
+- Replaced nix crate with cross-platform region crate for mlock support
+- Discovered through benchmarking that unsafe code is critical: safe resize() causes massive slowdown
+- Validated that all "magic values" should be data-driven: initial 4KB min was 130,000x too small for 523MB tensor files
+- Learned that premature optimization (best-fit search) can hurt more than help in uniform workloads
