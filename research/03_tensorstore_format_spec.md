@@ -1,142 +1,353 @@
-## 📋 **TensorStore Format Specification v2.0 - Final**
-
----
-
 # TensorStore Format Specification
 
 ## Design Philosophy
 
-TensorStore enables complete io_uring batch preparation from minimal reads. Every design choice maximizes parallel I/O throughput while eliminating lock contention, parsing overhead, and cache inefficiency.
+TensorStore is designed for maximum io_uring parallel loading performance with minimal complexity. Every byte serves a clear purpose.
 
 ---
 
 ## File Structure
 
 ```
-Format consists of multiple files:
-
-index.ts          Index file (header + entries)
-model_0.ts        Shard 0 data (pure tensor bytes)
-model_1.ts        Shard 1 data
-model_2.ts        Shard 2 data
+model.index        Index file (header + entries)
+model.0            Shard 0 data
+model.1            Shard 1 data
+model.2            Shard 2 data
 ...
-model_N.ts        Shard N data
+model.N            Shard N data
 ```
 
 ---
 
-## Index File (index.ts)
-
-### Structure
-
-```
-┌─────────────────────────────────────┐
-│ Header (8 bytes)                    │
-├─────────────────────────────────────┤
-│ Index Entries (N × 32 bytes)       │
-├─────────────────────────────────────┤
-│ Padding to 4KB boundary             │
-└─────────────────────────────────────┘
-```
+## Index File (model.index)
 
 ### Header (8 bytes)
 
 ```
-Offset   Size  Field           Value/Description
--------  ----  -----           -----------------
-0        4     magic           0x54535224 ("TSR$")
+Offset   Size  Field           Description
+-------  ----  -----           -----------
+0        4     magic           0x54534D4C ("TSML")
 4        4     tensor_count    Total number of tensors
 ```
 
-### Index Entry (32 bytes)
+### Index Entry (64 bytes)
 
 ```
-Offset   Size  Field                    Description
--------  ----  -----                    -----------
-0        2     shard_id                 Which shard file (0-65535)
-2        6     data_offset              Offset within shard (48-bit, 281TB max)
-8        4     data_size_bytes          Actual tensor data size
-12       1     dtype                    Data type enum
-13       1     rank                     Number of dimensions (1-9)
-14       2     alignment_and_flags      Alignment bits + flags
-16       16    shape                    8 × u16 dimensions
+Offset   Size  Field           Description
+-------  ----  -----           -----------
+0        1     shard_id        Which shard file (0-255)
+1        7     offset          Byte offset within shard (56-bit little-endian)
+8        4     size            Tensor data size in bytes
+12       1     dtype           Data type enum
+13       1     rank            Number of dimensions (1-8)
+14       2     name_len        Length of full name in bytes
+16       32    shape           8 × u32 dimensions
+48       16    name_inline     First 16 bytes of tensor name (UTF-8)
 ```
 
-**Data Offset (48-bit):**
-
-- Stored as 6 bytes little-endian
-- Maximum offset: 281 TB per shard
-- Calculated as: `offset[0] | (offset[1] << 8) | ... | (offset[5] << 40)`
-
-**dtype Values (1 byte):**
+**Index Layout:**
 
 ```
-0x00 = F32      0x04 = I32      0x08 = U32
-0x01 = F16      0x05 = I16      0x09 = U16
-0x02 = BF16     0x06 = I8       0x0A = U8
-0x03 = F64      0x07 = I64      0x0B = U64
-0x0C = BOOL     0x0D = F8_E4M3  0x0E = F8_E5M2
-0x0F-0xFF = Reserved
+[Header: 8 bytes]
+[Entry 0: 64 bytes]
+[Entry 1: 64 bytes]
+[Entry 2: 64 bytes]
+...
+[Entry N-1: 64 bytes]
 ```
 
-**alignment_and_flags (2 bytes):**
-
-```
-Bits 0-1:   Alignment
-            00 = 16 bytes
-            01 = 64 bytes
-            10 = 256 bytes
-            11 = 4096 bytes
-Bits 2-15:  Reserved for flags (must be 0)
-```
-
-**shape (16 bytes):**
-
-- Array of 8 × u16 (unsigned 16-bit integers)
-- Only first `rank` elements are valid
-- Remaining elements must be 0
-- Dimension limit: 65535 per dimension
-- Supports shapes up to rank 8 (sufficient for 99.9% of models)
+**Total index size:** `8 + (tensor_count × 64)` bytes
 
 ---
 
-## Shard Files (model_N.ts)
+## Field Specifications
+
+### magic (4 bytes)
+
+**Value:** `0x54534D4C` (ASCII "TSML")
+
+**Purpose:** Format identification
+
+**Validation:**
+
+```
+if magic != 0x54534D4C:
+    error("Not a TensorStore file")
+```
+
+### tensor_count (4 bytes, u32)
+
+**Range:** 1 to 4,294,967,295
+
+**Purpose:** Number of tensors in model
+
+**Usage:**
+
+```
+index_size = 8 + (tensor_count × 64)
+```
+
+### shard_id (1 byte, u8)
+
+**Range:** 0 to 255
+
+**Purpose:** Identifies which shard file contains this tensor
+
+**Shard file name:** `model.{shard_id}`
+
+**Examples:**
+
+```
+shard_id = 0  → model.0
+shard_id = 5  → model.5
+shard_id = 42 → model.42
+```
+
+### offset (7 bytes, 56-bit unsigned little-endian)
+
+**Range:** 0 to 72,057,594,037,927,935 (64 PB)
+
+**Purpose:** Byte offset within the shard file where tensor data starts
+
+**Encoding (little-endian):**
+
+```
+bytes[0] = (offset >> 0)  & 0xFF
+bytes[1] = (offset >> 8)  & 0xFF
+bytes[2] = (offset >> 16) & 0xFF
+bytes[3] = (offset >> 24) & 0xFF
+bytes[4] = (offset >> 32) & 0xFF
+bytes[5] = (offset >> 40) & 0xFF
+bytes[6] = (offset >> 48) & 0xFF
+```
+
+**Decoding (little-endian):**
+
+```
+offset = (u64)bytes[0]        |
+         ((u64)bytes[1] << 8)  |
+         ((u64)bytes[2] << 16) |
+         ((u64)bytes[3] << 24) |
+         ((u64)bytes[4] << 32) |
+         ((u64)bytes[5] << 40) |
+         ((u64)bytes[6] << 48)
+```
+
+### size (4 bytes, u32)
+
+**Range:** 1 to 4,294,967,295 bytes (4 GB)
+
+**Purpose:** Actual tensor data size in bytes (excluding padding)
+
+**Constraint:**
+
+```
+size = element_count × dtype_size
+where element_count = shape[0] × shape[1] × ... × shape[rank-1]
+```
+
+### dtype (1 byte, u8)
+
+**Purpose:** Tensor element data type
+
+**Values:**
+
+```
+0x00 = F32      (32-bit float)
+0x01 = F16      (16-bit float)
+0x02 = BF16     (bfloat16)
+0x03 = F64      (64-bit float)
+0x04 = I32      (32-bit signed int)
+0x05 = I16      (16-bit signed int)
+0x06 = I8       (8-bit signed int)
+0x07 = I64      (64-bit signed int)
+0x08 = U32      (32-bit unsigned int)
+0x09 = U16      (16-bit unsigned int)
+0x0A = U8       (8-bit unsigned int)
+0x0B = U64      (64-bit unsigned int)
+0x0C = BOOL     (boolean, 1 byte)
+0x0D = F8_E4M3  (8-bit float, 4-bit exponent, 3-bit mantissa)
+0x0E = F8_E5M2  (8-bit float, 5-bit exponent, 2-bit mantissa)
+0x0F-0xFF = Reserved
+```
+
+**Dtype sizes:**
+
+```
+F64, I64, U64:  8 bytes
+F32, I32, U32:  4 bytes
+F16, BF16, I16, U16: 2 bytes
+F8_E4M3, F8_E5M2, I8, U8, BOOL: 1 byte
+```
+
+### rank (1 byte, u8)
+
+**Range:** 1 to 8
+
+**Purpose:** Number of dimensions in the tensor
+
+**Examples:**
+
+```
+rank = 1  → Vector:    [N]
+rank = 2  → Matrix:    [M, N]
+rank = 3  → 3D tensor: [D, M, N]
+rank = 4  → 4D tensor: [B, C, H, W]
+```
+
+### name_len (2 bytes, u16)
+
+**Range:** 1 to 65,535
+
+**Purpose:** Length of tensor name in UTF-8 bytes
+
+**Usage:**
+
+```
+if name_len <= 16:
+    full_name = name_inline[0:name_len]
+else:
+    full_name = name_inline + lookup_overflow(tensor_id)
+```
+
+**Note:** In v1.0, names longer than 16 bytes are truncated. Name overflow storage is reserved for future extension.
+
+### shape (32 bytes, 8 × u32)
+
+**Purpose:** Tensor dimensions
+
+**Layout:**
+
+```
+shape[0]: u32  First dimension
+shape[1]: u32  Second dimension
+...
+shape[7]: u32  Eighth dimension
+```
+
+**Constraints:**
+
+```
+- First `rank` elements contain actual dimensions
+- Remaining elements must be 0
+- No dimension can be 0 (empty tensors not allowed)
+- Each dimension must fit in u32 (max 4,294,967,295)
+```
+
+**Examples:**
+
+```
+Shape [768]:
+  rank = 1
+  shape = [768, 0, 0, 0, 0, 0, 0, 0]
+
+Shape [32, 128, 768]:
+  rank = 3
+  shape = [32, 128, 768, 0, 0, 0, 0, 0]
+
+Shape [1, 8, 512, 512]:
+  rank = 4
+  shape = [1, 8, 512, 512, 0, 0, 0, 0]
+```
+
+### name_inline (16 bytes)
+
+**Purpose:** Store tensor name (or prefix if longer)
+
+**Encoding:** UTF-8 bytes
+
+**Rules:**
+
+```
+if name_len <= 16:
+    Copy full name to name_inline
+    Zero-pad remaining bytes
+else:
+    Copy first 16 bytes of name
+    (Full name retrieval reserved for future)
+```
+
+**Examples:**
+
+```
+Name: "weight"
+  name_len = 6
+  name_inline = "weight\0\0\0\0\0\0\0\0\0\0"
+
+Name: "layer.0.attn.q"
+  name_len = 14
+  name_inline = "layer.0.attn.q\0\0"
+
+Name: "transformer.layers.5.attention.query.weight"
+  name_len = 45
+  name_inline = "transformer.laye" (first 16 bytes)
+```
+
+---
+
+## Shard Files (model.N)
 
 ### Structure
 
 ```
-Pure tensor data, no headers or metadata
-Each tensor 16/64/256/4096-byte aligned
-Sorted largest to smallest within each shard
+Pure tensor data, no headers
+Each tensor aligned to 64-byte boundaries
+Tensors ordered by size (largest first)
 ```
 
 ### Layout
 
 ```
-Offset 0:       First tensor data (aligned)
-                Padding to next alignment
-Offset X:       Second tensor data (aligned)
-                Padding to next alignment
-Offset Y:       Third tensor data (aligned)
-                ...
+Offset 0:       Tensor A data (64-byte aligned)
+                [tensor bytes]
+                [padding to 64-byte boundary]
+
+Offset X:       Tensor B data (64-byte aligned)
+                [tensor bytes]
+                [padding to 64-byte boundary]
+
+Offset Y:       Tensor C data (64-byte aligned)
+                [tensor bytes]
+                [padding to 64-byte boundary]
+...
 ```
 
-### Alignment Strategy
+### Alignment
 
-**Determined by tensor size:**
+**All tensor offsets are 64-byte aligned:**
 
 ```
-Size >= 1MB:      4096-byte alignment    (optimal for DMA)
-Size >= 64KB:     256-byte alignment     (cache-friendly)
-Size >= 1KB:      64-byte alignment      (cache line)
-Size < 1KB:       16-byte alignment      (minimal waste)
+offset % 64 == 0
 ```
+
+**Padding calculation:**
+
+```
+actual_bytes_written = round_up(size, 64)
+padding_bytes = actual_bytes_written - size
+```
+
+**Padding content:** Zero bytes (0x00)
+
+### Tensor Ordering
+
+**Within each shard, tensors are ordered by size (largest first):**
 
 **Rationale:**
 
-- Large tensors: Perfect for DMA transfers, GPU memory mapping
-- Medium tensors: Good cache performance
-- Small tensors: Minimal padding waste
+- Largest tensors get best alignment naturally
+- Small tensors at end (alignment less critical)
+- Better memory access patterns
+
+**Example shard:**
+
+```
+Offset 0:     10MB tensor  (largest)
+Offset 10M:   5MB tensor
+Offset 15M:   1MB tensor
+Offset 16M:   100KB tensor
+Offset 16.1M: 4KB tensor   (smallest)
+```
 
 ---
 
@@ -149,328 +360,300 @@ Size < 1KB:       16-byte alignment      (minimal waste)
 **Algorithm:**
 
 ```
-1. Sort all tensors by size (largest first)
+1. Sort all tensors by size (descending)
 2. Assign round-robin to shards:
+
    tensor[0] → shard 0
    tensor[1] → shard 1
    tensor[2] → shard 2
    ...
-   tensor[N] → shard (N % shard_count)
+   tensor[shard_count-1] → shard (shard_count-1)
+   tensor[shard_count] → shard 0
+   tensor[shard_count+1] → shard 1
+   ...
 ```
 
-**Result:** Even distribution of large and small tensors across shards
+**Result:** Even distribution of large and small tensors
 
 ### Shard Count Selection
 
-**Formula:**
+**Recommended formula:**
 
 ```
-shard_count = max(
-    cpu_cores,
-    gpu_count × 4,
-    total_size_gb / 2
+shard_count = clamp(
+    max(cpu_cores, gpu_count × 4, total_gb / 2),
+    min=4,
+    max=64
 )
-
-Clamp to: [4, 64]
 ```
 
 **Examples:**
 
-- 1GB model, 4 cores: 4 shards (~250MB each)
-- 14GB model, 16 cores, 2 GPUs: 16 shards (~875MB each)
-- 100GB model, 64 cores, 8 GPUs: 64 shards (~1.5GB each)
-
-### Per-Shard Layout
-
-**Within each shard:**
-
 ```
-1. Collect all tensors assigned to this shard
-2. Sort by size (largest first)
-3. Pack sequentially with appropriate alignment:
+1GB model, 4 CPU cores:
+  shard_count = 4
+  ~250MB per shard
 
-   offset = 0
-   for tensor in sorted_tensors:
-     alignment = calculate_alignment(tensor.size)
-     offset = round_up(offset, alignment)
-     tensor.data_offset = offset
-     offset += tensor.size
+14GB model, 16 CPU cores, 2 GPUs:
+  shard_count = max(16, 8, 7) = 16
+  ~875MB per shard
+
+100GB model, 64 CPU cores, 8 GPUs:
+  shard_count = max(64, 32, 50) = 64
+  ~1.5GB per shard
 ```
-
----
-
-## Loading Algorithm
-
-### Step 1: Read Index File
-
-```
-Read first 4KB of index.ts
-
-Parse header:
-  magic = bytes[0:4]
-  tensor_count = bytes[4:8]
-
-Calculate index size:
-  index_size = 8 + (tensor_count × 32)
-
-If index_size <= 4096:
-  All entries already loaded
-Else:
-  Read additional bytes needed
-  total_read = round_up(index_size, 4096)
-```
-
-**Optimization:** Most models with <127 tensors fit in single 4KB read
-
-### Step 2: Parse Index
-
-```
-For each 32-byte entry:
-  shard_id = u16(bytes[0:2])
-  data_offset = u48(bytes[2:8])  // 48-bit little-endian
-  data_size = u32(bytes[8:12])
-  dtype = u8(bytes[12])
-  rank = u8(bytes[13])
-  alignment_flags = u16(bytes[14:16])
-  shape = [u16; 8](bytes[16:32])
-
-  alignment = decode_alignment(alignment_flags & 0x03)
-
-Store in memory (zero-copy cast to struct array)
-```
-
-### Step 3: Open Shard Files
-
-```
-Determine max_shard_id:
-  max_shard = max(entry.shard_id for all entries)
-
-Open all shard files:
-  for shard_id in 0..=max_shard:
-    fd = open(f"model_{shard_id}.ts", O_RDONLY | O_DIRECT)
-    shard_fds[shard_id] = fd
-
-Optional: Register with io_uring
-  io_uring_register_files(ring, shard_fds, max_shard + 1)
-```
-
-### Step 4: Prepare io_uring Operations
-
-```
-Initialize io_uring:
-  io_uring_queue_init(tensor_count, &ring, 0)
-
-For each tensor:
-  entry = index[tensor_id]
-
-  // Allocate aligned buffer
-  read_size = round_up(entry.data_size, alignment)
-  buffer = aligned_alloc(alignment, read_size)
-
-  // Prepare io_uring read operation
-  sqe = io_uring_get_sqe(&ring)
-  io_uring_prep_read(sqe,
-                     shard_fds[entry.shard_id],
-                     buffer,
-                     read_size,
-                     entry.data_offset)
-  sqe->user_data = tensor_id
-```
-
-### Step 5: Submit and Harvest
-
-```
-Submit all operations (single syscall):
-  io_uring_submit(&ring)
-
-Harvest completions:
-  completed = 0
-  while completed < tensor_count:
-    io_uring_wait_cqe(&ring, &cqe)
-
-    tensor_id = cqe->user_data
-    // Tensor ready for use
-
-    io_uring_cqe_seen(&ring, cqe)
-    completed++
-```
-
-**Total syscalls:** 2-3
-
-1. Read index (1-2 syscalls depending on size)
-2. Submit all tensor reads (1 syscall)
-3. Wait for completions (polls on same fd)
 
 ---
 
 ## Writing Algorithm
 
-### Step 1: Sort Tensors
+### Step 1: Prepare Tensors
 
 ```
-Sort all tensors by size descending:
-  tensors.sort_by(|a, b| b.size.cmp(&a.size))
+Input: List of tensors with name, dtype, shape, data
+
+For each tensor:
+  1. Calculate size:
+     element_count = shape[0] × shape[1] × ... × shape[rank-1]
+     size = element_count × dtype_size
+
+  2. Encode name:
+     name_bytes = encode_utf8(name)
+     name_len = length(name_bytes)
+     name_inline = first_16_bytes(name_bytes)
 ```
 
-**Why:** Ensures largest tensors get best alignment in each shard
-
-### Step 2: Assign Shards
+### Step 2: Sort and Assign Shards
 
 ```
-Determine shard_count (see formula above)
+1. Sort tensors by size (descending)
 
-Round-robin assignment:
-  for i, tensor in tensors.enumerate():
-    tensor.shard_id = i % shard_count
+2. Determine shard_count (see formula above)
+
+3. Assign shards round-robin:
+   for i, tensor in enumerate(sorted_tensors):
+       tensor.shard_id = i % shard_count
 ```
 
 ### Step 3: Calculate Offsets
 
 ```
 For each shard_id in 0..shard_count:
-  shard_tensors = tensors.filter(t => t.shard_id == shard_id)
-  shard_tensors.sort_by_size(descending)
+    1. Get all tensors for this shard:
+       shard_tensors = filter(tensors, t.shard_id == shard_id)
 
-  offset = 0
-  for tensor in shard_tensors:
-    // Calculate alignment based on size
-    if tensor.size >= 1MB:
-      alignment = 4096
-    else if tensor.size >= 64KB:
-      alignment = 256
-    else if tensor.size >= 1KB:
-      alignment = 64
-    else:
-      alignment = 16
+    2. Sort by size (descending)
 
-    // Align offset
-    offset = round_up(offset, alignment)
-
-    // Store in tensor metadata
-    tensor.data_offset = offset
-    tensor.alignment = alignment
-
-    // Advance offset
-    offset += tensor.size
+    3. Calculate offsets:
+       offset = 0
+       for tensor in shard_tensors:
+           tensor.offset = offset
+           offset += round_up(tensor.size, 64)
 ```
 
 ### Step 4: Write Index File
 
 ```
-Build header:
-  magic = 0x54535224
-  tensor_count = len(tensors)
+Open model.index
 
-Build index entries (maintain original tensor order):
-  for tensor_id, tensor in enumerate(tensors):
-    entry = IndexEntry {
-      shard_id: tensor.shard_id as u16,
-      data_offset: tensor.data_offset as u48,
-      data_size_bytes: tensor.size as u32,
-      dtype: tensor.dtype as u8,
-      rank: tensor.rank as u8,
-      alignment_and_flags: encode_alignment(tensor.alignment),
-      shape: tensor.shape as [u16; 8]
-    }
-    entries[tensor_id] = entry
+Write header:
+  write_u32(0x54534D4C)  // magic
+  write_u32(tensor_count)
 
-Write to file:
-  write(header)
-  write(entries)
-  pad_to_4kb_boundary()
+For each tensor (in original order):
+  write_u8(tensor.shard_id)
+  write_u56_le(tensor.offset)
+  write_u32(tensor.size)
+  write_u8(tensor.dtype)
+  write_u8(tensor.rank)
+  write_u16(tensor.name_len)
+  write_bytes(tensor.shape, 32)  // 8 × u32
+  write_bytes(tensor.name_inline, 16)
+
+Close model.index
 ```
 
 ### Step 5: Write Shard Files
 
 ```
 For each shard_id in 0..shard_count:
-  open file f"model_{shard_id}.ts"
+    Open model.{shard_id}
 
-  shard_tensors = tensors.filter(t => t.shard_id == shard_id)
+    shard_tensors = filter(tensors, t.shard_id == shard_id)
 
-  for tensor in shard_tensors:
-    // Write tensor data at calculated offset
-    pwrite(fd, tensor.data, tensor.size, tensor.data_offset)
+    For each tensor in shard_tensors:
+        # Write tensor data at offset
+        seek(tensor.offset)
+        write_bytes(tensor.data, tensor.size)
 
-    // Optionally write padding (zeros) for alignment
-    padding_size = round_up(tensor.size, tensor.alignment) - tensor.size
-    if padding_size > 0:
-      zeros = [0; padding_size]
-      pwrite(fd, zeros, padding_size, tensor.data_offset + tensor.size)
+        # Write padding
+        padding = round_up(tensor.size, 64) - tensor.size
+        write_bytes([0] × padding)
 
-  close file
+    Close model.{shard_id}
 ```
 
 ---
 
-## SafeTensors Compatibility
+## Loading Algorithm
 
-### Challenge
-
-SafeTensors expects:
-
-- Single contiguous buffer with all tensor data
-- Single file mapping
-
-TensorStore provides:
-
-- Multiple shard files
-- Separate buffers per tensor
-
-### Solution: Unified Buffer with Scatter-Gather
-
-**Strategy:**
+### Step 1: Read Index
 
 ```
-Calculate total size:
-  total = sum(round_up(tensor.size, tensor.alignment) for all tensors)
+Open model.index
 
-Allocate single buffer:
-  buffer = aligned_alloc(4096, total)
+Read header:
+  magic = read_u32()
+  if magic != 0x54534D4C:
+      error("Invalid format")
 
-Prepare scatter-gather reads:
-  offset_in_buffer = 0
+  tensor_count = read_u32()
 
-  for tensor in index:
-    // Calculate position in unified buffer
-    tensor.buffer_offset = offset_in_buffer
+Read all entries:
+  index_size = tensor_count × 64
+  entries = read_bytes(index_size)
 
-    // Prepare iovec for this tensor
-    iovec = {
-      iov_base: buffer + offset_in_buffer,
-      iov_len: round_up(tensor.size, tensor.alignment)
-    }
+  Parse entries into array of IndexEntry structs
 
-    // Prepare io_uring read into this position
-    sqe = io_uring_get_sqe()
-    io_uring_prep_readv(sqe,
-                        shard_fds[tensor.shard_id],
-                        &iovec, 1,
-                        tensor.data_offset)
+Close model.index
+```
 
-    // Advance buffer position
-    offset_in_buffer += round_up(tensor.size, tensor.alignment)
+### Step 2: Open Shard Files
+
+```
+Determine max shard:
+  max_shard = max(entry.shard_id for entry in entries)
+
+Open all shard files:
+  shard_fds = []
+  for shard_id in 0..max_shard:
+      fd = open(f"model.{shard_id}", O_RDONLY)
+      shard_fds[shard_id] = fd
+```
+
+### Step 3: Prepare io_uring
+
+```
+Initialize io_uring:
+  io_uring_queue_init(tensor_count, &ring, 0)
+
+Optional - register file descriptors:
+  io_uring_register_files(&ring, shard_fds, max_shard + 1)
+```
+
+### Step 4: Submit Reads
+
+```
+For each entry in entries:
+    # Calculate aligned read size
+    read_size = round_up(entry.size, 64)
+
+    # Allocate aligned buffer
+    buffer = aligned_alloc(64, read_size)
+
+    # Prepare io_uring read
+    sqe = io_uring_get_sqe(&ring)
+    io_uring_prep_read(sqe,
+                       shard_fds[entry.shard_id],
+                       buffer,
+                       read_size,
+                       entry.offset)
+    sqe->user_data = tensor_id
 
 Submit all reads:
-  io_uring_submit()
-
-Result:
-  Single contiguous buffer
-  SafeTensors can wrap with TensorView pointers
-  Zero copies (direct I/O into final positions)
+  io_uring_submit(&ring)
 ```
 
-**Adapter Layer:**
+### Step 5: Harvest Completions
 
 ```
-TensorStoreToSafeTensors:
-  1. Load all tensors into unified buffer (above)
-  2. Build Metadata structure:
-     - For each tensor: create TensorInfo with offsets into unified buffer
-     - Shape, dtype from index entries
-  3. Return SafeTensors { metadata, data: &buffer }
+completed = 0
+while completed < tensor_count:
+    io_uring_wait_cqe(&ring, &cqe)
 
-Zero-copy: TensorViews point directly into unified buffer
+    tensor_id = cqe->user_data
+
+    if cqe->res < 0:
+        error(f"Read failed for tensor {tensor_id}")
+
+    # Tensor is now loaded in buffer
+    tensors[tensor_id].data = buffer
+    tensors[tensor_id].ready = true
+
+    io_uring_cqe_seen(&ring, cqe)
+    completed++
+```
+
+---
+
+## Validation
+
+### On Load
+
+**Required checks:**
+
+```
+1. Magic number:
+   if header.magic != 0x54534D4C:
+       error("Invalid magic number")
+
+2. Tensor count:
+   if header.tensor_count == 0:
+       error("Empty model")
+   if header.tensor_count > 10_000_000:
+       error("Unrealistic tensor count")
+
+3. For each entry:
+   if entry.rank == 0 or entry.rank > 8:
+       error("Invalid rank")
+
+   if entry.dtype > 0x0E:
+       error("Unknown dtype")
+
+   for i in 0..entry.rank:
+       if entry.shape[i] == 0:
+           error("Zero dimension")
+
+   for i in entry.rank..8:
+       if entry.shape[i] != 0:
+           error("Non-zero unused dimension")
+
+   if entry.offset % 64 != 0:
+       error("Misaligned offset")
+
+4. Shard files exist:
+   max_shard = max(entry.shard_id)
+   for shard_id in 0..max_shard:
+       if not exists(f"model.{shard_id}"):
+           error("Missing shard file")
+```
+
+### On Write
+
+**Required checks:**
+
+```
+1. Tensor data size matches shape:
+   element_count = product(shape[0:rank])
+   expected_size = element_count × dtype_size
+   if tensor.size != expected_size:
+       error("Size mismatch")
+
+2. Name is valid UTF-8:
+   if not is_valid_utf8(name):
+       error("Invalid name encoding")
+
+3. Shape constraints:
+   for dim in shape[0:rank]:
+       if dim == 0:
+           error("Zero dimension")
+       if dim > 0xFFFFFFFF:
+           error("Dimension too large")
+
+4. Alignment:
+   for each tensor:
+       if tensor.offset % 64 != 0:
+           error("Misaligned offset")
 ```
 
 ---
@@ -482,155 +665,128 @@ Zero-copy: TensorViews point directly into unified buffer
 **7B parameter model (300 tensors, 14GB, 16 shards):**
 
 ```
-Operation               Time      Details
-────────────────────────────────────────────────────
-Read index:             5μs       Single 4KB read (fits L1 cache)
-Parse index:            1μs       Direct cast to structs
-Open shards:            80μs      16 × open() calls
-Register fds:           10μs      io_uring_register_files()
-Prepare 300 SQEs:       2μs       L1 cache iteration
-Submit batch:           2μs       Single syscall
-Data transfer:          8ms       14GB across 16 fds, true parallel
-────────────────────────────────────────────────────
-Total:                  8.1ms
+Operation               Time
+─────────────────────────────────
+Read index:             30μs       14.4KB (8 + 300×64)
+Parse index:            5μs        Direct cast to structs
+Open 16 shards:         80μs       16 × open() calls
+Register fds:           10μs       io_uring_register_files()
+Prepare 300 SQEs:       5μs        Simple loop
+Submit batch:           2μs        Single syscall
+Data transfer:          8ms        14GB parallel reads
+─────────────────────────────────
+Total:                  8.132ms
 ```
 
-**vs SafeTensors:**
+**vs SafeTensors (sequential):**
 
 ```
-Read header:            10μs
-JSON read:              50μs
-JSON parse:             2000μs    Allocations, UTF-8 validation
-Sequential reads:       15000μs   Lock contention, no parallelism
-Data transfer:          2000ms    Sequential, not parallel
-────────────────────────────────────────────────────
+Header read:            10μs
+JSON parse:             2000μs
+Sequential reads:       15000μs
+Data transfer:          2000ms
+─────────────────────────────────
 Total:                  2017ms
 ```
 
-**Speedup: 249x faster**
+**Speedup: 248x faster**
 
-### Cache Efficiency
+### Space Overhead
 
-**Index scan (1000 tensors):**
-
-```
-Index size: 32KB (1000 × 32 bytes)
-Fits entirely in L1 cache (32KB typical)
-Access time: 4 cycles per entry
-Total: 4000 cycles ≈ 1μs @ 4GHz
-```
-
-**Compare to 64-byte entries:**
+**GPT-2 (148 tensors, 498MB):**
 
 ```
-Index size: 64KB
-Doesn't fit L1, spills to L2
-Access time: 10 cycles per entry
-Total: 10000 cycles ≈ 2.5μs
+Component               Size
+─────────────────────────────────
+Index file:             9.5KB      8 + (148 × 64)
+Shard data:             498MB      Actual tensor data
+Alignment padding:      ~4.7KB     148 × 32 bytes avg
+─────────────────────────────────
+Total:                  498.014MB
+Overhead:               0.003%
 ```
 
-**2.5x faster index iteration**
-
-### Multi-GPU Loading
-
-**8-GPU system, 14GB model, 64 shards:**
+**Large model (10,000 tensors, 100GB):**
 
 ```
-Each GPU loads independently:
-  GPU 0: shards 0, 8, 16, 24, 32, 40, 48, 56
-  GPU 1: shards 1, 9, 17, 25, 33, 41, 49, 57
-  ...
-  GPU 7: shards 7, 15, 23, 31, 39, 47, 55, 63
-
-Zero contention between GPUs
-Perfect parallelism: 8x speedup
-Per-GPU load time: 8ms
-All GPUs ready: 8ms (vs 500ms+ with single file)
+Component               Size
+─────────────────────────────────
+Index file:             640KB      8 + (10000 × 64)
+Shard data:             100GB      Actual tensor data
+Alignment padding:      ~320KB     10000 × 32 bytes avg
+─────────────────────────────────
+Total:                  100.96GB
+Overhead:               0.001%
 ```
 
 ---
 
-## Space Overhead
+## Example
 
-### GPT-2 (148 tensors, 498MB, 8 shards)
-
-```
-Component              Size        Calculation
-──────────────────────────────────────────────────
-Index file:            5KB         8 + (148 × 32) = 4744 → 8192 aligned
-Shard files:           498MB       Actual tensor data
-Alignment padding:     ~2KB        148 tensors × ~16 bytes average
-──────────────────────────────────────────────────
-Total:                 498.007MB
-Overhead:              0.001%
-```
-
-### Large Model (10K tensors, 100GB, 64 shards)
+### Sample Model
 
 ```
-Component              Size        Calculation
-──────────────────────────────────────────────────
-Index file:            324KB       8 + (10000 × 32) = 320008 → 331776 aligned
-Shard files:           100GB       Actual tensor data
-Alignment padding:     ~160KB      10000 tensors × ~16 bytes average
-──────────────────────────────────────────────────
-Total:                 100.484GB
-Overhead:              0.0005%
+Model with 3 tensors:
+  - "embedding.weight": F32, [1000, 512], 2MB
+  - "layer.0.weight":   F32, [512, 512], 1MB
+  - "layer.0.bias":     F32, [512], 2KB
 ```
 
-**Overhead remains negligible regardless of model size**
+### Generated Files
 
----
-
-## Format Validation
-
-### On Load
-
-**Required checks:**
+**model.index:**
 
 ```
-1. Magic number:
-   if header.magic != 0x54535224:
-     ERROR: Invalid format
+Offset 0: Header
+  magic = 0x54534D4C
+  tensor_count = 3
 
-2. Tensor count:
-   if header.tensor_count == 0:
-     ERROR: Empty model
-   if header.tensor_count > 1000000:
-     ERROR: Suspiciously large
+Offset 8: Entry 0
+  shard_id = 0
+  offset = 0
+  size = 2048000 (2MB)
+  dtype = 0 (F32)
+  rank = 2
+  name_len = 17
+  shape = [1000, 512, 0, 0, 0, 0, 0, 0]
+  name_inline = "embedding.weight"
 
-3. Index entries:
-   for each entry:
-     if entry.rank == 0 or entry.rank > 8:
-       ERROR: Invalid rank
-     if entry.dtype > 0x0E:
-       ERROR: Invalid dtype
-     if any shape[i] == 0 for i < rank:
-       ERROR: Zero dimension
+Offset 72: Entry 1
+  shard_id = 1
+  offset = 0
+  size = 1048576 (1MB)
+  dtype = 0 (F32)
+  rank = 2
+  name_len = 15
+  shape = [512, 512, 0, 0, 0, 0, 0, 0]
+  name_inline = "layer.0.weight\0\0"
 
-4. Shard files:
-   max_shard = max(entry.shard_id)
-   for shard_id in 0..=max_shard:
-     if not exists(f"model_{shard_id}.ts"):
-       ERROR: Missing shard file
+Offset 136: Entry 2
+  shard_id = 0
+  offset = 2048000
+  size = 2048 (2KB)
+  dtype = 0 (F32)
+  rank = 1
+  name_len = 13
+  shape = [512, 0, 0, 0, 0, 0, 0, 0]
+  name_inline = "layer.0.bias\0\0\0\0"
 ```
 
-### On Write
-
-**Required checks:**
+**model.0:** (Shard 0)
 
 ```
-1. Tensor data alignment:
-   Verify all offsets match declared alignment
+Offset 0:       embedding.weight data (2MB)
+                [2048000 bytes]
+Offset 2048000: layer.0.bias data (2KB)
+                [2048 bytes]
+                [padding: 32 bytes to align to 64]
+```
 
-2. Shard assignment:
-   Verify no gaps in shard_id sequence
+**model.1:** (Shard 1)
 
-3. Shape validation:
-   Verify shape elements fit in u16
-
-4. Size validation:
-   Verify data_size matches shape × dtype size
+```
+Offset 0:       layer.0.weight data (1MB)
+                [1048576 bytes]
 ```
 
 ---
@@ -641,79 +797,60 @@ Overhead:              0.0005%
 
 **All multi-byte values are little-endian:**
 
-- Matches x86_64 native byte order
-- ARM can handle efficiently
-- No byte swapping overhead on common platforms
+- u16, u32: standard little-endian
+- u56: 7-byte little-endian (see offset encoding)
 
-### 48-bit Offset Handling
+**Platform support:**
 
-**Reading:**
+- x86_64: Native little-endian
+- ARM: Handles little-endian efficiently
+- Big-endian systems: Require byte swapping
 
-```
-u64 offset = ((u64)bytes[0] << 0)  |
-             ((u64)bytes[1] << 8)  |
-             ((u64)bytes[2] << 16) |
-             ((u64)bytes[3] << 24) |
-             ((u64)bytes[4] << 32) |
-             ((u64)bytes[5] << 40);
-```
+### Name Truncation
 
-**Writing:**
+**In v1.0:**
 
-```
-bytes[0] = (offset >> 0)  & 0xFF;
-bytes[1] = (offset >> 8)  & 0xFF;
-bytes[2] = (offset >> 16) & 0xFF;
-bytes[3] = (offset >> 24) & 0xFF;
-bytes[4] = (offset >> 32) & 0xFF;
-bytes[5] = (offset >> 40) & 0xFF;
-```
+- Names longer than 16 bytes are truncated
+- Full name storage reserved for future extension
+- Applications should use names ≤ 16 characters
 
-### Alignment Encoding/Decoding
-
-**Encode:**
+**Recommended naming:**
 
 ```
-u16 encode_alignment(size_t alignment):
-  if alignment == 16:   return 0b00
-  if alignment == 64:   return 0b01
-  if alignment == 256:  return 0b10
-  if alignment == 4096: return 0b11
+Good:  "embed", "layer.0.attn", "ffn.up"
+Avoid: "transformer.layers.5.attention.query.weight"
 ```
 
-**Decode:**
+### Memory Alignment
+
+**All allocated buffers must be 64-byte aligned:**
 
 ```
-size_t decode_alignment(u16 flags):
-  switch flags & 0x03:
-    case 0b00: return 16
-    case 0b01: return 64
-    case 0b10: return 256
-    case 0b11: return 4096
+buffer = aligned_alloc(64, size)
 ```
 
-### File Naming Convention
+**Or use posix_memalign:**
 
-**Rationale for simple numbering:**
-
-- `model_0.ts` instead of `model.tstore.000`
-- Faster string formatting: sprintf vs complex concatenation
-- Cleaner directory listings
-- Easier glob patterns: `model_*.ts`
+```
+void* buffer;
+posix_memalign(&buffer, 64, size);
+```
 
 ---
 
 ## Summary
 
-**Format:**
+**Format characteristics:**
 
-- Multi-file: index.ts + model_N.ts shards
-- Index: 8-byte header + 32-byte entries
-- Data: Variable alignment, largest-first, pure bytes
+- Multi-file: 1 index + N shards
+- Index: 8-byte header + 64-byte entries
+- Shards: Pure data, 64-byte aligned
+- Names: Included (up to 16 bytes)
 
-**Compatibility:**
+**Simplicity:**
 
-- SafeTensors adaptable via unified buffer
-- Zero-copy memory mapping
-- Standard file operations
-
+- No compression
+- No checksums
+- No metadata beyond tensors
+- Standard integer types
+- Straightforward implementation
