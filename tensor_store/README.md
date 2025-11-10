@@ -71,10 +71,10 @@ async fn main() -> std::io::Result<()> {
 tensor_store/
 ├── src/
 │   ├── lib.rs              # Public API
-│   └── loaders/
-│       ├── mod.rs          # Loader module definitions
-│       ├── uring.rs        # io_uring implementations (Linux)
-│       └── tokio.rs        # Tokio fallback (non-Linux)
+│   ├── backends/           # Platform-specific I/O implementations
+│   ├── readers/            # Format readers (SafeTensors, TensorStore, etc.)
+│   ├── writers/            # Format writers
+│   └── converters/         # High-level format conversion orchestration
 ├── benches/
 │   └── tensor_loading.rs   # Performance benchmarks
 └── examples/

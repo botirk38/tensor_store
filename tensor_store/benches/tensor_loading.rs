@@ -1,15 +1,14 @@
 use criterion::{Criterion, criterion_group, criterion_main};
-use safetensors::SafeTensors;
 use std::hint::black_box;
 
 fn load_safetensors_sync(path: &str) -> std::io::Result<(Vec<u8>, usize)> {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let data = tensor_store::loaders::backends::async_io::load(path).await?;
-        let tensors = SafeTensors::deserialize(&data)
+        let data = tensor_store::readers::safetensors::load(path)
+            .await
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-        let tensor_count = tensors.names().len();
-        Ok((data, tensor_count))
+        let tensor_count = data.names().len();
+        Ok((data.into_bytes(), tensor_count))
     })
 }
 
@@ -24,8 +23,7 @@ fn bench_io_uring(c: &mut Criterion) {
                 let data = tensor_store::load_safetensors(black_box(test_file))
                     .await
                     .unwrap();
-                let tensors = SafeTensors::deserialize(&data).unwrap();
-                let tensor_count = tensors.names().len();
+                let tensor_count = data.names().len();
                 black_box((data, tensor_count))
             })
         });
@@ -38,8 +36,7 @@ fn bench_io_uring(c: &mut Criterion) {
                 let data = tensor_store::load_safetensors_parallel(black_box(test_file))
                     .await
                     .unwrap();
-                let tensors = SafeTensors::deserialize(&data).unwrap();
-                let tensor_count = tensors.names().len();
+                let tensor_count = data.names().len();
                 black_box((data, tensor_count))
             })
         });
@@ -53,8 +50,7 @@ fn bench_io_uring(c: &mut Criterion) {
                     tensor_store::load_safetensors_parallel_with_chunks(black_box(test_file), 8)
                         .await
                         .unwrap();
-                let tensors = SafeTensors::deserialize(&data).unwrap();
-                let tensor_count = tensors.names().len();
+                let tensor_count = data.names().len();
                 black_box((data, tensor_count))
             })
         });
@@ -74,8 +70,7 @@ fn bench_io_uring(c: &mut Criterion) {
                 let data = tensor_store::load_safetensors(black_box(test_file))
                     .await
                     .unwrap();
-                let tensors = SafeTensors::deserialize(&data).unwrap();
-                let tensor_count = tensors.names().len();
+                let tensor_count = data.names().len();
                 black_box((data, tensor_count))
             })
         });
@@ -92,8 +87,7 @@ fn bench_tokio(c: &mut Criterion) {
             let data = tensor_store::load_safetensors(black_box(test_file))
                 .await
                 .unwrap();
-            let tensors = SafeTensors::deserialize(&data).unwrap();
-            let tensor_count = tensors.names().len();
+            let tensor_count = data.names().len();
             black_box((data, tensor_count))
         });
     });
@@ -103,8 +97,7 @@ fn bench_tokio(c: &mut Criterion) {
             let data = tensor_store::load_safetensors_parallel(black_box(test_file))
                 .await
                 .unwrap();
-            let tensors = SafeTensors::deserialize(&data).unwrap();
-            let tensor_count = tensors.names().len();
+            let tensor_count = data.names().len();
             black_box((data, tensor_count))
         });
     });
@@ -114,8 +107,7 @@ fn bench_tokio(c: &mut Criterion) {
             let data = tensor_store::load_safetensors_parallel_with_chunks(black_box(test_file), 8)
                 .await
                 .unwrap();
-            let tensors = SafeTensors::deserialize(&data).unwrap();
-            let tensor_count = tensors.names().len();
+            let tensor_count = data.names().len();
             black_box((data, tensor_count))
         });
     });
@@ -132,8 +124,7 @@ fn bench_tokio(c: &mut Criterion) {
             let data = tensor_store::load_safetensors(black_box(test_file))
                 .await
                 .unwrap();
-            let tensors = SafeTensors::deserialize(&data).unwrap();
-            let tensor_count = tensors.names().len();
+            let tensor_count = data.names().len();
             black_box((data, tensor_count))
         });
     });

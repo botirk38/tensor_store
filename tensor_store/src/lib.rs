@@ -1,45 +1,33 @@
-use std::io::Result as IoResult;
+pub type IoResult<T> = std::io::Result<T>;
 
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-pub mod loaders;
+pub mod backends;
+pub mod converters;
+pub mod readers;
+pub mod writers;
 
-#[cfg(target_os = "linux")]
-pub async fn load_safetensors(path: &str) -> IoResult<Vec<u8>> {
-    loaders::formats::safetensors::load(path).await
+use readers::safetensors::{OwnedSafeTensors, SafeTensorError};
+
+pub async fn load_safetensors(path: &str) -> Result<OwnedSafeTensors, SafeTensorError> {
+    readers::safetensors::load(path).await
 }
 
-#[cfg(not(target_os = "linux"))]
-pub async fn load_safetensors(path: &str) -> IoResult<Vec<u8>> {
-    loaders::formats::safetensors::load(path).await
+pub async fn load_safetensors_parallel(path: &str) -> Result<OwnedSafeTensors, SafeTensorError> {
+    readers::safetensors::load_parallel(path, 4).await
 }
 
-#[cfg(target_os = "linux")]
-pub async fn load_safetensors_parallel(path: &str) -> IoResult<Vec<u8>> {
-    loaders::formats::safetensors::load_parallel(path, 4).await
-}
-
-#[cfg(not(target_os = "linux"))]
-pub async fn load_safetensors_parallel(path: &str) -> IoResult<Vec<u8>> {
-    loaders::formats::safetensors::load_parallel(path, 4).await
-}
-
-#[cfg(target_os = "linux")]
-pub async fn load_safetensors_parallel_with_chunks(path: &str, chunks: usize) -> IoResult<Vec<u8>> {
-    loaders::formats::safetensors::load_parallel(path, chunks).await
-}
-
-#[cfg(not(target_os = "linux"))]
-pub async fn load_safetensors_parallel_with_chunks(path: &str, chunks: usize) -> IoResult<Vec<u8>> {
-    loaders::formats::safetensors::load_parallel(path, chunks).await
+pub async fn load_safetensors_parallel_with_chunks(
+    path: &str,
+    chunks: usize,
+) -> Result<OwnedSafeTensors, SafeTensorError> {
+    readers::safetensors::load_parallel(path, chunks).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use safetensors::SafeTensors;
-
     #[cfg(target_os = "linux")]
     #[test]
     fn test_load_parallel_zero_copy() {
@@ -51,15 +39,15 @@ mod tests {
             let data = load_safetensors_parallel(path).await.unwrap();
 
             // Verify we can deserialize it
-            let tensors = SafeTensors::deserialize(&data).unwrap();
+            let tensors = data.tensors();
             assert!(!tensors.names().is_empty());
 
             // Load with single-threaded loading for comparison
             let data_single = load_safetensors(path).await.unwrap();
 
             // Data should be identical
-            assert_eq!(data.len(), data_single.len());
-            assert_eq!(data, data_single);
+            assert_eq!(data.as_bytes().len(), data_single.as_bytes().len());
+            assert_eq!(data.as_bytes(), data_single.as_bytes());
 
             println!(
                 "Zero-copy parallel loading test passed! Loaded {} tensors",
@@ -78,15 +66,15 @@ mod tests {
         let data = load_safetensors_parallel(path).await.unwrap();
 
         // Verify we can deserialize it
-        let tensors = SafeTensors::deserialize(&data).unwrap();
+        let tensors = data.tensors();
         assert!(!tensors.names().is_empty());
 
         // Load with single-threaded loading for comparison
         let data_single = load_safetensors(path).await.unwrap();
 
         // Data should be identical
-        assert_eq!(data.len(), data_single.len());
-        assert_eq!(data, data_single);
+        assert_eq!(data.as_bytes().len(), data_single.as_bytes().len());
+        assert_eq!(data.as_bytes(), data_single.as_bytes());
 
         println!(
             "Zero-copy parallel loading test passed! Loaded {} tensors",
@@ -105,15 +93,15 @@ mod tests {
             let data = load_safetensors_parallel(path).await.unwrap();
 
             // Verify we can deserialize it
-            let tensors = SafeTensors::deserialize(&data).unwrap();
+            let tensors = data.tensors();
             assert!(!tensors.names().is_empty());
 
             // Load with single-threaded loading for comparison
             let data_single = load_safetensors(path).await.unwrap();
 
             // Data should be identical
-            assert_eq!(data.len(), data_single.len());
-            assert_eq!(data, data_single);
+            assert_eq!(data.as_bytes().len(), data_single.as_bytes().len());
+            assert_eq!(data.as_bytes(), data_single.as_bytes());
 
             println!(
                 "Zero-copy parallel loading (io_uring) test passed! Loaded {} tensors",
