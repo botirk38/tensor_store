@@ -109,9 +109,3 @@ pub async fn load_parallel(path: &str, chunks: usize) -> Result<OwnedSafeTensors
         .map_err(SafeTensorError::IoError)?;
     OwnedSafeTensors::from_bytes(bytes)
 }
-
-/// Load a specific byte range as raw bytes using the mmap backend.
-#[inline]
-pub async fn load_range(path: &str, offset: u64, len: usize) -> crate::IoResult<Vec<u8>> {
-    load_bytes_range(path, offset, len).await
-}
