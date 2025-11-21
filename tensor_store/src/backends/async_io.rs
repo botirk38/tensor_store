@@ -1,6 +1,27 @@
+//! Portable async I/O backend using Tokio.
+//!
+//! This backend provides cross-platform async I/O operations built on Tokio.
+//! It's used as a fallback on non-Linux platforms where io_uring isn't available.
+//!
+//! # Platform Support
+//!
+//! Works on all platforms supported by Tokio (Linux, macOS, Windows, etc.).
+//!
+//! # Performance Characteristics
+//!
+//! - **Zero-copy parallel reads**: Direct writes to final buffer via unsafe slicing
+//! - **Async I/O**: Non-blocking operations via Tokio runtime
+//! - **Buffer pooling**: Reuses memory allocations across operations
+//!
+//! # Usage
+//!
+//! Typically accessed via `backends::load()` on non-Linux platforms, not used directly.
+
 use super::IoResult;
+use std::path::Path;
 use std::sync::OnceLock;
 use tokio::fs::File as TokioFile;
+use tokio::io::AsyncWriteExt;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use zeropool::BufferPool;
 
@@ -56,7 +77,8 @@ fn div_ceil(a: usize, b: usize) -> usize {
 
 /// Load tensor data using portable async I/O
 #[inline]
-pub async fn load(path: &str) -> IoResult<Vec<u8>> {
+pub async fn load<P: AsRef<Path>>(path: P) -> IoResult<Vec<u8>> {
+    let path = path.as_ref();
     let mut file = TokioFile::open(path).await?;
     let metadata = file.metadata().await?;
     let file_size = metadata.len() as usize;
@@ -69,7 +91,7 @@ pub async fn load(path: &str) -> IoResult<Vec<u8>> {
 
 /// Load tensor data in parallel chunks using portable async I/O with zero-copy
 #[inline]
-pub async fn load_parallel(path: &str, chunks: usize) -> IoResult<Vec<u8>> {
+pub async fn load_parallel<P: AsRef<Path>>(path: P, chunks: usize) -> IoResult<Vec<u8>> {
     if chunks == 0 {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -77,6 +99,7 @@ pub async fn load_parallel(path: &str, chunks: usize) -> IoResult<Vec<u8>> {
         ));
     }
 
+    let path = path.as_ref();
     let file = TokioFile::open(path).await?;
     let metadata = file.metadata().await?;
     let file_size = metadata.len() as usize;
@@ -133,16 +156,20 @@ pub async fn load_parallel(path: &str, chunks: usize) -> IoResult<Vec<u8>> {
     Ok(final_buf)
 }
 
-/// Load a specific byte range from tensor data using portable async I/O
+/// Load a specific byte range from a file asynchronously.
 #[inline]
-pub async fn load_range(path: &str, offset: u64, len: usize) -> IoResult<Vec<u8>> {
+pub async fn load_range<P: AsRef<Path>>(path: P, offset: u64, len: usize) -> IoResult<Vec<u8>> {
     let mut file = TokioFile::open(path).await?;
-
-    // Seek to the specified offset
     file.seek(SeekFrom::Start(offset)).await?;
-
-    // Use internal buffer pool for optimization
-    let mut buf = get_buffer_pool().get(len);
+    let mut buf = vec![0u8; len];
     file.read_exact(&mut buf).await?;
     Ok(buf)
+}
+
+/// Write an entire buffer to a file, creating or truncating it first.
+#[inline]
+pub async fn write_all<P: AsRef<Path>>(path: P, data: &[u8]) -> IoResult<()> {
+    let mut file = TokioFile::create(path).await?;
+    file.write_all(data).await?;
+    file.sync_all().await
 }

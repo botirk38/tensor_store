@@ -8,20 +8,22 @@ pub mod converters;
 pub mod readers;
 pub mod writers;
 
-use readers::safetensors::{OwnedSafeTensors, SafeTensorError};
+pub use converters::safetensors_to_serverlessllm::convert_safetensors_to_serverlessllm;
+use readers::error::ReaderResult;
+use readers::safetensors::OwnedSafeTensors;
 
-pub async fn load_safetensors(path: &str) -> Result<OwnedSafeTensors, SafeTensorError> {
+pub async fn load_safetensors(path: &str) -> ReaderResult<OwnedSafeTensors> {
     readers::safetensors::load(path).await
 }
 
-pub async fn load_safetensors_parallel(path: &str) -> Result<OwnedSafeTensors, SafeTensorError> {
+pub async fn load_safetensors_parallel(path: &str) -> ReaderResult<OwnedSafeTensors> {
     readers::safetensors::load_parallel(path, 4).await
 }
 
 pub async fn load_safetensors_parallel_with_chunks(
     path: &str,
     chunks: usize,
-) -> Result<OwnedSafeTensors, SafeTensorError> {
+) -> ReaderResult<OwnedSafeTensors> {
     readers::safetensors::load_parallel(path, chunks).await
 }
 

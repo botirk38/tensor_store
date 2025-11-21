@@ -1,4 +1,24 @@
+//! io_uring-based async I/O backend for Linux.
+//!
+//! This backend leverages Linux's io_uring interface for maximum performance.
+//! It provides zero-copy operations and efficient parallel I/O for large files.
+//!
+//! # Platform Support
+//!
+//! This module is only available on Linux (requires kernel 5.1+).
+//!
+//! # Performance Characteristics
+//!
+//! - **Zero-copy**: Direct kernel-to-userspace transfers
+//! - **Parallel I/O**: True concurrent reads via io_uring submission queue
+//! - **Buffer pooling**: Reuses memory allocations across operations
+//!
+//! # Usage
+//!
+//! Typically accessed via `backends::load()` on Linux platforms, not used directly.
+
 use super::IoResult;
+use std::path::Path;
 use std::sync::OnceLock;
 use tokio_uring::fs::File as UringFile;
 use zeropool::BufferPool;
@@ -59,7 +79,8 @@ fn div_ceil(a: usize, b: usize) -> usize {
 
 /// Load tensor data using io_uring zero-copy I/O
 #[inline]
-pub async fn load(path: &str) -> IoResult<Vec<u8>> {
+pub async fn load(path: impl AsRef<Path>) -> IoResult<Vec<u8>> {
+    let path = path.as_ref();
     let file = UringFile::open(path).await?;
     let metadata = std::fs::metadata(path)?;
     let file_size = metadata.len() as usize;
@@ -85,7 +106,7 @@ pub async fn load(path: &str) -> IoResult<Vec<u8>> {
 
 /// Load tensor data in parallel chunks using io_uring with true zero-copy
 #[inline]
-pub async fn load_parallel(path: &str, chunks: usize) -> IoResult<Vec<u8>> {
+pub async fn load_parallel(path: impl AsRef<Path>, chunks: usize) -> IoResult<Vec<u8>> {
     if chunks == 0 {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -93,6 +114,7 @@ pub async fn load_parallel(path: &str, chunks: usize) -> IoResult<Vec<u8>> {
         ));
     }
 
+    let path = path.as_ref();
     let file = UringFile::open(path).await?;
     let metadata = std::fs::metadata(path)?;
     let file_size = metadata.len() as usize;
@@ -136,14 +158,13 @@ pub async fn load_parallel(path: &str, chunks: usize) -> IoResult<Vec<u8>> {
     Ok(final_buf)
 }
 
-/// Load a specific byte range from tensor data using io_uring
+/// Load a specific byte range from a file using io_uring.
 #[inline]
-pub async fn load_range(path: &str, offset: u64, len: usize) -> IoResult<Vec<u8>> {
+pub async fn load_range(path: impl AsRef<Path>, offset: u64, len: usize) -> IoResult<Vec<u8>> {
+    let path = path.as_ref();
     let file = UringFile::open(path).await?;
 
-    // Use internal buffer pool for optimization
-    let buf = get_buffer_pool().get(len);
-
+    let buf = vec![0u8; len];
     let (res, buf) = file.read_at(buf, offset).await;
     let n = res?;
 
@@ -157,4 +178,24 @@ pub async fn load_range(path: &str, offset: u64, len: usize) -> IoResult<Vec<u8>
 
     file.close().await?;
     Ok(buf)
+}
+
+/// Write an entire buffer to a file, creating or truncating it first.
+#[inline]
+pub async fn write_all(path: impl AsRef<Path>, data: &[u8]) -> IoResult<()> {
+    let path = path.as_ref();
+    let file = UringFile::create(path).await?;
+    let (res, buf) = file.write_at(data.to_vec(), 0).submit().await;
+    let n = res?;
+    if n != data.len() {
+        file.close().await?;
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::WriteZero,
+            format!("expected to write {} bytes, wrote {}", data.len(), n),
+        ));
+    }
+    // Keep buf alive until write completes; then drop.
+    drop(buf);
+    file.sync_all().await?;
+    file.close().await
 }

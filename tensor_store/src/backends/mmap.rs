@@ -23,19 +23,14 @@ fn ensure_range(file_len: u64, offset: u64, len: usize) -> IoResult<()> {
     Ok(())
 }
 
-#[inline]
-fn open_file(path: &str) -> IoResult<File> {
-    let path = Path::new(path);
-    File::open(path)
-}
-
 /// Load tensor data using a read-only memory map.
 ///
 /// This backend maps the full file and copies the requested bytes into
 /// a `Vec<u8>`. The mapping ensures the kernel performs the heavy lifting
 /// which can be faster than standard buffered reads for large files.
-pub async fn load(path: &str) -> IoResult<Vec<u8>> {
-    let file = open_file(path)?;
+pub fn load_blocking(path: impl AsRef<Path>) -> IoResult<Vec<u8>> {
+    let path = path.as_ref();
+    let file = File::open(path)?;
     let metadata = file.metadata()?;
     let file_len = metadata.len() as usize;
 
@@ -47,22 +42,14 @@ pub async fn load(path: &str) -> IoResult<Vec<u8>> {
     Ok(mmap[..].to_vec())
 }
 
-/// Load tensor data in chunks via memory mapping.
-///
-/// Since memory mapping already provides random access, this simply
-/// maps the full file and returns its contents. The `chunks` parameter
-/// is kept for API compatibility.
-pub async fn load_parallel(path: &str, _chunks: usize) -> IoResult<Vec<u8>> {
-    load(path).await
-}
-
 /// Load a specific range from a tensor file using a partial memory map.
-pub async fn load_range(path: &str, offset: u64, len: usize) -> IoResult<Vec<u8>> {
+pub fn load_range_blocking(path: impl AsRef<Path>, offset: u64, len: usize) -> IoResult<Vec<u8>> {
     if len == 0 {
         return Ok(Vec::new());
     }
 
-    let file = open_file(path)?;
+    let path = path.as_ref();
+    let file = File::open(path)?;
     let metadata = file.metadata()?;
     ensure_range(metadata.len(), offset, len)?;
 

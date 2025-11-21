@@ -14,7 +14,7 @@
 //! writer.write_shard("shard_0.bin", 0, &[0u8; 1024]).await?;
 //! ```
 
-use crate::writers::IoResult;
+use crate::writers::error::WriterResult;
 
 /// Entry describing a TensorStore tensor in the index file.
 #[derive(Debug, Default, Clone)]
@@ -53,22 +53,22 @@ impl TensorStoreWriter {
         &self,
         output_path: &str,
         entries: &[TensorStoreIndexEntry],
-    ) -> IoResult<()> {
+    ) -> WriterResult<()> {
         write_index(output_path, entries).await
     }
 
     /// Write a binary shard containing tensor data.
-    pub async fn write_shard(&self, output_path: &str, shard_id: u8, data: &[u8]) -> IoResult<()> {
+    pub async fn write_shard(&self, output_path: &str, shard_id: u8, data: &[u8]) -> WriterResult<()> {
         write_shard(output_path, shard_id, data).await
     }
 }
 
 /// Write a TensorStore index file.
-pub async fn write_index(_output_path: &str, _entries: &[TensorStoreIndexEntry]) -> IoResult<()> {
+pub async fn write_index(_output_path: &str, _entries: &[TensorStoreIndexEntry]) -> WriterResult<()> {
     todo!("Implement TensorStore index writing")
 }
 
 /// Write a TensorStore shard file.
-pub async fn write_shard(_output_path: &str, _shard_id: u8, _data: &[u8]) -> IoResult<()> {
+pub async fn write_shard(_output_path: &str, _shard_id: u8, _data: &[u8]) -> WriterResult<()> {
     todo!("Implement TensorStore shard writing")
 }
