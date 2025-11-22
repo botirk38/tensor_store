@@ -39,6 +39,9 @@ use crate::readers::error::{ReaderError, ReaderResult};
 use crate::readers::traits::{AsyncReader, SyncReader, TensorMetadata};
 use std::path::Path;
 
+// Re-export shared IndexEntry type for backwards compatibility
+pub use crate::types::tensorstore::IndexEntry;
+
 /// Parsed TensorStore index
 #[derive(Debug, Clone, Default, PartialEq)]
 #[non_exhaustive]
@@ -131,28 +134,6 @@ impl SyncReader for TensorStoreIndex {
             "TensorStore parsing not yet implemented".to_string(),
         ))
     }
-}
-
-/// Single index entry
-#[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
-pub struct IndexEntry {
-    /// Which shard file (0-255)
-    pub shard_id: u8,
-    /// Byte offset within shard
-    pub offset: u64,
-    /// Tensor data size in bytes
-    pub size: u32,
-    /// Data type
-    pub dtype: u8,
-    /// Number of dimensions
-    pub rank: u8,
-    /// Length of tensor name
-    pub name_len: u16,
-    /// Tensor shape (up to 8 dimensions)
-    pub shape: [u32; 8],
-    /// Inline tensor name (up to 16 bytes)
-    pub name_inline: [u8; 16],
 }
 
 /// Parse TensorStore index file.

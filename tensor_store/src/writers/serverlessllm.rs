@@ -34,30 +34,11 @@
 
 use crate::backends;
 use crate::writers::error::{WriterError, WriterResult};
-use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
 
-/// Tensor entry for ServerlessLLM index writing.
-///
-/// This represents metadata for a single tensor to be written to a ServerlessLLM index file.
-/// Note: This is distinct from the reader's `TensorEntry` type.
-#[derive(Debug, Serialize)]
-#[non_exhaustive]
-pub struct TensorEntry {
-    /// Byte offset in partition file
-    pub offset: u64,
-    /// Size in bytes
-    pub size: u64,
-    /// Tensor shape
-    pub shape: Vec<i64>,
-    /// Tensor strides
-    pub stride: Vec<i64>,
-    /// Data type string
-    pub dtype: String,
-    /// Which partition file stores this tensor
-    pub partition_id: usize,
-}
+// Re-export shared TensorEntry type for backwards compatibility
+pub use crate::types::serverlessllm::TensorEntry;
 
 /// High-level writer for the ServerlessLLM checkpoint format.
 #[derive(Debug, Default, Clone, Copy)]

@@ -31,8 +31,8 @@ pub mod io_uring;
 pub mod async_io;
 pub mod mmap;
 
-use std::path::Path;
 pub use std::io::Result as IoResult;
+use std::path::Path;
 
 // ============================================================================
 // Async operations (default, platform-optimized)

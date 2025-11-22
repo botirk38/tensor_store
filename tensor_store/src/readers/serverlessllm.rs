@@ -55,6 +55,9 @@ use crate::readers::traits::{AsyncReader, SyncReader, TensorMetadata};
 use std::collections::HashMap;
 use std::path::Path;
 
+// Re-export shared TensorEntry type for backwards compatibility
+pub use crate::types::serverlessllm::TensorEntry;
+
 /// Parsed ServerlessLLM index
 #[derive(Debug, Clone, Default, PartialEq)]
 #[non_exhaustive]
@@ -126,13 +129,9 @@ impl ServerlessLLMIndex {
         // Validate partition file before loading
         self.validate_single_partition(&partition_path, entry)?;
 
-        backends::load_range(
-            &partition_path,
-            entry.offset,
-            entry.size as usize,
-        )
-        .await
-        .map_err(ReaderError::from)
+        backends::load_range(&partition_path, entry.offset, entry.size as usize)
+            .await
+            .map_err(ReaderError::from)
     }
 
     /// Loads tensor data from a partition file synchronously.
@@ -170,16 +169,16 @@ impl ServerlessLLMIndex {
         // Validate partition file before loading
         self.validate_single_partition(&partition_path, entry)?;
 
-        backends::sync::load_range(
-            &partition_path,
-            entry.offset,
-            entry.size as usize,
-        )
-        .map_err(ReaderError::from)
+        backends::sync::load_range(&partition_path, entry.offset, entry.size as usize)
+            .map_err(ReaderError::from)
     }
 
     /// Validates a single partition file for a specific tensor entry.
-    fn validate_single_partition(&self, partition_path: &str, entry: &TensorEntry) -> ReaderResult<()> {
+    fn validate_single_partition(
+        &self,
+        partition_path: &str,
+        entry: &TensorEntry,
+    ) -> ReaderResult<()> {
         let metadata = std::fs::metadata(partition_path).map_err(|e| {
             ReaderError::ServerlessLlm(format!(
                 "partition file '{}' not found or inaccessible: {}",
@@ -213,7 +212,9 @@ impl ServerlessLLMIndex {
         use std::collections::HashSet;
 
         // Collect unique partition IDs
-        let partition_ids: HashSet<usize> = self.tensors.values()
+        let partition_ids: HashSet<usize> = self
+            .tensors
+            .values()
             .map(|entry| entry.partition_id)
             .collect();
 
@@ -252,7 +253,8 @@ impl ServerlessLLMIndex {
         let mut partition_sizes: HashMap<usize, u64> = HashMap::new();
         for entry in self.tensors.values() {
             let max_offset = entry.offset + entry.size;
-            partition_sizes.entry(entry.partition_id)
+            partition_sizes
+                .entry(entry.partition_id)
                 .and_modify(|size| *size = (*size).max(max_offset))
                 .or_insert(max_offset);
         }
@@ -290,7 +292,8 @@ impl ServerlessLLMIndex {
     /// Returns the total number of unique partition files.
     pub fn partition_count(&self) -> usize {
         use std::collections::HashSet;
-        self.tensors.values()
+        self.tensors
+            .values()
             .map(|entry| entry.partition_id)
             .collect::<HashSet<_>>()
             .len()
@@ -299,7 +302,9 @@ impl ServerlessLLMIndex {
     /// Returns the partition IDs used by this index.
     pub fn partition_ids(&self) -> Vec<usize> {
         use std::collections::HashSet;
-        let mut ids: Vec<_> = self.tensors.values()
+        let mut ids: Vec<_> = self
+            .tensors
+            .values()
             .map(|entry| entry.partition_id)
             .collect::<HashSet<_>>()
             .into_iter()
@@ -330,24 +335,6 @@ impl TensorMetadata for ServerlessLLMIndex {
     fn tensor_names(&self) -> Vec<&str> {
         self.tensors.keys().map(|s| s.as_str()).collect()
     }
-}
-
-/// Single tensor entry
-#[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
-pub struct TensorEntry {
-    /// Byte offset in partition file
-    pub offset: u64,
-    /// Size in bytes
-    pub size: u64,
-    /// Tensor shape
-    pub shape: Vec<i64>,
-    /// Tensor strides
-    pub stride: Vec<i64>,
-    /// Data type string
-    pub dtype: String,
-    /// Which partition file (derived from offset/size distribution)
-    pub partition_id: usize,
 }
 
 impl AsyncReader for ServerlessLLMIndex {
@@ -387,10 +374,7 @@ fn parse_index_impl(data: &[u8]) -> ReaderResult<ServerlessLLMIndex> {
 
     for (name, value) in raw {
         let arr = value.as_array().ok_or_else(|| {
-            ReaderError::ServerlessLlm(format!(
-                "tensor entry '{}' must be an array",
-                name
-            ))
+            ReaderError::ServerlessLlm(format!("tensor entry '{}' must be an array", name))
         })?;
 
         // Support both 5-field (offset, size, shape, stride, dtype) and
@@ -460,15 +444,12 @@ fn to_usize(value: &serde_json::Value, tensor_name: &str) -> ReaderResult<usize>
 }
 
 fn to_string(value: &serde_json::Value, tensor_name: &str) -> ReaderResult<String> {
-    value
-        .as_str()
-        .map(|s| s.to_string())
-        .ok_or_else(|| {
-            ReaderError::ServerlessLlm(format!(
-                "expected string in tensor '{}', got {:?}",
-                tensor_name, value
-            ))
-        })
+    value.as_str().map(|s| s.to_string()).ok_or_else(|| {
+        ReaderError::ServerlessLlm(format!(
+            "expected string in tensor '{}', got {:?}",
+            tensor_name, value
+        ))
+    })
 }
 
 fn to_i64_vec(value: &serde_json::Value, tensor_name: &str) -> ReaderResult<Vec<i64>> {

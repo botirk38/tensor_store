@@ -24,8 +24,9 @@
 //! ```
 
 use crate::readers::safetensors::Dtype;
+use crate::types::serverlessllm::TensorEntry;
 use crate::writers::error::{WriterError, WriterResult};
-use crate::writers::serverlessllm::{ServerlessLlmWriter, TensorEntry};
+use crate::writers::serverlessllm::ServerlessLlmWriter;
 use std::collections::HashMap;
 use std::path::Path;
 

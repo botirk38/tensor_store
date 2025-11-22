@@ -6,6 +6,7 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 pub mod backends;
 pub mod converters;
 pub mod readers;
+pub mod types;
 pub mod writers;
 
 pub use converters::safetensors_to_serverlessllm::convert_safetensors_to_serverlessllm;

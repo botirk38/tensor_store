@@ -6,36 +6,18 @@
 //! implemented.
 //!
 //! ```rust,ignore
-//! use tensor_store::writers::tensorstore::{TensorStoreWriter, TensorStoreIndexEntry};
+//! use tensor_store::writers::tensorstore::{TensorStoreWriter, IndexEntry};
 //!
 //! let writer = TensorStoreWriter::new();
-//! let entries = vec![TensorStoreIndexEntry::default()];
+//! let entries = vec![IndexEntry::default()];
 //! writer.write_index("model.index", &entries).await?;
 //! writer.write_shard("shard_0.bin", 0, &[0u8; 1024]).await?;
 //! ```
 
 use crate::writers::error::WriterResult;
 
-/// Entry describing a TensorStore tensor in the index file.
-#[derive(Debug, Default, Clone)]
-pub struct TensorStoreIndexEntry {
-    /// Which shard file (0-255)
-    pub shard_id: u8,
-    /// Byte offset within shard
-    pub offset: u64,
-    /// Tensor data size in bytes
-    pub size: u32,
-    /// Data type identifier
-    pub dtype: u8,
-    /// Number of dimensions
-    pub rank: u8,
-    /// Length of tensor name
-    pub name_len: u16,
-    /// Tensor shape (up to 8 dimensions)
-    pub shape: [u32; 8],
-    /// Inline tensor name (up to 16 bytes)
-    pub name_inline: [u8; 16],
-}
+// Re-export shared IndexEntry type
+pub use crate::types::tensorstore::IndexEntry;
 
 /// High-level writer for TensorStore checkpoint artifacts.
 #[derive(Debug, Default, Clone, Copy)]
@@ -49,22 +31,23 @@ impl TensorStoreWriter {
     }
 
     /// Write the TensorStore index file.
-    pub async fn write_index(
-        &self,
-        output_path: &str,
-        entries: &[TensorStoreIndexEntry],
-    ) -> WriterResult<()> {
+    pub async fn write_index(&self, output_path: &str, entries: &[IndexEntry]) -> WriterResult<()> {
         write_index(output_path, entries).await
     }
 
     /// Write a binary shard containing tensor data.
-    pub async fn write_shard(&self, output_path: &str, shard_id: u8, data: &[u8]) -> WriterResult<()> {
+    pub async fn write_shard(
+        &self,
+        output_path: &str,
+        shard_id: u8,
+        data: &[u8],
+    ) -> WriterResult<()> {
         write_shard(output_path, shard_id, data).await
     }
 }
 
 /// Write a TensorStore index file.
-pub async fn write_index(_output_path: &str, _entries: &[TensorStoreIndexEntry]) -> WriterResult<()> {
+pub async fn write_index(_output_path: &str, _entries: &[IndexEntry]) -> WriterResult<()> {
     todo!("Implement TensorStore index writing")
 }
 
