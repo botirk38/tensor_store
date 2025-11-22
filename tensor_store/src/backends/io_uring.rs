@@ -1,6 +1,6 @@
 //! io_uring-based async I/O backend for Linux.
 //!
-//! This backend leverages Linux's io_uring interface for maximum performance.
+//! This backend leverages Linux's `io_uring` interface for maximum performance.
 //! It provides zero-copy operations and efficient parallel I/O for large files.
 //!
 //! # Platform Support
@@ -10,7 +10,7 @@
 //! # Performance Characteristics
 //!
 //! - **Zero-copy**: Direct kernel-to-userspace transfers
-//! - **Parallel I/O**: True concurrent reads via io_uring submission queue
+//! - **Parallel I/O**: True concurrent reads via `io_uring` submission queue
 //! - **Buffer pooling**: Reuses memory allocations across operations
 //!
 //! # Usage
@@ -37,7 +37,7 @@ struct BorrowedVec {
 }
 
 impl BorrowedVec {
-    unsafe fn from_slice(slice: &mut [u8]) -> Self {
+    const unsafe fn from_slice(slice: &mut [u8]) -> Self {
         Self {
             ptr: slice.as_mut_ptr(),
             len: slice.len(),
@@ -73,29 +73,30 @@ impl AsMut<[u8]> for BorrowedVec {
 
 /// Ceiling division: (a + b - 1) / b
 #[inline]
-fn div_ceil(a: usize, b: usize) -> usize {
+const fn div_ceil(a: usize, b: usize) -> usize {
     a.div_ceil(b)
 }
 
-/// Load tensor data using io_uring zero-copy I/O
+/// Load tensor data using `io_uring` zero-copy I/O
 #[inline]
-pub async fn load(path: impl AsRef<Path>) -> IoResult<Vec<u8>> {
-    let path = path.as_ref();
-    let file = UringFile::open(path).await?;
-    let metadata = std::fs::metadata(path)?;
-    let file_size = metadata.len() as usize;
+pub async fn load(path: impl AsRef<Path> + Send) -> IoResult<Vec<u8>> {
+    let path_buf = path.as_ref().to_path_buf();
+    let file = UringFile::open(&path_buf).await?;
+    let metadata = std::fs::metadata(&path_buf)?;
+    let file_size = usize::try_from(metadata.len())
+        .map_err(|_e| std::io::Error::other("File too large"))?;
 
     // Use internal buffer pool for optimization
-    let buf = get_buffer_pool().get(file_size);
+    let read_buf = get_buffer_pool().get(file_size);
 
-    let (res, buf) = file.read_at(buf, 0).await;
+    let (res, buf) = file.read_at(read_buf, 0).await;
     let n = res?;
 
     if n != file_size {
         file.close().await?;
         return Err(std::io::Error::new(
             std::io::ErrorKind::UnexpectedEof,
-            format!("Expected to read {} bytes, but read {}", file_size, n),
+            format!("Expected to read {file_size} bytes, but read {n}"),
         ));
     }
 
@@ -104,7 +105,7 @@ pub async fn load(path: impl AsRef<Path>) -> IoResult<Vec<u8>> {
     Ok(buf)
 }
 
-/// Load tensor data in parallel chunks using io_uring with true zero-copy
+/// Load tensor data in parallel chunks using `io_uring` with true zero-copy
 #[inline]
 pub async fn load_parallel(path: impl AsRef<Path>, chunks: usize) -> IoResult<Vec<u8>> {
     if chunks == 0 {
@@ -114,10 +115,11 @@ pub async fn load_parallel(path: impl AsRef<Path>, chunks: usize) -> IoResult<Ve
         ));
     }
 
-    let path = path.as_ref();
-    let file = UringFile::open(path).await?;
+    let path_ref = path.as_ref();
+    let file = UringFile::open(path_ref).await?;
     let metadata = std::fs::metadata(path)?;
-    let file_size = metadata.len() as usize;
+    let file_size = usize::try_from(metadata.len())
+        .map_err(|_e| std::io::Error::other("File too large"))?;
 
     let chunk_size = div_ceil(file_size, chunks);
 
@@ -128,19 +130,29 @@ pub async fn load_parallel(path: impl AsRef<Path>, chunks: usize) -> IoResult<Ve
     let mut read_futures = Vec::with_capacity(chunks);
 
     for i in 0..chunks {
-        let start = i * chunk_size;
-        let end = std::cmp::min(start + chunk_size, file_size);
-        let actual_chunk_size = end - start;
+        let start = i.checked_mul(chunk_size).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "chunk calculation overflow")
+        })?;
+        let end = std::cmp::min(start.checked_add(chunk_size).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "chunk calculation overflow")
+        })?, file_size);
+        let actual_chunk_size = end.checked_sub(start).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "chunk calculation underflow")
+        })?;
 
         if actual_chunk_size == 0 {
             break;
         }
 
         // Create a BorrowedVec that points to the slice of final_buf for this chunk
-        let chunk_slice = &mut final_buf[start..end];
+        let chunk_slice = final_buf.get_mut(start..end).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid chunk range")
+        })?;
         let borrowed_vec = unsafe { BorrowedVec::from_slice(chunk_slice) };
 
-        let offset = start as u64;
+        let offset = u64::try_from(start).map_err(|_e| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "offset too large")
+        })?;
         let read_future = file.read_at(borrowed_vec.into_vec(), offset);
         read_futures.push(read_future);
     }
@@ -151,6 +163,8 @@ pub async fn load_parallel(path: impl AsRef<Path>, chunks: usize) -> IoResult<Ve
         let (res, returned_buf) = read_future.await;
         let _n = res?;
         // Leak the returned buffer since its data is now in final_buf
+        // This prevents double-free since the buffer content has been moved
+        #[allow(clippy::mem_forget)]
         std::mem::forget(returned_buf);
     }
 
@@ -158,33 +172,33 @@ pub async fn load_parallel(path: impl AsRef<Path>, chunks: usize) -> IoResult<Ve
     Ok(final_buf)
 }
 
-/// Load a specific byte range from a file using io_uring.
+/// Load a specific byte range from a file using `io_uring`.
 #[inline]
 pub async fn load_range(path: impl AsRef<Path>, offset: u64, len: usize) -> IoResult<Vec<u8>> {
-    let path = path.as_ref();
-    let file = UringFile::open(path).await?;
+    let path_ref = path.as_ref();
+    let file = UringFile::open(path_ref).await?;
 
     let buf = vec![0u8; len];
-    let (res, buf) = file.read_at(buf, offset).await;
+    let (res, read_buf) = file.read_at(buf, offset).await;
     let n = res?;
 
     if n != len {
         file.close().await?;
         return Err(std::io::Error::new(
             std::io::ErrorKind::UnexpectedEof,
-            format!("Expected to read {} bytes, but read {}", len, n),
+            format!("Expected to read {len} bytes, but read {n}"),
         ));
     }
 
     file.close().await?;
-    Ok(buf)
+    Ok(read_buf)
 }
 
 /// Write an entire buffer to a file, creating or truncating it first.
 #[inline]
 pub async fn write_all(path: impl AsRef<Path>, data: &[u8]) -> IoResult<()> {
-    let path = path.as_ref();
-    let file = UringFile::create(path).await?;
+    let path_ref = path.as_ref();
+    let file = UringFile::create(path_ref).await?;
     let (res, buf) = file.write_at(data.to_vec(), 0).submit().await;
     let n = res?;
     if n != data.len() {

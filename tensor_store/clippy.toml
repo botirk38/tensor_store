@@ -1,0 +1,23 @@
+# Clippy configuration - very strict settings
+
+# Lint levels
+# Use deny for most pedantic and restriction lints to enforce strict code quality
+
+# Cognitive complexity threshold (default is 25, we set it lower)
+cognitive-complexity-threshold = 15
+
+# Disallow types with too many lines
+type-complexity-threshold = 250
+
+# Disallow functions with too many arguments
+too-many-arguments-threshold = 5
+
+# Disallow functions with too many lines
+too-many-lines-threshold = 100
+
+# Single char binding names that are allowed
+single-char-binding-names-threshold = 2
+
+# Documentation
+# Enforce documentation for public items in crate
+missing-docs-in-crate-items = false

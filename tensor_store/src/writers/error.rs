@@ -10,15 +10,15 @@ pub enum WriterError {
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
 
-    /// Error from the SafeTensors library.
+    /// Error from the `SafeTensors` library.
     #[error("SafeTensors error: {0}")]
     SafeTensors(#[from] safetensors::SafeTensorError),
 
-    /// Error specific to ServerlessLLM format writing.
+    /// Error specific to `ServerlessLLM` format writing.
     #[error("ServerlessLLM error: {0}")]
     ServerlessLlm(String),
 
-    /// Error specific to TensorStore format writing.
+    /// Error specific to `TensorStore` format writing.
     #[error("TensorStore error: {0}")]
     TensorStore(String),
 
@@ -29,13 +29,18 @@ pub enum WriterError {
     /// Serialization error occurred.
     #[error("Serialization error: {0}")]
     Serialization(String),
+
+    /// Path-related error.
+    #[error("Path error: {0}")]
+    Path(String),
 }
 
 /// A specialized Result type for writer operations.
 pub type WriterResult<T> = Result<T, WriterError>;
 
 impl From<serde_json::Error> for WriterError {
+    #[inline]
     fn from(err: serde_json::Error) -> Self {
-        WriterError::Serialization(err.to_string())
+        Self::Serialization(err.to_string())
     }
 }

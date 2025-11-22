@@ -36,6 +36,7 @@ pub trait TensorMetadata {
     fn len(&self) -> usize;
 
     /// Returns true if there are no tensors.
+    #[inline]
     fn is_empty(&self) -> bool {
         self.len() == 0
     }

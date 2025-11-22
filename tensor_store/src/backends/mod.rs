@@ -5,7 +5,7 @@
 //!
 //! # Platform Support
 //!
-//! - **Linux**: io_uring backend for async operations (maximum performance)
+//! - **Linux**: `io_uring` backend for async operations (maximum performance)
 //! - **Cross-platform**: tokio async I/O fallback
 //! - **Sync operations**: memory-mapped I/O on Linux, standard file I/O elsewhere
 //!
@@ -40,7 +40,7 @@ use std::path::Path;
 
 /// Load entire file contents asynchronously.
 ///
-/// Uses io_uring on Linux, tokio async I/O elsewhere.
+/// Uses `io_uring` on Linux, tokio async I/O elsewhere.
 #[cfg(target_os = "linux")]
 pub use io_uring::load;
 
@@ -49,7 +49,7 @@ pub use async_io::load;
 
 /// Load file in parallel chunks asynchronously.
 ///
-/// Uses io_uring on Linux, tokio async I/O elsewhere.
+/// Uses `io_uring` on Linux, tokio async I/O elsewhere.
 #[cfg(target_os = "linux")]
 pub use io_uring::load_parallel;
 
@@ -58,7 +58,7 @@ pub use async_io::load_parallel;
 
 /// Load a specific byte range from file asynchronously.
 ///
-/// Uses io_uring on Linux, tokio async I/O elsewhere.
+/// Uses `io_uring` on Linux, tokio async I/O elsewhere.
 #[cfg(target_os = "linux")]
 pub use io_uring::load_range;
 
@@ -67,7 +67,7 @@ pub use async_io::load_range;
 
 /// Write entire buffer to file asynchronously.
 ///
-/// Uses io_uring on Linux, tokio async I/O elsewhere.
+/// Uses `io_uring` on Linux, tokio async I/O elsewhere.
 #[cfg(target_os = "linux")]
 pub use io_uring::write_all;
 
@@ -80,7 +80,7 @@ pub use async_io::write_all;
 
 /// Synchronous I/O operations for blocking contexts.
 pub mod sync {
-    use super::*;
+    use super::{Path, IoResult};
 
     /// Load entire file contents synchronously.
     ///

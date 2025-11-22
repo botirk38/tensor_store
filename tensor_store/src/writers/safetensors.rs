@@ -1,4 +1,4 @@
-//! SafeTensors writer helpers.
+//! `SafeTensors` writer helpers.
 //!
 //! This module intentionally keeps things simple by wrapping the public
 //! `safetensors` crate APIs. It provides ergonomic names and re-exports so
@@ -34,35 +34,37 @@ use std::path::Path;
 pub use safetensors::tensor::{TensorView, View};
 pub use safetensors::{Dtype, SafeTensorError};
 
-/// Convenience alias for custom metadata passed to SafeTensors.
+/// Convenience alias for custom metadata passed to `SafeTensors`.
 pub type MetadataMap = HashMap<String, String>;
 
-/// Stateless helper that proxies calls to the upstream SafeTensors serializer.
+/// Stateless helper that proxies calls to the upstream `SafeTensors` serializer.
 ///
 /// This writer is intentionally stateless and can be copied freely.
-/// It provides both synchronous and asynchronous methods for writing SafeTensors format.
+/// It provides both synchronous and asynchronous methods for writing `SafeTensors` format.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SafeTensorsWriter;
 
 impl SafeTensorsWriter {
     /// Create a new writer instance.
     #[inline]
-    pub fn new() -> Self {
+    #[must_use] 
+    pub const fn new() -> Self {
         Self
     }
 
-    /// Serialize tensors into an owned byte buffer using the SafeTensors format (synchronous).
+    /// Serialize tensors into an owned byte buffer using the `SafeTensors` format (synchronous).
     ///
     /// This is a thin wrapper around [`safetensors::serialize`].
     ///
     /// # Arguments
     ///
-    /// * `tensors` - Iterator of (name, tensor_view) pairs to serialize
+    /// * `tensors` - Iterator of (name, `tensor_view`) pairs to serialize
     /// * `metadata` - Optional custom metadata to include in the file
     ///
     /// # Errors
     ///
     /// Returns an error if serialization fails.
+    #[inline]
     pub fn write_to_buffer<S, V, I>(
         &self,
         tensors: I,
@@ -76,20 +78,21 @@ impl SafeTensorsWriter {
         safetensors::serialize(tensors, metadata).map_err(Into::into)
     }
 
-    /// Serialize tensors into an owned byte buffer using the SafeTensors format (asynchronous).
+    /// Serialize tensors into an owned byte buffer using the `SafeTensors` format (asynchronous).
     ///
     /// This is identical to the sync version since serialization is CPU-bound.
     /// Use this for consistency in async contexts.
     ///
     /// # Arguments
     ///
-    /// * `tensors` - Iterator of (name, tensor_view) pairs to serialize
+    /// * `tensors` - Iterator of (name, `tensor_view`) pairs to serialize
     /// * `metadata` - Optional custom metadata to include in the file
     ///
     /// # Errors
     ///
     /// Returns an error if serialization fails.
-    pub async fn write_to_buffer_async<S, V, I>(
+    #[inline]
+    pub fn write_to_buffer_sync<S, V, I>(
         &self,
         tensors: I,
         metadata: Option<MetadataMap>,
@@ -109,13 +112,14 @@ impl SafeTensorsWriter {
     ///
     /// # Arguments
     ///
-    /// * `tensors` - Iterator of (name, tensor_view) pairs to serialize
+    /// * `tensors` - Iterator of (name, `tensor_view`) pairs to serialize
     /// * `metadata` - Optional custom metadata to include in the file
     /// * `path` - Path where the file will be written
     ///
     /// # Errors
     ///
     /// Returns an error if serialization or file writing fails.
+    #[inline]
     pub fn write_to_file<S, V, I, P>(
         &self,
         tensors: I,
@@ -138,13 +142,14 @@ impl SafeTensorsWriter {
     ///
     /// # Arguments
     ///
-    /// * `tensors` - Iterator of (name, tensor_view) pairs to serialize
+    /// * `tensors` - Iterator of (name, `tensor_view`) pairs to serialize
     /// * `metadata` - Optional custom metadata to include in the file
     /// * `path` - Path where the file will be written
     ///
     /// # Errors
     ///
     /// Returns an error if serialization or file writing fails.
+    #[allow(clippy::missing_panics_doc)]
     pub async fn write_to_file_async<S, V, I, P>(
         &self,
         tensors: I,

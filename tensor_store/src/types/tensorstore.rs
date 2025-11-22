@@ -1,10 +1,10 @@
-//! Shared types for TensorStore format.
+//! Shared types for `TensorStore` format.
 
 use serde::{Deserialize, Serialize};
 
-/// Index entry for TensorStore format.
+/// Index entry for `TensorStore` format.
 ///
-/// This structure represents a single tensor's metadata in a TensorStore index.
+/// This structure represents a single tensor's metadata in a `TensorStore` index.
 /// It contains compact binary information about the tensor's location, type, and shape.
 ///
 /// Used by both readers (for parsing index entries) and writers (for creating index entries).

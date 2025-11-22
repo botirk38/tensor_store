@@ -1,14 +1,14 @@
-//! SafeTensors to ServerlessLLM conversion.
+//! `SafeTensors` to `ServerlessLLM` conversion.
 //!
-//! This module provides functionality to convert SafeTensors format
-//! checkpoints to ServerlessLLM format with configurable partitioning.
+//! This module provides functionality to convert `SafeTensors` format
+//! checkpoints to `ServerlessLLM` format with configurable partitioning.
 //!
 //! # Conversion Process
 //!
-//! 1. Parse SafeTensors metadata using readers
+//! 1. Parse `SafeTensors` metadata using readers
 //! 2. Convert dtypes and extract tensor data
 //! 3. Partition tensors across multiple files
-//! 4. Write ServerlessLLM format using writers
+//! 4. Write `ServerlessLLM` format using writers
 //!
 //! # Example Usage (Future)
 //!
@@ -30,7 +30,8 @@ use crate::writers::serverlessllm::ServerlessLlmWriter;
 use std::collections::HashMap;
 use std::path::Path;
 
-/// Convert SafeTensors to ServerlessLLM format
+/// Convert `SafeTensors` to `ServerlessLLM` format
+#[inline]
 pub async fn convert_safetensors_to_serverlessllm(
     input_path: &str,
     output_dir: &str,
@@ -38,7 +39,7 @@ pub async fn convert_safetensors_to_serverlessllm(
 ) -> WriterResult<()> {
     if partition_count == 0 {
         return Err(WriterError::InvalidInput(
-            "partition_count must be greater than zero".to_string(),
+            "partition_count must be greater than zero".to_owned(),
         ));
     }
 
@@ -52,11 +53,11 @@ pub async fn convert_safetensors_to_serverlessllm(
     for name in tensors.names() {
         let view = tensors.tensor(name).map_err(WriterError::SafeTensors)?;
         let data = view.data().to_vec();
-        let shape: Vec<i64> = view.shape().iter().map(|&d| d as i64).collect();
+        let shape: Vec<i64> = view.shape().iter().map(|&d| i64::try_from(d).unwrap_or(i64::MAX)).collect();
         let stride = calculate_contiguous_stride(&shape);
-        let dtype = dtype_to_serverlessllm(view.dtype())?.to_string();
+        let dtype = dtype_to_serverlessllm(view.dtype())?.to_owned();
         blobs.push(TensorBlob {
-            name: name.to_string(),
+            name: name.to_owned(),
             data,
             shape,
             stride,
@@ -71,10 +72,10 @@ pub async fn convert_safetensors_to_serverlessllm(
     let mut index: HashMap<String, TensorEntry> = HashMap::with_capacity(blobs.len());
 
     for (i, blob) in blobs.into_iter().enumerate() {
-        let partition_id = i % partition_count;
-        let partition = &mut partitions[partition_id];
-        let offset = partition.len() as u64;
-        let size = blob.data.len() as u64;
+        let partition_id = i.checked_rem(partition_count).unwrap_or(0);
+        let partition = partitions.get_mut(partition_id).ok_or_else(|| WriterError::InvalidInput("partition index out of bounds".to_owned()))?;
+        let offset = u64::try_from(partition.len()).unwrap_or(u64::MAX);
+        let size = u64::try_from(blob.data.len()).unwrap_or(u64::MAX);
 
         partition.extend_from_slice(&blob.data);
 
@@ -105,7 +106,7 @@ pub async fn convert_safetensors_to_serverlessllm(
         .into_iter()
         .enumerate()
         .map(|(id, data)| {
-            let part_path = out_dir.join(format!("tensor.data_{}", id));
+            let part_path = out_dir.join(format!("tensor.data_{id}"));
             async move { writer.write_partition(&part_path, &data).await }
         })
         .collect();
@@ -131,10 +132,9 @@ fn dtype_to_serverlessllm(dtype: Dtype) -> WriterResult<&'static str> {
         Dtype::U8 => "torch.uint8",
         Dtype::U64 => "torch.uint64",
         Dtype::BOOL => "torch.bool",
-        other => {
+        Dtype::F4 | Dtype::F6_E2M3 | Dtype::F6_E3M2 | Dtype::F8_E5M2 | Dtype::F8_E4M3 | Dtype::F8_E8M0 | Dtype::C64 | _ => {
             return Err(WriterError::InvalidInput(format!(
-                "unsupported dtype: {:?}",
-                other
+                "unsupported dtype: {dtype:?}",
             )));
         }
     };
@@ -142,6 +142,7 @@ fn dtype_to_serverlessllm(dtype: Dtype) -> WriterResult<&'static str> {
     Ok(mapped)
 }
 
+#[allow(clippy::indexing_slicing, clippy::unwrap_used, clippy::arithmetic_side_effects)]
 fn calculate_contiguous_stride(shape: &[i64]) -> Vec<i64> {
     if shape.is_empty() {
         return Vec::new();
@@ -149,7 +150,12 @@ fn calculate_contiguous_stride(shape: &[i64]) -> Vec<i64> {
 
     let mut stride = vec![1i64; shape.len()];
     for i in (0..shape.len().saturating_sub(1)).rev() {
-        stride[i] = stride[i + 1] * shape[i + 1];
+        let next_i = i + 1;
+        let next_stride = stride[next_i];
+        let next_shape = shape[next_i];
+        if let Some(s) = stride.get_mut(i) {
+            *s = next_stride.checked_mul(next_shape).unwrap_or(i64::MAX);
+        }
     }
     stride
 }

@@ -1,4 +1,4 @@
-//! SafeTensors format reader.
+//! `SafeTensors` format reader.
 //!
 //! This module re-exports types from the safetensors crate for convenience.
 //! All parsing is handled by the safetensors library.
@@ -26,7 +26,7 @@ pub use safetensors::tensor::{Dtype, SafeTensors, TensorView};
 use std::ops::Deref;
 use std::path::Path;
 
-/// SafeTensors data plus the owned backing buffer.
+/// `SafeTensors` data plus the owned backing buffer.
 ///
 /// The buffer is kept alive for as long as the parsed [`SafeTensors`] lives,
 /// ensuring the borrowed tensor views remain valid.
@@ -37,11 +37,12 @@ pub struct OwnedSafeTensors {
 }
 
 impl OwnedSafeTensors {
-    /// Creates an owned SafeTensors from raw bytes.
+    /// Creates an owned `SafeTensors` from raw bytes.
     ///
     /// # Errors
     ///
-    /// Returns an error if the bytes cannot be parsed as SafeTensors format.
+    /// Returns an error if the bytes cannot be parsed as `SafeTensors` format.
+    #[inline]
     pub fn from_bytes(bytes: Vec<u8>) -> ReaderResult<Self> {
         let buffer = bytes.into_boxed_slice();
         let slice: &[u8] = &buffer;
@@ -57,39 +58,47 @@ impl OwnedSafeTensors {
 
     /// Borrow the underlying serialized bytes.
     #[inline]
+    #[must_use] 
     pub fn as_bytes(&self) -> &[u8] {
         &self.buffer
     }
 
     /// Consume the owned tensors and return the serialized bytes.
+    #[inline]
+    #[must_use] 
     pub fn into_bytes(self) -> Vec<u8> {
         self.buffer.into()
     }
 
-    /// Access the parsed SafeTensors structure.
+    /// Access the parsed `SafeTensors` structure.
     #[inline]
-    pub fn tensors(&self) -> &SafeTensors<'static> {
+    #[must_use] 
+    pub const fn tensors(&self) -> &SafeTensors<'static> {
         &self.tensors
     }
 }
 
 impl Clone for OwnedSafeTensors {
+    #[inline]
+    #[allow(clippy::expect_used)]
     fn clone(&self) -> Self {
         // We can safely clone by copying the buffer and re-parsing
         Self::from_bytes(self.buffer.to_vec())
-            .expect("cloning already-parsed SafeTensors should not fail")
+            .expect("SafeTensors parsing should not fail on valid data")
     }
 }
 
 impl Deref for OwnedSafeTensors {
     type Target = SafeTensors<'static>;
 
+    #[inline]
     fn deref(&self) -> &Self::Target {
         &self.tensors
     }
 }
 
 impl AsRef<SafeTensors<'static>> for OwnedSafeTensors {
+    #[inline]
     fn as_ref(&self) -> &SafeTensors<'static> {
         &self.tensors
     }
@@ -98,20 +107,24 @@ impl AsRef<SafeTensors<'static>> for OwnedSafeTensors {
 impl TryFrom<Vec<u8>> for OwnedSafeTensors {
     type Error = ReaderError;
 
+    #[inline]
     fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
         Self::from_bytes(bytes)
     }
 }
 
 impl TensorMetadata for OwnedSafeTensors {
+    #[inline]
     fn len(&self) -> usize {
         self.tensors.len()
     }
 
+    #[inline]
     fn contains(&self, name: &str) -> bool {
         self.tensors.names().into_iter().any(|n| n == name)
     }
 
+    #[inline]
     fn tensor_names(&self) -> Vec<&str> {
         self.tensors.names()
     }
@@ -120,8 +133,10 @@ impl TensorMetadata for OwnedSafeTensors {
 impl AsyncReader for OwnedSafeTensors {
     type Output = Self;
 
+    #[inline]
     async fn load(path: impl AsRef<Path>) -> ReaderResult<Self::Output> {
-        let bytes = backends::load(path.as_ref().to_str().unwrap()).await?;
+        let path_str = path.as_ref().to_str().ok_or_else(|| ReaderError::InvalidMetadata("path contains invalid UTF-8".to_owned()))?;
+        let bytes = backends::load(path_str).await?;
         Self::from_bytes(bytes)
     }
 }
@@ -129,8 +144,10 @@ impl AsyncReader for OwnedSafeTensors {
 impl SyncReader for OwnedSafeTensors {
     type Output = Self;
 
+    #[inline]
     fn load_sync(path: impl AsRef<Path>) -> ReaderResult<Self::Output> {
-        let bytes = backends::sync::load(path.as_ref().to_str().unwrap())?;
+        let path_str = path.as_ref().to_str().ok_or_else(|| ReaderError::InvalidMetadata("path contains invalid UTF-8".to_owned()))?;
+        let bytes = backends::sync::load(path_str)?;
         Self::from_bytes(bytes)
     }
 }
@@ -147,24 +164,26 @@ pub async fn load_parallel(
     path: impl AsRef<Path>,
     chunks: usize,
 ) -> ReaderResult<OwnedSafeTensors> {
-    let bytes = backends::load_parallel(path.as_ref().to_str().unwrap(), chunks).await?;
+    let path_str = path.as_ref().to_str().ok_or_else(|| ReaderError::InvalidMetadata("path contains invalid UTF-8".to_owned()))?;
+    let bytes = backends::load_parallel(path_str, chunks).await?;
     OwnedSafeTensors::from_bytes(bytes)
 }
 
-/// Synchronous load using mmap (Linux) or std::fs (other platforms).
+/// Synchronous load using mmap (Linux) or `std::fs` (other platforms).
 #[inline]
 pub fn load_sync(path: impl AsRef<Path>) -> ReaderResult<OwnedSafeTensors> {
     OwnedSafeTensors::load_sync(path)
 }
 
-/// Synchronous ranged load using mmap (Linux) or std::fs (other platforms).
+/// Synchronous ranged load using mmap (Linux) or `std::fs` (other platforms).
 #[inline]
 pub fn load_range_sync(
     path: impl AsRef<Path>,
     offset: u64,
     len: usize,
 ) -> ReaderResult<OwnedSafeTensors> {
-    let bytes = backends::sync::load_range(path.as_ref().to_str().unwrap(), offset, len)?;
+    let path_str = path.as_ref().to_str().ok_or_else(|| ReaderError::InvalidMetadata("path contains invalid UTF-8".to_owned()))?;
+    let bytes = backends::sync::load_range(path_str, offset, len)?;
     OwnedSafeTensors::from_bytes(bytes)
 }
 
@@ -174,6 +193,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    #[allow(clippy::unwrap_used, clippy::print_stdout)]
     fn test_load_parallel_zero_copy() {
         // Test with the existing test file
         let path = "test_model.safetensors";
@@ -202,6 +222,7 @@ mod tests {
 
     #[cfg(not(target_os = "linux"))]
     #[tokio::test]
+    #[allow(clippy::unwrap_used, clippy::print_stdout)]
     async fn test_load_parallel_zero_copy() {
         // Test with the existing test file
         let path = "test_model.safetensors";
@@ -228,6 +249,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    #[allow(clippy::unwrap_used, clippy::print_stdout)]
     fn test_load_parallel_zero_copy_io_uring() {
         // Test io_uring version specifically
         let path = "test_model.safetensors";

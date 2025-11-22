@@ -22,12 +22,10 @@ pub use writers::traits::{AsyncWriter, SyncWriter};
 // Reader types
 pub use readers::safetensors::OwnedSafeTensors;
 pub use readers::serverlessllm::ServerlessLLMIndex;
-pub use readers::tensorstore::TensorStoreIndex;
 
 // Writer types
 pub use writers::safetensors::SafeTensorsWriter;
 pub use writers::serverlessllm::ServerlessLlmWriter;
-pub use writers::tensorstore::TensorStoreWriter;
 
 // Conversion functions
 pub use converters::safetensors_to_serverlessllm::convert_safetensors_to_serverlessllm;

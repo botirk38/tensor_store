@@ -27,7 +27,7 @@
 //!
 //! # Example Usage
 //!
-//! ## SafeTensors Format
+//! ## `SafeTensors` Format
 //!
 //! ```rust,ignore
 //! use tensor_store::readers::safetensors;
@@ -47,7 +47,7 @@
 //! }
 //! ```
 //!
-//! ## ServerlessLLM Format
+//! ## `ServerlessLLM` Format
 //!
 //! ```rust,ignore
 //! use tensor_store::readers::serverlessllm;
@@ -89,7 +89,6 @@
 pub mod error;
 pub mod safetensors;
 pub mod serverlessllm;
-pub mod tensorstore;
 pub mod traits;
 
 // Re-export commonly used types

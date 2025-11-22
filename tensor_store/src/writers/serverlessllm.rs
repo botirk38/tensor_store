@@ -1,6 +1,6 @@
-//! ServerlessLLM format writer.
+//! `ServerlessLLM` format writer.
 //!
-//! This module provides functionality to write ServerlessLLM tensor index files
+//! This module provides functionality to write `ServerlessLLM` tensor index files
 //! and partition binary data files.
 //!
 //! # Format Structure
@@ -40,14 +40,15 @@ use std::path::Path;
 // Re-export shared TensorEntry type for backwards compatibility
 pub use crate::types::serverlessllm::TensorEntry;
 
-/// High-level writer for the ServerlessLLM checkpoint format.
+/// High-level writer for the `ServerlessLLM` checkpoint format.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ServerlessLlmWriter;
 
 impl ServerlessLlmWriter {
     /// Create a new writer instance.
     #[inline]
-    pub fn new() -> Self {
+    #[must_use] 
+    pub const fn new() -> Self {
         Self
     }
 
@@ -56,11 +57,12 @@ impl ServerlessLlmWriter {
     /// # Arguments
     ///
     /// * `output_path` - Path where the index file will be written
-    /// * `tensors` - HashMap of tensor names to their metadata entries
+    /// * `tensors` - `HashMap` of tensor names to their metadata entries
     ///
     /// # Errors
     ///
     /// Returns an error if the file cannot be written or if serialization fails.
+    #[inline]
     pub async fn write_index(
         &self,
         output_path: impl AsRef<Path>,
@@ -79,6 +81,7 @@ impl ServerlessLlmWriter {
     /// # Errors
     ///
     /// Returns an error if the file cannot be written.
+    #[inline]
     pub async fn write_partition(
         &self,
         output_path: impl AsRef<Path>,
@@ -92,11 +95,12 @@ impl ServerlessLlmWriter {
     /// # Arguments
     ///
     /// * `output_path` - Path where the index file will be written
-    /// * `tensors` - HashMap of tensor names to their metadata entries
+    /// * `tensors` - `HashMap` of tensor names to their metadata entries
     ///
     /// # Errors
     ///
     /// Returns an error if the file cannot be written or if serialization fails.
+    #[inline]
     pub fn write_index_sync(
         &self,
         output_path: impl AsRef<Path>,
@@ -115,6 +119,7 @@ impl ServerlessLlmWriter {
     /// # Errors
     ///
     /// Returns an error if the file cannot be written.
+    #[inline]
     pub fn write_partition_sync(
         &self,
         output_path: impl AsRef<Path>,
@@ -125,10 +130,10 @@ impl ServerlessLlmWriter {
 }
 
 // Helper function to serialize tensors to JSON format
-fn serialize_index(tensors: &HashMap<String, TensorEntry>) -> WriterResult<Vec<u8>> {
+fn serialize_index<S: ::std::hash::BuildHasher>(tensors: &HashMap<String, TensorEntry, S>) -> WriterResult<Vec<u8>> {
     if tensors.is_empty() {
         return Err(WriterError::InvalidInput(
-            "Cannot write empty tensor index".to_string(),
+            "Cannot write empty tensor index".to_owned(),
         ));
     }
 
@@ -168,17 +173,17 @@ fn ensure_parent_dir_sync(path: &Path) -> WriterResult<()> {
     Ok(())
 }
 
-/// Write tensor_index.json asynchronously.
+/// Write `tensor_index.json` asynchronously.
 ///
 /// # Arguments
 ///
 /// * `output_path` - Path where the index file will be written
-/// * `tensors` - HashMap of tensor names to their metadata entries
+/// * `tensors` - `HashMap` of tensor names to their metadata entries
 ///
 /// # Errors
 ///
 /// Returns an error if:
-/// - The tensors HashMap is empty
+/// - The tensors `HashMap` is empty
 /// - Parent directory cannot be created
 /// - Serialization fails
 /// - File cannot be written
@@ -190,12 +195,12 @@ pub async fn write_index(
     ensure_parent_dir_async(path).await?;
 
     let json = serialize_index(tensors)?;
-    backends::write_all(path.to_str().unwrap(), &json)
+    backends::write_all(path.to_str().ok_or_else(|| WriterError::Path("Invalid UTF-8 in path".to_owned()))?, &json)
         .await
         .map_err(WriterError::from)
 }
 
-/// Write partition file (tensor.data_N) asynchronously.
+/// Write partition file (`tensor.data_N`) asynchronously.
 ///
 /// # Arguments
 ///
@@ -207,31 +212,33 @@ pub async fn write_index(
 /// Returns an error if:
 /// - Parent directory cannot be created
 /// - File cannot be written
+#[inline]
 pub async fn write_partition(output_path: impl AsRef<Path>, data: &[u8]) -> WriterResult<()> {
     let path = output_path.as_ref();
     ensure_parent_dir_async(path).await?;
-    backends::write_all(path.to_str().unwrap(), data)
+    backends::write_all(path.to_str().ok_or_else(|| WriterError::Path("Invalid UTF-8 in path".to_owned()))?, data)
         .await
         .map_err(WriterError::from)
 }
 
-/// Write tensor_index.json synchronously.
+/// Write `tensor_index.json` synchronously.
 ///
 /// # Arguments
 ///
 /// * `output_path` - Path where the index file will be written
-/// * `tensors` - HashMap of tensor names to their metadata entries
+/// * `tensors` - `HashMap` of tensor names to their metadata entries
 ///
 /// # Errors
 ///
 /// Returns an error if:
-/// - The tensors HashMap is empty
+/// - The tensors `HashMap` is empty
 /// - Parent directory cannot be created
 /// - Serialization fails
 /// - File cannot be written
-pub fn write_index_sync(
+#[inline]
+pub fn write_index_sync<S: ::std::hash::BuildHasher>(
     output_path: impl AsRef<Path>,
-    tensors: &HashMap<String, TensorEntry>,
+    tensors: &HashMap<String, TensorEntry, S>,
 ) -> WriterResult<()> {
     let path = output_path.as_ref();
     ensure_parent_dir_sync(path)?;
@@ -252,6 +259,7 @@ pub fn write_index_sync(
 /// Returns an error if:
 /// - Parent directory cannot be created
 /// - File cannot be written
+#[inline]
 pub fn write_partition_sync(output_path: impl AsRef<Path>, data: &[u8]) -> WriterResult<()> {
     let path = output_path.as_ref();
     ensure_parent_dir_sync(path)?;

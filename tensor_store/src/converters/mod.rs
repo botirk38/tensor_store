@@ -6,8 +6,8 @@
 //!
 //! # Supported Conversions
 //!
-//! - **SafeTensors → TensorStore**: Convert to custom sharded format
-//! - **SafeTensors → ServerlessLLM**: Convert to partitioned binary format
+//! - **`SafeTensors` → `TensorStore`**: Convert to custom sharded format
+//! - **`SafeTensors` → `ServerlessLLM`**: Convert to partitioned binary format
 //!
 //! # Example Usage (Future)
 //!

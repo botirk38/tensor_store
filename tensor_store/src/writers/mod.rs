@@ -77,11 +77,9 @@
 pub mod error;
 pub mod safetensors;
 pub mod serverlessllm;
-pub mod tensorstore;
 pub mod traits;
 
 pub use error::{WriterError, WriterResult};
 pub use safetensors::SafeTensorsWriter;
 pub use serverlessllm::ServerlessLlmWriter;
-pub use tensorstore::{IndexEntry, TensorStoreWriter};
 pub use traits::{AsyncWriter, SyncWriter};

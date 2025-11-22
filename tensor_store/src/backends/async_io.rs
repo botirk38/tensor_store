@@ -1,7 +1,7 @@
 //! Portable async I/O backend using Tokio.
 //!
 //! This backend provides cross-platform async I/O operations built on Tokio.
-//! It's used as a fallback on non-Linux platforms where io_uring isn't available.
+//! It's used as a fallback on non-Linux platforms where `io_uring` isn't available.
 //!
 //! # Platform Support
 //!
@@ -48,12 +48,12 @@ struct BufferSlice {
 unsafe impl Send for BufferSlice {}
 
 impl BufferSlice {
-    /// Create a BufferSlice from a mutable slice
+    /// Create a `BufferSlice` from a mutable slice
     ///
     /// SAFETY: Caller must ensure:
-    /// - The slice remains valid for the lifetime of this BufferSlice
-    /// - No other code accesses this slice until BufferSlice is consumed
-    unsafe fn from_slice(slice: &mut [u8]) -> Self {
+    /// - The slice remains valid for the lifetime of this `BufferSlice`
+    /// - No other code accesses this slice until `BufferSlice` is consumed
+    const unsafe fn from_slice(slice: &mut [u8]) -> Self {
         Self {
             ptr: slice.as_mut_ptr(),
             len: slice.len(),
@@ -63,25 +63,27 @@ impl BufferSlice {
 
     /// Reconstruct the mutable slice for reading
     ///
-    /// SAFETY: This can only be called once per BufferSlice
-    unsafe fn as_mut_slice(&mut self) -> &mut [u8] {
+    /// SAFETY: This can only be called once per `BufferSlice`
+    const unsafe fn as_mut_slice(&mut self) -> &mut [u8] {
         unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
     }
 }
 
 /// Ceiling division: (a + b - 1) / b
 #[inline]
-fn div_ceil(a: usize, b: usize) -> usize {
+const fn div_ceil(a: usize, b: usize) -> usize {
     a.div_ceil(b)
 }
 
 /// Load tensor data using portable async I/O
 #[inline]
 pub async fn load<P: AsRef<Path>>(path: P) -> IoResult<Vec<u8>> {
-    let path = path.as_ref();
-    let mut file = TokioFile::open(path).await?;
+    let path_ref = path.as_ref();
+    let mut file = TokioFile::open(path_ref).await?;
     let metadata = file.metadata().await?;
-    let file_size = metadata.len() as usize;
+    let file_size = usize::try_from(metadata.len()).map_err(|_e| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "file too large")
+    })?;
 
     // Use internal buffer pool for optimization
     let mut buf = get_buffer_pool().get(file_size);
@@ -99,10 +101,12 @@ pub async fn load_parallel<P: AsRef<Path>>(path: P, chunks: usize) -> IoResult<V
         ));
     }
 
-    let path = path.as_ref();
-    let file = TokioFile::open(path).await?;
+    let path_ref = path.as_ref();
+    let file = TokioFile::open(path_ref).await?;
     let metadata = file.metadata().await?;
-    let file_size = metadata.len() as usize;
+    let file_size = usize::try_from(metadata.len()).map_err(|_e| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "file too large")
+    })?;
 
     let chunk_size = div_ceil(file_size, chunks);
 
@@ -116,16 +120,24 @@ pub async fn load_parallel<P: AsRef<Path>>(path: P, chunks: usize) -> IoResult<V
     let mut handles = Vec::with_capacity(chunks);
 
     for i in 0..chunks {
-        let start = i * chunk_size;
-        let end = std::cmp::min(start + chunk_size, file_size);
-        let actual_chunk_size = end - start;
+        let start = i.checked_mul(chunk_size).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "chunk calculation overflow")
+        })?;
+        let end = std::cmp::min(start.checked_add(chunk_size).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "chunk calculation overflow")
+        })?, file_size);
+        let actual_chunk_size = end.checked_sub(start).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "chunk calculation underflow")
+        })?;
 
         if actual_chunk_size == 0 {
             break;
         }
 
         // Create non-overlapping mutable slice
-        let chunk_slice = &mut final_buf[start..end];
+        let chunk_slice = final_buf.get_mut(start..end).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid chunk range")
+        })?;
 
         // SAFETY: This slice is unique to this task and won't be accessed elsewhere
         let mut buffer_slice = unsafe { BufferSlice::from_slice(chunk_slice) };
@@ -133,7 +145,9 @@ pub async fn load_parallel<P: AsRef<Path>>(path: P, chunks: usize) -> IoResult<V
         let mut file_clone = file.try_clone().await?;
         let handle = tokio::spawn(async move {
             // Seek to the correct position
-            file_clone.seek(SeekFrom::Start(start as u64)).await?;
+            file_clone.seek(SeekFrom::Start(u64::try_from(start).map_err(|_e| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "seek offset too large")
+            })?)).await?;
 
             // SAFETY: We're the only task with access to this BufferSlice
             let slice = unsafe { buffer_slice.as_mut_slice() };

@@ -2,18 +2,28 @@
 name = "tensor_store"
 version = "0.1.0"
 edition = "2024"
+description = "High-performance tensor storage library with multiple backend support"
+license = "MIT"
+repository = "https://github.com/botir-khaltaev/tensor_store"
+keywords = ["tensor", "storage", "io", "performance"]
+categories = ["development-tools", "hardware-support"]
 
 [lib]
 name = "tensor_store"
 path = "src/lib.rs"
 
 [[bench]]
-name = "tensor_loading"
+name = "safetensors"
+harness = false
+
+[[bench]]
+name = "serverlessllm"
 harness = false
 
 
 [dependencies]
 futures = "0.3"
+num_cpus = "1.16"
 region = "3.0.2"
 safetensors = "0.7.0"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -44,5 +54,4 @@ panic = "abort"
 
 
 [profile.bench]
-codegen-units = 1
-lto = "thin"
+debug = true

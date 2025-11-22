@@ -1,10 +1,10 @@
-//! Shared types for ServerlessLLM tensor storage format.
+//! Shared types for `ServerlessLLM` tensor storage format.
 
 use serde::{Deserialize, Serialize};
 
-/// Tensor entry metadata for ServerlessLLM index format.
+/// Tensor entry metadata for `ServerlessLLM` index format.
 ///
-/// This structure represents the metadata for a single tensor in a ServerlessLLM index file.
+/// This structure represents the metadata for a single tensor in a `ServerlessLLM` index file.
 /// It contains information about the tensor's location, size, shape, and data type.
 ///
 /// Used by both readers (for parsing index files) and writers (for creating index files).
