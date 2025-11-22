@@ -41,7 +41,8 @@ pub async fn convert_safetensors_to_serverlessllm(
         ));
     }
 
-    let owned = crate::readers::safetensors::load(input_path)
+    // Use parallel loading for better I/O performance
+    let owned = crate::readers::safetensors::load_parallel(input_path, 4)
         .await
         .map_err(|e| WriterError::Io(std::io::Error::other(e.to_string())))?;
     let tensors = owned.tensors();
@@ -97,10 +98,19 @@ pub async fn convert_safetensors_to_serverlessllm(
     let index_path = out_dir.join("tensor_index.json");
     writer.write_index(&index_path, &index).await?;
 
-    for (id, data) in partitions.into_iter().enumerate() {
-        let part_path = out_dir.join(format!("tensor.data_{}", id));
-        writer.write_partition(&part_path, &data).await?;
-    }
+    // Parallelize partition writing using concurrent futures
+    // Uses platform-appropriate backend (io_uring on Linux, async_io elsewhere)
+    let write_futures: Vec<_> = partitions
+        .into_iter()
+        .enumerate()
+        .map(|(id, data)| {
+            let part_path = out_dir.join(format!("tensor.data_{}", id));
+            async move { writer.write_partition(&part_path, &data).await }
+        })
+        .collect();
+
+    // Execute all writes concurrently
+    futures::future::try_join_all(write_futures).await?;
 
     Ok(())
 }
@@ -121,9 +131,10 @@ fn dtype_to_serverlessllm(dtype: Dtype) -> WriterResult<&'static str> {
         Dtype::U64 => "torch.uint64",
         Dtype::BOOL => "torch.bool",
         other => {
-            return Err(WriterError::InvalidInput(
-                format!("unsupported dtype: {:?}", other),
-            ));
+            return Err(WriterError::InvalidInput(format!(
+                "unsupported dtype: {:?}",
+                other
+            )));
         }
     };
 

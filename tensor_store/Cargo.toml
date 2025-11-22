@@ -13,8 +13,7 @@ harness = false
 
 
 [dependencies]
-libc = "0.2.177"
-parking_lot = "0.12.5"
+futures = "0.3"
 region = "3.0.2"
 safetensors = "0.7.0"
 serde = { version = "1.0.228", features = ["derive"] }
