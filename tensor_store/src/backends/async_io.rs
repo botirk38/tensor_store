@@ -17,57 +17,13 @@
 //!
 //! Typically accessed via `backends::load()` on non-Linux platforms, not used directly.
 
-use super::IoResult;
+use super::{IoResult, buffer_slice::BufferSlice, pooled_buffer::PooledBuffer};
 use std::path::Path;
-use std::sync::OnceLock;
+#[allow(unused_imports)]
 use tokio::fs::File as TokioFile;
+#[allow(unused_imports)]
 use tokio::io::AsyncWriteExt;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
-use zeropool::BufferPool;
-
-static BUFFER_POOL: OnceLock<BufferPool> = OnceLock::new();
-
-fn get_buffer_pool() -> &'static BufferPool {
-    BUFFER_POOL.get_or_init(BufferPool::new)
-}
-
-/// Helper struct to safely pass buffer slices to async tasks
-///
-/// SAFETY: This struct holds a raw pointer to a slice of a pre-allocated buffer.
-/// The parent function retains ownership of the buffer and ensures:
-/// 1. The buffer lives for the entire duration of all async tasks
-/// 2. Each task gets a non-overlapping slice (no data races)
-/// 3. The buffer is not moved or deallocated until all tasks complete
-struct BufferSlice {
-    ptr: *mut u8,
-    len: usize,
-    _phantom: std::marker::PhantomData<&'static mut [u8]>,
-}
-
-// SAFETY: We ensure non-overlapping slices across tasks
-unsafe impl Send for BufferSlice {}
-
-impl BufferSlice {
-    /// Create a `BufferSlice` from a mutable slice
-    ///
-    /// SAFETY: Caller must ensure:
-    /// - The slice remains valid for the lifetime of this `BufferSlice`
-    /// - No other code accesses this slice until `BufferSlice` is consumed
-    const unsafe fn from_slice(slice: &mut [u8]) -> Self {
-        Self {
-            ptr: slice.as_mut_ptr(),
-            len: slice.len(),
-            _phantom: std::marker::PhantomData,
-        }
-    }
-
-    /// Reconstruct the mutable slice for reading
-    ///
-    /// SAFETY: This can only be called once per `BufferSlice`
-    const unsafe fn as_mut_slice(&mut self) -> &mut [u8] {
-        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
-    }
-}
 
 /// Ceiling division: (a + b - 1) / b
 #[inline]
@@ -81,14 +37,14 @@ pub async fn load<P: AsRef<Path>>(path: P) -> IoResult<Vec<u8>> {
     let path_ref = path.as_ref();
     let mut file = TokioFile::open(path_ref).await?;
     let metadata = file.metadata().await?;
-    let file_size = usize::try_from(metadata.len()).map_err(|_e| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, "file too large")
-    })?;
+    let file_size = usize::try_from(metadata.len())
+        .map_err(|_e| std::io::Error::new(std::io::ErrorKind::InvalidInput, "file too large"))?;
 
-    // Use internal buffer pool for optimization
-    let mut buf = get_buffer_pool().get(file_size);
-    file.read_exact(&mut buf).await?;
-    Ok(buf)
+    // Use pooled buffer for optimization
+    let mut buf = PooledBuffer::with_capacity(file_size);
+    file.read_exact(buf.as_mut_slice()).await?;
+    buf.truncate(file_size);
+    Ok(buf.into_vec())
 }
 
 /// Load tensor data in parallel chunks using portable async I/O with zero-copy
@@ -104,14 +60,14 @@ pub async fn load_parallel<P: AsRef<Path>>(path: P, chunks: usize) -> IoResult<V
     let path_ref = path.as_ref();
     let file = TokioFile::open(path_ref).await?;
     let metadata = file.metadata().await?;
-    let file_size = usize::try_from(metadata.len()).map_err(|_e| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, "file too large")
-    })?;
+    let file_size = usize::try_from(metadata.len())
+        .map_err(|_e| std::io::Error::new(std::io::ErrorKind::InvalidInput, "file too large"))?;
 
     let chunk_size = div_ceil(file_size, chunks);
 
-    // Pre-allocate final buffer - this is the ONLY allocation
-    let mut final_buf = get_buffer_pool().get(file_size);
+    // Pre-allocate final pooled buffer - this is the ONLY allocation
+    // (zero-copy: tasks write directly into non-overlapping buffer slices)
+    let mut final_buf = PooledBuffer::with_capacity(file_size);
 
     // SAFETY: We split final_buf into non-overlapping mutable slices.
     // Each slice is passed to exactly one task via BufferSlice.
@@ -121,13 +77,25 @@ pub async fn load_parallel<P: AsRef<Path>>(path: P, chunks: usize) -> IoResult<V
 
     for i in 0..chunks {
         let start = i.checked_mul(chunk_size).ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidInput, "chunk calculation overflow")
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "chunk calculation overflow",
+            )
         })?;
-        let end = std::cmp::min(start.checked_add(chunk_size).ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidInput, "chunk calculation overflow")
-        })?, file_size);
+        let end = std::cmp::min(
+            start.checked_add(chunk_size).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "chunk calculation overflow",
+                )
+            })?,
+            file_size,
+        );
         let actual_chunk_size = end.checked_sub(start).ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidInput, "chunk calculation underflow")
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "chunk calculation underflow",
+            )
         })?;
 
         if actual_chunk_size == 0 {
@@ -135,9 +103,12 @@ pub async fn load_parallel<P: AsRef<Path>>(path: P, chunks: usize) -> IoResult<V
         }
 
         // Create non-overlapping mutable slice
-        let chunk_slice = final_buf.get_mut(start..end).ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid chunk range")
-        })?;
+        let chunk_slice = final_buf
+            .as_mut_slice()
+            .get_mut(start..end)
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid chunk range")
+            })?;
 
         // SAFETY: This slice is unique to this task and won't be accessed elsewhere
         let mut buffer_slice = unsafe { BufferSlice::from_slice(chunk_slice) };
@@ -145,9 +116,11 @@ pub async fn load_parallel<P: AsRef<Path>>(path: P, chunks: usize) -> IoResult<V
         let mut file_clone = file.try_clone().await?;
         let handle = tokio::spawn(async move {
             // Seek to the correct position
-            file_clone.seek(SeekFrom::Start(u64::try_from(start).map_err(|_e| {
-                std::io::Error::new(std::io::ErrorKind::InvalidInput, "seek offset too large")
-            })?)).await?;
+            file_clone
+                .seek(SeekFrom::Start(u64::try_from(start).map_err(|_e| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "seek offset too large")
+                })?))
+                .await?;
 
             // SAFETY: We're the only task with access to this BufferSlice
             let slice = unsafe { buffer_slice.as_mut_slice() };
@@ -166,8 +139,9 @@ pub async fn load_parallel<P: AsRef<Path>>(path: P, chunks: usize) -> IoResult<V
         handle.await??;
     }
 
-    // All data is now in final_buf, return it
-    Ok(final_buf)
+    // All data is now in final_buf, set correct length
+    final_buf.truncate(file_size);
+    Ok(final_buf.into_vec())
 }
 
 /// Load a specific byte range from a file asynchronously.
@@ -175,15 +149,78 @@ pub async fn load_parallel<P: AsRef<Path>>(path: P, chunks: usize) -> IoResult<V
 pub async fn load_range<P: AsRef<Path>>(path: P, offset: u64, len: usize) -> IoResult<Vec<u8>> {
     let mut file = TokioFile::open(path).await?;
     file.seek(SeekFrom::Start(offset)).await?;
-    let mut buf = vec![0u8; len];
-    file.read_exact(&mut buf).await?;
-    Ok(buf)
+    let mut buf = PooledBuffer::with_capacity(len);
+    file.read_exact(buf.as_mut_slice()).await?;
+    buf.truncate(len);
+    Ok(buf.into_vec())
 }
 
-/// Write an entire buffer to a file, creating or truncating it first.
+/// Load multiple byte ranges from files asynchronously.
+///
+/// This function processes multiple range requests concurrently, grouping by file path
+/// for efficiency. Each request is a tuple of (path, offset, len).
+///
+/// # Arguments
+///
+/// * `requests` - Slice of (path, offset, len) tuples to load
+///
+/// # Returns
+///
+/// A vector of byte vectors in the same order as the requests.
 #[inline]
-pub async fn write_all<P: AsRef<Path>>(path: P, data: &[u8]) -> IoResult<()> {
-    let mut file = TokioFile::create(path).await?;
-    file.write_all(data).await?;
-    file.sync_all().await
+pub async fn load_range_batch(
+    requests: &[(impl AsRef<Path> + Send + Sync, u64, usize)],
+) -> IoResult<Vec<Vec<u8>>> {
+    use std::collections::HashMap;
+
+    if requests.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Group requests by file path to minimize file opens
+    let mut file_requests: HashMap<std::path::PathBuf, Vec<(usize, u64, usize)>> = HashMap::new();
+
+    for (idx, (path, offset, len)) in requests.iter().enumerate() {
+        let path_buf = path.as_ref().to_path_buf();
+        file_requests
+            .entry(path_buf)
+            .or_default()
+            .push((idx, *offset, *len));
+    }
+
+    // Pre-allocate result vector
+    let mut results = vec![None; requests.len()];
+
+    // Process each file with concurrent range requests
+    for (_path, file_reqs) in file_requests {
+        // Submit all range read operations concurrently
+        let mut read_futures = Vec::with_capacity(file_reqs.len());
+
+        for (_idx, offset, len) in &file_reqs {
+            let read_future = load_range(&_path, *offset, *len);
+            read_futures.push(read_future);
+        }
+
+        // Wait for all operations to complete in parallel
+        let file_results = futures::future::join_all(read_futures).await;
+
+        // Process results and check for errors
+        let mut processed_results = Vec::with_capacity(file_reqs.len());
+        for result in file_results {
+            processed_results.push(result?);
+        }
+
+        // Store results in the correct positions
+        for ((idx, _offset, _len), data) in file_reqs.into_iter().zip(processed_results) {
+            results[idx] = Some(data);
+        }
+    }
+
+    // Convert results to Vec, maintaining order
+    let final_results: Vec<Vec<u8>> = results
+        .into_iter()
+        .map(|opt| opt.expect("All batch requests should have been processed"))
+        .collect();
+
+    Ok(final_results)
 }

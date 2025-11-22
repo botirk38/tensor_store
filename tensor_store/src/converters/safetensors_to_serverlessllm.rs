@@ -53,7 +53,11 @@ pub async fn convert_safetensors_to_serverlessllm(
     for name in tensors.names() {
         let view = tensors.tensor(name).map_err(WriterError::SafeTensors)?;
         let data = view.data().to_vec();
-        let shape: Vec<i64> = view.shape().iter().map(|&d| i64::try_from(d).unwrap_or(i64::MAX)).collect();
+        let shape: Vec<i64> = view
+            .shape()
+            .iter()
+            .map(|&d| i64::try_from(d).unwrap_or(i64::MAX))
+            .collect();
         let stride = calculate_contiguous_stride(&shape);
         let dtype = dtype_to_serverlessllm(view.dtype())?.to_owned();
         blobs.push(TensorBlob {
@@ -73,7 +77,9 @@ pub async fn convert_safetensors_to_serverlessllm(
 
     for (i, blob) in blobs.into_iter().enumerate() {
         let partition_id = i.checked_rem(partition_count).unwrap_or(0);
-        let partition = partitions.get_mut(partition_id).ok_or_else(|| WriterError::InvalidInput("partition index out of bounds".to_owned()))?;
+        let partition = partitions
+            .get_mut(partition_id)
+            .ok_or_else(|| WriterError::InvalidInput("partition index out of bounds".to_owned()))?;
         let offset = u64::try_from(partition.len()).unwrap_or(u64::MAX);
         let size = u64::try_from(blob.data.len()).unwrap_or(u64::MAX);
 
@@ -132,7 +138,14 @@ fn dtype_to_serverlessllm(dtype: Dtype) -> WriterResult<&'static str> {
         Dtype::U8 => "torch.uint8",
         Dtype::U64 => "torch.uint64",
         Dtype::BOOL => "torch.bool",
-        Dtype::F4 | Dtype::F6_E2M3 | Dtype::F6_E3M2 | Dtype::F8_E5M2 | Dtype::F8_E4M3 | Dtype::F8_E8M0 | Dtype::C64 | _ => {
+        Dtype::F4
+        | Dtype::F6_E2M3
+        | Dtype::F6_E3M2
+        | Dtype::F8_E5M2
+        | Dtype::F8_E4M3
+        | Dtype::F8_E8M0
+        | Dtype::C64
+        | _ => {
             return Err(WriterError::InvalidInput(format!(
                 "unsupported dtype: {dtype:?}",
             )));
@@ -142,7 +155,6 @@ fn dtype_to_serverlessllm(dtype: Dtype) -> WriterResult<&'static str> {
     Ok(mapped)
 }
 
-#[allow(clippy::indexing_slicing, clippy::unwrap_used, clippy::arithmetic_side_effects)]
 fn calculate_contiguous_stride(shape: &[i64]) -> Vec<i64> {
     if shape.is_empty() {
         return Vec::new();
@@ -151,8 +163,8 @@ fn calculate_contiguous_stride(shape: &[i64]) -> Vec<i64> {
     let mut stride = vec![1i64; shape.len()];
     for i in (0..shape.len().saturating_sub(1)).rev() {
         let next_i = i + 1;
-        let next_stride = stride[next_i];
-        let next_shape = shape[next_i];
+        let next_stride = stride.get(next_i).copied().unwrap_or(1);
+        let next_shape = shape.get(next_i).copied().unwrap_or(1);
         if let Some(s) = stride.get_mut(i) {
             *s = next_stride.checked_mul(next_shape).unwrap_or(i64::MAX);
         }

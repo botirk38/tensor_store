@@ -58,29 +58,27 @@ impl OwnedSafeTensors {
 
     /// Borrow the underlying serialized bytes.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         &self.buffer
     }
 
     /// Consume the owned tensors and return the serialized bytes.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn into_bytes(self) -> Vec<u8> {
         self.buffer.into()
     }
 
     /// Access the parsed `SafeTensors` structure.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn tensors(&self) -> &SafeTensors<'static> {
         &self.tensors
     }
 }
 
 impl Clone for OwnedSafeTensors {
-    #[inline]
-    #[allow(clippy::expect_used)]
     fn clone(&self) -> Self {
         // We can safely clone by copying the buffer and re-parsing
         Self::from_bytes(self.buffer.to_vec())
@@ -135,7 +133,9 @@ impl AsyncReader for OwnedSafeTensors {
 
     #[inline]
     async fn load(path: impl AsRef<Path>) -> ReaderResult<Self::Output> {
-        let path_str = path.as_ref().to_str().ok_or_else(|| ReaderError::InvalidMetadata("path contains invalid UTF-8".to_owned()))?;
+        let path_str = path.as_ref().to_str().ok_or_else(|| {
+            ReaderError::InvalidMetadata("path contains invalid UTF-8".to_owned())
+        })?;
         let bytes = backends::load(path_str).await?;
         Self::from_bytes(bytes)
     }
@@ -146,7 +146,9 @@ impl SyncReader for OwnedSafeTensors {
 
     #[inline]
     fn load_sync(path: impl AsRef<Path>) -> ReaderResult<Self::Output> {
-        let path_str = path.as_ref().to_str().ok_or_else(|| ReaderError::InvalidMetadata("path contains invalid UTF-8".to_owned()))?;
+        let path_str = path.as_ref().to_str().ok_or_else(|| {
+            ReaderError::InvalidMetadata("path contains invalid UTF-8".to_owned())
+        })?;
         let bytes = backends::sync::load(path_str)?;
         Self::from_bytes(bytes)
     }
@@ -164,7 +166,10 @@ pub async fn load_parallel(
     path: impl AsRef<Path>,
     chunks: usize,
 ) -> ReaderResult<OwnedSafeTensors> {
-    let path_str = path.as_ref().to_str().ok_or_else(|| ReaderError::InvalidMetadata("path contains invalid UTF-8".to_owned()))?;
+    let path_str = path
+        .as_ref()
+        .to_str()
+        .ok_or_else(|| ReaderError::InvalidMetadata("path contains invalid UTF-8".to_owned()))?;
     let bytes = backends::load_parallel(path_str, chunks).await?;
     OwnedSafeTensors::from_bytes(bytes)
 }
@@ -182,7 +187,10 @@ pub fn load_range_sync(
     offset: u64,
     len: usize,
 ) -> ReaderResult<OwnedSafeTensors> {
-    let path_str = path.as_ref().to_str().ok_or_else(|| ReaderError::InvalidMetadata("path contains invalid UTF-8".to_owned()))?;
+    let path_str = path
+        .as_ref()
+        .to_str()
+        .ok_or_else(|| ReaderError::InvalidMetadata("path contains invalid UTF-8".to_owned()))?;
     let bytes = backends::sync::load_range(path_str, offset, len)?;
     OwnedSafeTensors::from_bytes(bytes)
 }
@@ -193,7 +201,6 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    #[allow(clippy::unwrap_used, clippy::print_stdout)]
     fn test_load_parallel_zero_copy() {
         // Test with the existing test file
         let path = "test_model.safetensors";
@@ -222,7 +229,6 @@ mod tests {
 
     #[cfg(not(target_os = "linux"))]
     #[tokio::test]
-    #[allow(clippy::unwrap_used, clippy::print_stdout)]
     async fn test_load_parallel_zero_copy() {
         // Test with the existing test file
         let path = "test_model.safetensors";
@@ -249,7 +255,6 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    #[allow(clippy::unwrap_used, clippy::print_stdout)]
     fn test_load_parallel_zero_copy_io_uring() {
         // Test io_uring version specifically
         let path = "test_model.safetensors";

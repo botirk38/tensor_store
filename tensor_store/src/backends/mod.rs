@@ -25,11 +25,11 @@
 //! let chunk = backends::sync::load_range("model.safetensors", 1024, 512)?;
 //! ```
 
-#[cfg(target_os = "linux")]
-pub mod io_uring;
-
 pub mod async_io;
+pub mod buffer_slice;
+pub mod io_uring;
 pub mod mmap;
+pub mod pooled_buffer;
 
 pub use std::io::Result as IoResult;
 use std::path::Path;
@@ -44,6 +44,9 @@ use std::path::Path;
 #[cfg(target_os = "linux")]
 pub use io_uring::load;
 
+/// Load entire file contents asynchronously.
+///
+/// Uses tokio async I/O (fallback for non-Linux).
 #[cfg(not(target_os = "linux"))]
 pub use async_io::load;
 
@@ -65,6 +68,18 @@ pub use io_uring::load_range;
 #[cfg(not(target_os = "linux"))]
 pub use async_io::load_range;
 
+/// Load multiple byte ranges from files asynchronously.
+///
+/// Uses `io_uring` on Linux, tokio async I/O elsewhere.
+#[cfg(target_os = "linux")]
+pub use io_uring::load_range_batch;
+
+/// Load multiple byte ranges from files asynchronously.
+///
+/// Uses tokio async I/O (fallback for non-Linux).
+#[cfg(not(target_os = "linux"))]
+pub use async_io::load_range_batch;
+
 /// Write entire buffer to file asynchronously.
 ///
 /// Uses `io_uring` on Linux, tokio async I/O elsewhere.
@@ -74,13 +89,9 @@ pub use io_uring::write_all;
 #[cfg(not(target_os = "linux"))]
 pub use async_io::write_all;
 
-// ============================================================================
-// Sync operations
-// ============================================================================
-
 /// Synchronous I/O operations for blocking contexts.
 pub mod sync {
-    use super::{Path, IoResult};
+    use super::{IoResult, Path};
 
     /// Load entire file contents synchronously.
     ///
@@ -93,7 +104,16 @@ pub mod sync {
         }
         #[cfg(not(target_os = "linux"))]
         {
-            std::fs::read(path)
+            use super::pooled_buffer::PooledBuffer;
+            use std::io::{Error, ErrorKind, Read};
+            let mut file = std::fs::File::open(path)?;
+            let metadata = file.metadata()?;
+            let file_size = usize::try_from(metadata.len())
+                .map_err(|_e| Error::new(ErrorKind::InvalidInput, "file too large"))?;
+            let mut buf = PooledBuffer::with_capacity(file_size);
+            file.read_exact(buf.as_mut_slice())?;
+            buf.truncate(file_size);
+            Ok(buf.into_vec())
         }
     }
 
@@ -111,10 +131,11 @@ pub mod sync {
             use std::io::{Error, ErrorKind, Read, Seek, SeekFrom};
             let mut file = std::fs::File::open(path)?;
             file.seek(SeekFrom::Start(offset))?;
-            let mut buf = vec![0u8; len];
-            file.read_exact(&mut buf)
+            let mut buf = PooledBuffer::with_capacity(len);
+            file.read_exact(buf.as_mut_slice())
                 .map_err(|e| Error::new(ErrorKind::UnexpectedEof, e))?;
-            Ok(buf)
+            buf.truncate(len);
+            Ok(buf.into_vec())
         }
     }
 }

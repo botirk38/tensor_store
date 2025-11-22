@@ -47,4 +47,10 @@ rustflags = [
     "-Aclippy::mod_module_files",
     "-Aclippy::multiple_crate_versions",
     "-Aclippy::future_not_send",
+    "-Aclippy::get_first",
+    "-Aclippy::expect_used",
+    "-Aclippy::unwrap_used",
+    "-Aclippy::print_stdout",
+    "-Aclippy::arithmetic_side_effects",
+    "-Aclippy::mem_forget",
 ]

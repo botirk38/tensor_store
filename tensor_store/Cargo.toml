@@ -20,6 +20,14 @@ harness = false
 name = "serverlessllm"
 harness = false
 
+[[bin]]
+name = "safetensors_reader"
+path = "profiling/safetensors_reader.rs"
+
+[[bin]]
+name = "serverlessllm_reader"
+path = "profiling/serverlessllm_reader.rs"
+
 
 [dependencies]
 futures = "0.3"
@@ -36,6 +44,7 @@ tokio = { version = "1.48.0", features = [
   "fs",
   "macros",
   "io-util",
+  "time",
 ] }
 zeropool = "0.2.0"
 memmap2 = "0.9.5"

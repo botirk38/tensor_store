@@ -47,7 +47,7 @@ pub struct SafeTensorsWriter;
 impl SafeTensorsWriter {
     /// Create a new writer instance.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self
     }
@@ -149,7 +149,6 @@ impl SafeTensorsWriter {
     /// # Errors
     ///
     /// Returns an error if serialization or file writing fails.
-    #[allow(clippy::missing_panics_doc)]
     pub async fn write_to_file_async<S, V, I, P>(
         &self,
         tensors: I,

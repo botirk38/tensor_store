@@ -47,7 +47,7 @@ pub struct ServerlessLlmWriter;
 impl ServerlessLlmWriter {
     /// Create a new writer instance.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self
     }
@@ -130,7 +130,9 @@ impl ServerlessLlmWriter {
 }
 
 // Helper function to serialize tensors to JSON format
-fn serialize_index<S: ::std::hash::BuildHasher>(tensors: &HashMap<String, TensorEntry, S>) -> WriterResult<Vec<u8>> {
+fn serialize_index<S: ::std::hash::BuildHasher>(
+    tensors: &HashMap<String, TensorEntry, S>,
+) -> WriterResult<Vec<u8>> {
     if tensors.is_empty() {
         return Err(WriterError::InvalidInput(
             "Cannot write empty tensor index".to_owned(),
@@ -195,9 +197,13 @@ pub async fn write_index(
     ensure_parent_dir_async(path).await?;
 
     let json = serialize_index(tensors)?;
-    backends::write_all(path.to_str().ok_or_else(|| WriterError::Path("Invalid UTF-8 in path".to_owned()))?, &json)
-        .await
-        .map_err(WriterError::from)
+    backends::write_all(
+        path.to_str()
+            .ok_or_else(|| WriterError::Path("Invalid UTF-8 in path".to_owned()))?,
+        &json,
+    )
+    .await
+    .map_err(WriterError::from)
 }
 
 /// Write partition file (`tensor.data_N`) asynchronously.
@@ -216,9 +222,13 @@ pub async fn write_index(
 pub async fn write_partition(output_path: impl AsRef<Path>, data: &[u8]) -> WriterResult<()> {
     let path = output_path.as_ref();
     ensure_parent_dir_async(path).await?;
-    backends::write_all(path.to_str().ok_or_else(|| WriterError::Path("Invalid UTF-8 in path".to_owned()))?, data)
-        .await
-        .map_err(WriterError::from)
+    backends::write_all(
+        path.to_str()
+            .ok_or_else(|| WriterError::Path("Invalid UTF-8 in path".to_owned()))?,
+        data,
+    )
+    .await
+    .map_err(WriterError::from)
 }
 
 /// Write `tensor_index.json` synchronously.
