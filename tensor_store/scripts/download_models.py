@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Download and prepare model fixtures for tensor_store benchmarks.
 
@@ -8,72 +7,24 @@ for benchmarking with both SafeTensors and ServerlessLLM formats.
 
 import argparse
 import os
-import sys
 import shutil
 from pathlib import Path
 from typing import Optional, List
-import json
 import hashlib
 from dataclasses import dataclass
-
-try:
-    from huggingface_hub import snapshot_download, HfApi, hf_hub_download
-    import requests
-    from tqdm import tqdm
-    import safetensors
-except ImportError as e:
-    print(f"Missing required packages: {e}")
-    print("Install with: uv add huggingface-hub requests tqdm safetensors")
-    sys.exit(1)
+from huggingface_hub import snapshot_download, HfApi
 
 
 @dataclass
 class ModelConfig:
     repo_id: str
-    category: str
     description: str
     expected_size_gb: float
-    alternative_repo: Optional[str] = None
 
 
-# Model configurations for different categories
-MODEL_CONFIGS = {
-    "qwen2-0.5b": ModelConfig(
-        repo_id="Qwen/Qwen2-0.5B",
-        category="qwen2-0.5b",
-        description="Qwen2 0.5B parameter model - efficient small LLM",
-        expected_size_gb=1.0,
-        alternative_repo="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
-    ),
-    "phi2-2.7b": ModelConfig(
-        repo_id="microsoft/phi-2",
-        category="phi2-2.7b",
-        description="Microsoft Phi-2 2.7B parameter model - state-of-the-art small model",
-        expected_size_gb=5.5,
-        alternative_repo="stabilityai/stablelm-2-1_6b",
-    ),
-    "mistral-7b": ModelConfig(
-        repo_id="mistralai/Mistral-7B-v0.1",
-        category="mistral-7b",
-        description="Mistral 7B v0.1 - industry standard 7B parameter model",
-        expected_size_gb=14.0,
-        alternative_repo="tiiuae/falcon-7b",
-    ),
-    "qwen3-14b": ModelConfig(
-        repo_id="Qwen/Qwen3-14B",
-        category="qwen3-14b",
-        description="Qwen3 14B parameter model - large language model",
-        expected_size_gb=28.0,
-        alternative_repo="meta-llama/Llama-2-13b-hf",
-    ),
-    "yi-20b": ModelConfig(
-        repo_id="01-ai/Yi-1.5-20B",
-        category="yi-20b",
-        description="Yi 1.5 20B parameter model - high-performance large model",
-        expected_size_gb=40.0,
-        alternative_repo="mistralai/Mixtral-8x7B-v0.1",
-    ),
-}
+def repo_dir_name(repo_id: str) -> str:
+    """Convert a HuggingFace repo id into a filesystem-friendly directory name."""
+    return repo_id.replace("/", "-").lower()
 
 
 def get_model_info(repo_id: str) -> dict:
@@ -178,12 +129,11 @@ def create_model_readme(
     total_size = sum(os.path.getsize(f) for f in safetensors_files)
     total_size_gb = total_size / (1024**3)
 
-    content = f"""# {config.category.title()} Model Fixture
+    content = f"""# {config.repo_id} Model Fixture
 
 ## Model Information
 - **Repository**: {config.repo_id}
 - **Description**: {config.description}
-- **Category**: {config.category}
 - **Expected Size**: ~{config.expected_size_gb:.1f} GB
 - **Actual Size**: {total_size_gb:.2f} GB
 - **Files**: {len(safetensors_files)} SafeTensors file(s)
@@ -222,14 +172,7 @@ def main():
         nargs="?",
         help="HuggingFace repository ID (e.g., 'Qwen/Qwen2-0.5B', 'meta-llama/Llama-2-7b-hf'). This is the only required argument.",
     )
-    parser.add_argument(
-        "--category",
-        choices=["qwen2-0.5b", "phi2-2.7b", "mistral-7b", "qwen3-14b", "yi-20b"],
-        help="Use a predefined model category instead of specifying --repo",
-    )
-    parser.add_argument(
-        "--all", action="store_true", help="Download all predefined categories"
-    )
+
     parser.add_argument(
         "--output-dir",
         default="../fixtures",
@@ -255,39 +198,24 @@ def main():
 
     args = parser.parse_args()
 
-    if not args.repo and not args.category and not args.all:
-        parser.error(
-            "Must specify a HuggingFace repo ID (e.g., 'Qwen/Qwen2-0.5B'), --category, or --all"
-        )
+    if not args.repo:
+        parser.error("Must specify a HuggingFace repo ID (e.g., 'Qwen/Qwen2-0.5B')")
 
-    # Determine which models to download
-    models_to_download = []
-
-    if args.all:
-        models_to_download = list(MODEL_CONFIGS.values())
-    elif args.repo:
-        # Any HuggingFace model by repo ID
-        # Derive a directory name from the repo ID (e.g., "Qwen/Qwen2-0.5B" -> "qwen2-0.5b")
-        repo_name = args.repo.split("/")[-1].lower()
-        config = ModelConfig(
-            repo_id=args.repo,
-            category=repo_name,
-            description=f"Model: {args.repo}",
-            expected_size_gb=1.0,
-        )
-        models_to_download = [config]
-    elif args.category:
-        if args.category not in MODEL_CONFIGS:
-            parser.error(f"Unknown category: {args.category}")
-        models_to_download = [MODEL_CONFIGS[args.category]]
+    # Determine which models to download (only repo id is required)
+    config = ModelConfig(
+        repo_id=args.repo,
+        description=f"Model: {args.repo}",
+        expected_size_gb=1.0,
+    )
+    models_to_download = [config]
 
     # Download each model
     for config in models_to_download:
         print(f"\n{'='*60}")
-        print(f"Processing {config.category}: {config.repo_id}")
+        print(f"Processing {config.repo_id}")
         print(f"{'='*60}")
 
-        output_dir = Path(args.output_dir) / config.category
+        output_dir = Path(args.output_dir) / repo_dir_name(config.repo_id)
         temp_dir = output_dir / "tmp_download"
         temp_dir.mkdir(parents=True, exist_ok=True)
 
@@ -355,10 +283,10 @@ def main():
 
             # Clean up temp directory
             shutil.rmtree(temp_dir)
-            print(f"✓ Completed {config.category} fixture setup")
+            print(f"✓ Completed fixture setup for {config.repo_id}")
 
         except Exception as e:
-            print(f"✗ Failed to process {config.category}: {e}")
+            print(f"✗ Failed to process {config.repo_id}: {e}")
             # Clean up on failure
             if temp_dir.exists():
                 shutil.rmtree(temp_dir)
@@ -367,4 +295,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
