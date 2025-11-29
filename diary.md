@@ -1,5 +1,62 @@
 # Project Development Diary
 
+## 2025-11-29
+
+- Added comprehensive testing infrastructure with extensive test coverage tracking:
+  - Created TESTING_PROGRESS.md to track test coverage across all modules
+  - Added 104+ new tests for backends (batch, buffer_slice, mmap, odirect)
+  - Implemented test helpers for common testing patterns
+  - Test coverage now tracked in detail showing which modules have tests and which need them
+- Set up GitLab CI/CD pipeline with complete automation:
+  - 190-line .gitlab-ci.yml with build, test, lint, and security stages
+  - Automated testing across stable and nightly Rust toolchains
+  - Clippy linting with strict warnings-as-errors policy
+  - cargo-audit security scanning for vulnerable dependencies
+- Created demo binary for interactive format comparison:
+  - 885 lines of new code for demonstration purposes
+  - Side-by-side loading comparison between SafeTensors and ServerlessLLM formats
+  - Configurable warmup runs and iteration counts
+  - Statistics reporting with min/max/avg/stddev metrics
+  - Integration with profiler for performance analysis
+- Added comprehensive README documentation for all bin programs:
+  - convert/README.md - 42 lines documenting format conversion tool
+  - demo/README.md - 76 lines explaining interactive demo usage
+  - profile/README.md - 82 lines covering profiling tool features
+  - Total of 200 lines of documentation added
+
+## 2025-11-25
+
+- Implemented O_DIRECT support for kernel-level bypass of page cache:
+  - Added new odirect.rs backend (444 lines) for direct I/O operations
+  - Major refactoring of async_io, io_uring, and sync_io backends to support O_DIRECT
+  - Enhanced backends with batch processing capabilities (batch.rs module)
+  - Updated ServerlessLLM reader with significantly improved parallel loading (481 lines, up from previous)
+  - Modified all benchmarks and profiling tools to support O_DIRECT option
+  - Key benefit: Eliminates page cache overhead, crucial for large model loading
+  - Total changes: 2,242 additions, 954 deletions across 19 files
+
+## 2025-11-24
+
+- Added buffer pool builder with sensible preset configurations:
+  - Created builder pattern for BufferPool with data-driven defaults
+  - Presets for different use cases (small, medium, large workloads)
+  - Simplified API for common buffer pool configurations
+- Implemented profiler binary for performance analysis:
+  - New bin/profile tool for detailed performance profiling
+  - Support for both SafeTensors and ServerlessLLM formats
+  - Integration with perf and other profiling tools
+- Created script to download Hugging Face models and convert to ServerlessLLM:
+  - Automated workflow for model acquisition and conversion
+  - Streamlines testing with real-world model files
+- Applied linter fixes across all scripts for code consistency
+
+## 2025-11-23
+
+- Decoupled mmap and sync I/O backends for better modularity:
+  - Separated concerns between memory-mapped I/O and synchronous I/O
+  - Allows independent optimization of each backend strategy
+  - Cleaner architecture with more focused module responsibilities
+
 ## 2025-11-22
 
 - Parallelized SafeTensors to ServerlessLLM converter for significant performance improvements:
