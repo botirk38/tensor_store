@@ -3,3 +3,4 @@ include:
     inputs:
       target: lib
       rust-image: rust:latest
+      cargo-outdated-version: '0.18.0'
