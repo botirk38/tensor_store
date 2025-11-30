@@ -1,3 +1,2 @@
-# Minimal CI configuration - use extended template for cross-platform testing
 include:
-  - component: gitlab.com/rust-ci/rust-ci/extended@1.4.0
+  - remote: "https://gitlab.com/rust-ci/rust-ci/-/raw/1.4.0/templates/extended.yml"
