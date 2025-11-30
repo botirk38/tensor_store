@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use tensor_store::readers::serverlessllm;
@@ -81,7 +81,7 @@ fn fixtures(config: &DemoConfig) -> Result<Vec<(String, PathBuf)>, DemoError> {
     }
 }
 
-fn count_partitions(dir: &PathBuf) -> usize {
+fn count_partitions(dir: &Path) -> usize {
     let mut count = 0;
     let mut partition_id = 0;
     loop {
@@ -96,7 +96,7 @@ fn count_partitions(dir: &PathBuf) -> usize {
     count
 }
 
-fn total_size(dir: &PathBuf) -> std::io::Result<u64> {
+fn total_size(dir: &Path) -> std::io::Result<u64> {
     let mut total = 0;
     let mut partition_id = 0;
     loop {

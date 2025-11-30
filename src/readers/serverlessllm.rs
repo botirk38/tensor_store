@@ -1265,7 +1265,7 @@ pub fn parse_index_impl(data: &[u8]) -> ReaderResult<ServerlessLLMIndex> {
         // 6-field entries where partition_id is present.
         let (offset, size, shape, stride, dtype, partition_id) = match arr.len() {
             5 => {
-                let offset = to_u64(arr.get(0).expect("array has 5 elements"), &name)?;
+                let offset = to_u64(arr.first().expect("array has 5 elements"), &name)?;
                 let size = to_u64(arr.get(1).expect("array has 5 elements"), &name)?;
                 let shape = to_i64_vec(arr.get(2).expect("array has 5 elements"), &name)?;
                 let stride = to_i64_vec(arr.get(3).expect("array has 5 elements"), &name)?;
@@ -1273,7 +1273,7 @@ pub fn parse_index_impl(data: &[u8]) -> ReaderResult<ServerlessLLMIndex> {
                 (offset, size, shape, stride, dtype, 0usize)
             }
             6 => {
-                let offset = to_u64(arr.get(0).expect("array has 6 elements"), &name)?;
+                let offset = to_u64(arr.first().expect("array has 6 elements"), &name)?;
                 let size = to_u64(arr.get(1).expect("array has 6 elements"), &name)?;
                 let shape = to_i64_vec(arr.get(2).expect("array has 6 elements"), &name)?;
                 let stride = to_i64_vec(arr.get(3).expect("array has 6 elements"), &name)?;

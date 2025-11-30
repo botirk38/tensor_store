@@ -2,16 +2,10 @@ use std::error::Error;
 use std::fmt;
 
 /// Configuration for demo runs.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct DemoConfig {
     /// Optional fixture name to filter (matches entries under `fixtures/`).
     pub fixture: Option<String>,
-}
-
-impl Default for DemoConfig {
-    fn default() -> Self {
-        Self { fixture: None }
-    }
 }
 
 /// Shared result alias for demo entry points.

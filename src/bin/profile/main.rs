@@ -71,11 +71,11 @@ enum SafeTensorsCase {
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 enum ServerlessLLMCase {
     /// Async load
-    AsyncLoad,
+    Async,
     /// Synchronous load
-    SyncLoad,
+    Sync,
     /// Memory-mapped load
-    MmapLoad,
+    Mmap,
 }
 
 impl SafeTensorsCase {
@@ -97,9 +97,9 @@ impl SafeTensorsCase {
 impl ServerlessLLMCase {
     fn as_str(&self) -> &'static str {
         match self {
-            Self::AsyncLoad => "async-load",
-            Self::SyncLoad => "sync-load",
-            Self::MmapLoad => "mmap-load",
+            Self::Async => "async-load",
+            Self::Sync => "sync-load",
+            Self::Mmap => "mmap-load",
         }
     }
 }
