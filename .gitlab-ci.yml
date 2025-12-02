@@ -4,8 +4,3 @@ include:
       target: lib
       rust-image: rust:latest
       cargo-outdated-version: "0.17.0"
-
-# Force all jobs to use Docker runners
-default:
-  tags:
-    - docker
