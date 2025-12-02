@@ -132,7 +132,9 @@ impl SafeTensorsWriter {
         I: IntoIterator<Item = (S, V)>,
         P: AsRef<Path>,
     {
-        safetensors::serialize_to_file(tensors, metadata, path.as_ref()).map_err(Into::into)
+        let path_ref = path.as_ref();
+        ensure_parent_dir(path_ref)?;
+        safetensors::serialize_to_file(tensors, metadata, path_ref).map_err(Into::into)
     }
 
     /// Serialize tensors directly to a `.safetensors` file on disk (asynchronous).
@@ -149,11 +151,11 @@ impl SafeTensorsWriter {
     /// # Errors
     ///
     /// Returns an error if serialization or file writing fails.
-    pub async fn write_to_file_async<S, V, I, P>(
-        &self,
-        tensors: I,
-        metadata: Option<MetadataMap>,
-        path: P,
+pub async fn write_to_file_async<S, V, I, P>(
+    &self,
+    tensors: I,
+    metadata: Option<MetadataMap>,
+    path: P,
     ) -> WriterResult<()>
     where
         S: AsRef<str> + Ord + Display,
@@ -161,9 +163,86 @@ impl SafeTensorsWriter {
         I: IntoIterator<Item = (S, V)>,
         P: AsRef<Path>,
     {
+        let path_ref = path.as_ref();
+        ensure_parent_dir(path_ref)?;
         let buffer = safetensors::serialize(tensors, metadata)?;
-        backends::write_all(path.as_ref(), buffer)
+        backends::write_all(path_ref, buffer)
             .await
             .map_err(Into::into)
+    }
+}
+
+fn ensure_parent_dir(path: &Path) -> WriterResult<()> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use safetensors::tensor::TensorView;
+    use safetensors::SafeTensors;
+    use tempfile::TempDir;
+
+    fn sample_view() -> TensorView<'static> {
+        TensorView::new(Dtype::U8, vec![3], &[1u8, 2, 3]).expect("tensor view")
+    }
+
+    #[test]
+    fn write_to_buffer_roundtrips() {
+        let writer = SafeTensorsWriter::new();
+        let bytes = writer
+            .write_to_buffer([("a", sample_view())], None)
+            .expect("serialize");
+        let tensors = SafeTensors::deserialize(&bytes).expect("deserialize");
+        assert_eq!(tensors.names(), vec!["a"]);
+        assert_eq!(tensors.tensor("a").unwrap().dtype(), Dtype::U8);
+    }
+
+    #[test]
+    fn write_to_file_sync_and_metadata() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("model.safetensors");
+        let writer = SafeTensorsWriter::new();
+
+        writer
+            .write_to_file(
+                [("weight", sample_view())],
+                Some(HashMap::from([("k".into(), "v".into())])),
+                &path,
+            )
+            .expect("write file");
+
+        let data = std::fs::read(&path).unwrap();
+        let tensors = SafeTensors::deserialize(&data).unwrap();
+        assert_eq!(tensors.names(), vec!["weight"]);
+        // SafeTensors crate does not expose metadata accessor; ensure data parses.
+        assert_eq!(tensors.tensor("weight").unwrap().dtype(), Dtype::U8);
+    }
+
+    #[test]
+    fn write_to_file_async_uses_backends() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("async").join("model.safetensors");
+        let writer = SafeTensorsWriter::new();
+
+        tokio_uring::start(async {
+            writer
+                .write_to_file_async([("a", sample_view())], None, &path)
+                .await
+                .expect("async write");
+        });
+
+        let data = std::fs::read(path).unwrap();
+        let tensors = SafeTensors::deserialize(&data).unwrap();
+        assert_eq!(tensors.tensor("a").unwrap().shape(), &[3]);
     }
 }

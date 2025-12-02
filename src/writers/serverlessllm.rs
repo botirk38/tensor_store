@@ -271,3 +271,71 @@ pub fn write_partition_sync(output_path: impl AsRef<Path>, data: &[u8]) -> Write
     ensure_parent_dir_sync(path)?;
     std::fs::write(path, data).map_err(WriterError::from)
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::Value;
+    use tempfile::TempDir;
+
+    fn sample_entries() -> HashMap<String, TensorEntry> {
+        HashMap::from([(
+            "w".to_owned(),
+            TensorEntry {
+                offset: 0,
+                size: 4,
+                shape: vec![2, 2],
+                stride: vec![2, 1],
+                dtype: "f32".to_owned(),
+                partition_id: 1,
+            },
+        )])
+    }
+
+    #[test]
+    fn serialize_index_rejects_empty() {
+        let map: HashMap<String, TensorEntry> = HashMap::new();
+        let err = serialize_index(&map).unwrap_err();
+        assert!(matches!(err, WriterError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn write_index_and_partition_sync() {
+        let dir = TempDir::new().unwrap();
+        let index_path = dir.path().join("nested").join("tensor_index.json");
+        let part_path = dir.path().join("tensor.data_1");
+
+        write_index_sync(&index_path, &sample_entries()).expect("write index");
+        write_partition_sync(&part_path, b"abcd").expect("write partition");
+
+        let json: Value = serde_json::from_slice(&std::fs::read(index_path).unwrap()).unwrap();
+        let entry = json.get("w").expect("tensor entry");
+        assert_eq!(entry[0], 0);
+        assert_eq!(entry[1], 4);
+        assert_eq!(std::fs::read(part_path).unwrap(), b"abcd");
+    }
+
+    #[test]
+    fn write_index_and_partition_async() {
+        let dir = TempDir::new().unwrap();
+        let index_path = dir.path().join("async").join("tensor_index.json");
+        let part_path = dir.path().join("tensor.data_1");
+
+        tokio_uring::start(async {
+            write_index(&index_path, &sample_entries())
+                .await
+                .expect("write index async");
+            write_partition(&part_path, b"xyz".to_vec())
+                .await
+                .expect("write partition async");
+        });
+
+        let json: Value = serde_json::from_slice(&std::fs::read(index_path).unwrap()).unwrap();
+        assert_eq!(json["w"][5], 1);
+        assert_eq!(std::fs::read(part_path).unwrap(), b"xyz");
+    }
+}
