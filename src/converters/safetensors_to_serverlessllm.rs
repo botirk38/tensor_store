@@ -196,3 +196,287 @@ struct TensorBlob {
     stride: Vec<i64>,
     dtype: String,
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::safetensors::{Dtype, TensorView};
+    use crate::serverlessllm::parse_index_sync;
+    use crate::types::traits::TensorMetadata;
+    use safetensors::serialize;
+    use std::fs;
+    use tempfile::TempDir;
+
+    // Helper to create a simple SafeTensors file
+    fn create_test_safetensors(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+        let path = dir.join(name);
+
+        // Create two tensors with different sizes
+        let data1 = vec![1u8, 2, 3, 4]; // 4 bytes
+        let data2 = vec![5u8, 6, 7, 8, 9, 10]; // 6 bytes
+
+        let tensor1 = TensorView::new(Dtype::U8, vec![4], &data1).expect("create tensor1");
+        let tensor2 = TensorView::new(Dtype::U8, vec![2, 3], &data2).expect("create tensor2");
+
+        let bytes = serialize([("weight", tensor1), ("bias", tensor2)], None)
+            .expect("serialize tensors");
+
+        fs::write(&path, bytes).expect("write safetensors file");
+        path
+    }
+
+    // -----------------------------------------------------------------------
+    // Unit Tests - Pure Functions
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dtype_to_serverlessllm_supported() {
+        assert_eq!(dtype_to_serverlessllm(Dtype::F32).unwrap(), "torch.float32");
+        assert_eq!(dtype_to_serverlessllm(Dtype::F16).unwrap(), "torch.float16");
+        assert_eq!(dtype_to_serverlessllm(Dtype::BF16).unwrap(), "torch.bfloat16");
+        assert_eq!(dtype_to_serverlessllm(Dtype::I32).unwrap(), "torch.int32");
+        assert_eq!(dtype_to_serverlessllm(Dtype::I8).unwrap(), "torch.int8");
+        assert_eq!(dtype_to_serverlessllm(Dtype::U8).unwrap(), "torch.uint8");
+        assert_eq!(dtype_to_serverlessllm(Dtype::BOOL).unwrap(), "torch.bool");
+    }
+
+    #[test]
+    fn test_dtype_to_serverlessllm_unsupported() {
+        // F4 and other exotic dtypes should be rejected
+        let result = dtype_to_serverlessllm(Dtype::F4);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), WriterError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn test_calculate_contiguous_stride_empty() {
+        let stride = calculate_contiguous_stride(&[]);
+        assert_eq!(stride, Vec::<i64>::new());
+    }
+
+    #[test]
+    fn test_calculate_contiguous_stride_1d() {
+        let stride = calculate_contiguous_stride(&[10]);
+        assert_eq!(stride, vec![1]);
+    }
+
+    #[test]
+    fn test_calculate_contiguous_stride_2d() {
+        let stride = calculate_contiguous_stride(&[3, 4]);
+        assert_eq!(stride, vec![4, 1]); // Row-major: [cols, 1]
+    }
+
+    #[test]
+    fn test_calculate_contiguous_stride_3d() {
+        let stride = calculate_contiguous_stride(&[2, 3, 4]);
+        assert_eq!(stride, vec![12, 4, 1]); // [depth*height, height, 1]
+    }
+
+    #[test]
+    fn test_calculate_contiguous_stride_large() {
+        let stride = calculate_contiguous_stride(&[100, 200, 300]);
+        assert_eq!(stride, vec![60000, 300, 1]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Integration Tests - Full Conversion
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_convert_rejects_zero_partitions() {
+        let dir = TempDir::new().unwrap();
+        let input = create_test_safetensors(dir.path(), "input.safetensors");
+        let output = dir.path().join("output");
+
+        tokio_uring::start(async {
+            let result = convert_safetensors_to_serverlessllm(
+                input.to_str().unwrap(),
+                output.to_str().unwrap(),
+                0,
+            )
+            .await;
+
+            assert!(result.is_err());
+            assert!(matches!(result.unwrap_err(), WriterError::InvalidInput(_)));
+        });
+    }
+
+    #[test]
+    fn test_convert_single_partition() {
+        let dir = TempDir::new().unwrap();
+        let input = create_test_safetensors(dir.path(), "input.safetensors");
+        let output = dir.path().join("output");
+
+        tokio_uring::start(async {
+            convert_safetensors_to_serverlessllm(
+                input.to_str().unwrap(),
+                output.to_str().unwrap(),
+                1,
+            )
+            .await
+            .expect("conversion failed");
+        });
+
+        // Verify output files exist
+        assert!(output.join("tensor_index.json").exists());
+        assert!(output.join("tensor.data_0").exists());
+
+        // Verify index is valid
+        let index = parse_index_sync(output.join("tensor_index.json")).expect("parse index");
+        assert_eq!(index.len(), 2);
+        assert!(index.contains("weight"));
+        assert!(index.contains("bias"));
+
+        // Both tensors should be in partition 0
+        assert_eq!(index.get("weight").unwrap().partition_id, 0);
+        assert_eq!(index.get("bias").unwrap().partition_id, 0);
+    }
+
+    #[test]
+    fn test_convert_multiple_partitions() {
+        let dir = TempDir::new().unwrap();
+        let input = create_test_safetensors(dir.path(), "input.safetensors");
+        let output = dir.path().join("output");
+
+        tokio_uring::start(async {
+            convert_safetensors_to_serverlessllm(
+                input.to_str().unwrap(),
+                output.to_str().unwrap(),
+                2,
+            )
+            .await
+            .expect("conversion failed");
+        });
+
+        // Verify output files exist
+        assert!(output.join("tensor_index.json").exists());
+        assert!(output.join("tensor.data_0").exists());
+        assert!(output.join("tensor.data_1").exists());
+
+        // Verify index
+        let index = parse_index_sync(output.join("tensor_index.json")).expect("parse index");
+        assert_eq!(index.len(), 2);
+
+        // Tensors should be distributed across partitions (round-robin)
+        let partition_0 = index.get("bias").unwrap().partition_id; // bias is larger (6 bytes)
+        let partition_1 = index.get("weight").unwrap().partition_id; // weight is smaller (4 bytes)
+        assert_eq!(partition_0, 0);
+        assert_eq!(partition_1, 1);
+    }
+
+    #[test]
+    fn test_convert_preserves_tensor_data() {
+        let dir = TempDir::new().unwrap();
+        let input = create_test_safetensors(dir.path(), "input.safetensors");
+        let output = dir.path().join("output");
+
+        tokio_uring::start(async {
+            convert_safetensors_to_serverlessllm(
+                input.to_str().unwrap(),
+                output.to_str().unwrap(),
+                1,
+            )
+            .await
+            .expect("conversion failed");
+        });
+
+        // Load and verify tensor data
+        let index = parse_index_sync(output.join("tensor_index.json")).expect("parse index");
+        let weight_entry = index.get("weight").expect("weight tensor");
+        let bias_entry = index.get("bias").expect("bias tensor");
+
+        // Read partition file
+        let partition_data = fs::read(output.join("tensor.data_0")).expect("read partition");
+
+        // Extract tensor data from partition
+        let weight_data = &partition_data[
+            weight_entry.offset as usize..(weight_entry.offset + weight_entry.size) as usize
+        ];
+        let bias_data = &partition_data[
+            bias_entry.offset as usize..(bias_entry.offset + bias_entry.size) as usize
+        ];
+
+        // Verify data matches original
+        assert_eq!(weight_data, &[1u8, 2, 3, 4]);
+        assert_eq!(bias_data, &[5u8, 6, 7, 8, 9, 10]);
+    }
+
+    #[test]
+    fn test_convert_preserves_metadata() {
+        let dir = TempDir::new().unwrap();
+        let input = create_test_safetensors(dir.path(), "input.safetensors");
+        let output = dir.path().join("output");
+
+        tokio_uring::start(async {
+            convert_safetensors_to_serverlessllm(
+                input.to_str().unwrap(),
+                output.to_str().unwrap(),
+                1,
+            )
+            .await
+            .expect("conversion failed");
+        });
+
+        let index = parse_index_sync(output.join("tensor_index.json")).expect("parse index");
+
+        // Check weight metadata
+        let weight = index.get("weight").unwrap();
+        assert_eq!(weight.shape, vec![4]);
+        assert_eq!(weight.stride, vec![1]);
+        assert_eq!(weight.dtype, "torch.uint8");
+        assert_eq!(weight.size, 4);
+
+        // Check bias metadata
+        let bias = index.get("bias").unwrap();
+        assert_eq!(bias.shape, vec![2, 3]);
+        assert_eq!(bias.stride, vec![3, 1]); // Row-major stride
+        assert_eq!(bias.dtype, "torch.uint8");
+        assert_eq!(bias.size, 6);
+    }
+
+    #[test]
+    fn test_convert_creates_output_directory() {
+        let dir = TempDir::new().unwrap();
+        let input = create_test_safetensors(dir.path(), "input.safetensors");
+        let output = dir.path().join("nested").join("output");
+
+        // Output directory doesn't exist yet
+        assert!(!output.exists());
+
+        tokio_uring::start(async {
+            convert_safetensors_to_serverlessllm(
+                input.to_str().unwrap(),
+                output.to_str().unwrap(),
+                1,
+            )
+            .await
+            .expect("conversion failed");
+        });
+
+        // Should create the directory
+        assert!(output.exists());
+        assert!(output.join("tensor_index.json").exists());
+    }
+
+    #[test]
+    fn test_convert_missing_input_file() {
+        let dir = TempDir::new().unwrap();
+        let input = dir.path().join("nonexistent.safetensors");
+        let output = dir.path().join("output");
+
+        tokio_uring::start(async {
+            let result = convert_safetensors_to_serverlessllm(
+                input.to_str().unwrap(),
+                output.to_str().unwrap(),
+                1,
+            )
+            .await;
+
+            assert!(result.is_err());
+        });
+    }
+}

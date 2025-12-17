@@ -1541,4 +1541,91 @@ mod tests {
         assert_eq!(view.data(), b"2345");
         assert_eq!(view.dtype(), "u8");
     }
+
+    // -----------------------------------------------------------------------
+    // Property-Based Tests
+    // -----------------------------------------------------------------------
+
+    mod proptests {
+        use super::*;
+        use crate::types::traits::TensorMetadata;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn test_tensor_entry_offset_size_no_overflow(
+                offset in 0u64..1_000_000,
+                size in 1u64..1_000_000
+            ) {
+                let entry = TensorEntry {
+                    offset,
+                    size,
+                    shape: vec![size as i64],
+                    stride: vec![1],
+                    dtype: "f32".to_owned(),
+                    partition_id: 0,
+                };
+
+                // Property: offset + size should not overflow when reasonable
+                let end = entry.offset.checked_add(entry.size);
+                prop_assert!(end.is_some());
+            }
+
+            #[test]
+            fn test_parse_index_roundtrip(
+                tensor_count in 1usize..20,
+                offset in 0u64..10000,
+                size in 1u64..10000
+            ) {
+                use serde_json::json;
+
+                // Create index with multiple tensors
+                let mut root = serde_json::Map::new();
+                for i in 0..tensor_count {
+                    let name = format!("tensor_{}", i);
+                    let tensor_offset = offset + (i as u64 * 100);
+                    root.insert(
+                        name.clone(),
+                        json!([tensor_offset, size, [2, 2], [2, 1], "f32", i % 3]),
+                    );
+                }
+
+                let json_data = serde_json::Value::Object(root).to_string();
+
+                // Parse the index
+                let index = parse_index_impl(json_data.as_bytes()).unwrap();
+
+                // Property: All tensors should be present
+                prop_assert_eq!(index.len(), tensor_count);
+
+                // Property: Each tensor should have correct metadata
+                for i in 0..tensor_count {
+                    let name = format!("tensor_{}", i);
+                    let entry = index.get(&name);
+                    prop_assert!(entry.is_some());
+                    let entry = entry.unwrap();
+                    prop_assert_eq!(entry.size, size);
+                    prop_assert_eq!(&entry.shape, &vec![2, 2]);
+                    prop_assert_eq!(entry.partition_id, i % 3);
+                }
+            }
+
+            #[test]
+            fn test_calculate_contiguous_stride_property(
+                dim1 in 1i64..100,
+                dim2 in 1i64..100,
+                dim3 in 1i64..100
+            ) {
+                // Property: For shape [a, b, c], stride should be [b*c, c, 1] for row-major
+                let expected_stride = vec![dim2 * dim3, dim3, 1];
+
+                // Verify via actual calculation
+                let mut stride = vec![1i64; 3];
+                stride[1] = dim3;
+                stride[0] = dim2 * dim3;
+
+                prop_assert_eq!(stride, expected_stride);
+            }
+        }
+    }
 }

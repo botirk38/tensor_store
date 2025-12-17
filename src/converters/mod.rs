@@ -30,4 +30,3 @@
 //! ```
 
 pub mod safetensors_to_serverlessllm;
-pub mod safetensors_to_tensorstore;

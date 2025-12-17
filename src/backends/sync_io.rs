@@ -188,15 +188,17 @@ mod linux {
                 })?;
 
             let mut buffer_slice = unsafe { BufferSlice::from_slice(chunk_slice) };
-            let mut file_clone = file.try_clone()?;
+            // Open a fresh file handle for each thread to avoid shared seek position
+            let path_clone = path_ref.to_path_buf();
 
             let handle = thread::spawn(move || {
-                file_clone.seek(SeekFrom::Start(u64::try_from(start).map_err(|_e| {
+                let mut thread_file = File::open(&path_clone)?;
+                thread_file.seek(SeekFrom::Start(u64::try_from(start).map_err(|_e| {
                     std::io::Error::new(std::io::ErrorKind::InvalidInput, "seek offset too large")
                 })?))?;
 
                 let slice = unsafe { buffer_slice.as_mut_slice() };
-                file_clone.read_exact(slice)?;
+                thread_file.read_exact(slice)?;
                 IoResult::Ok(())
             });
 
@@ -393,15 +395,17 @@ mod non_linux {
                 })?;
 
             let mut buffer_slice = unsafe { BufferSlice::from_slice(chunk_slice) };
-            let mut file_clone = file.try_clone()?;
+            // Open a fresh file handle for each thread to avoid shared seek position
+            let path_clone = path_ref.to_path_buf();
 
             let handle = thread::spawn(move || {
-                file_clone.seek(SeekFrom::Start(u64::try_from(start).map_err(|_e| {
+                let mut thread_file = File::open(&path_clone)?;
+                thread_file.seek(SeekFrom::Start(u64::try_from(start).map_err(|_e| {
                     std::io::Error::new(std::io::ErrorKind::InvalidInput, "seek offset too large")
                 })?))?;
 
                 let slice = unsafe { buffer_slice.as_mut_slice() };
-                file_clone.read_exact(slice)?;
+                thread_file.read_exact(slice)?;
                 IoResult::Ok(())
             });
 
@@ -714,6 +718,88 @@ mod tests {
     fn test_load_missing_file() {
         let result = load("/nonexistent/file/path");
         assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Property-Based Tests
+    // -----------------------------------------------------------------------
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn test_div_ceil_properties(a in 1usize..10000, b in 1usize..100) {
+                let result = div_ceil(a, b);
+                // Property 1: result * b >= a (covers the range)
+                prop_assert!(result * b >= a);
+                // Property 2: (result - 1) * b < a (is minimal)
+                if result > 0 {
+                    prop_assert!((result - 1) * b < a);
+                }
+            }
+
+            #[test]
+            fn test_load_parallel_consistency(
+                data_size in 128usize..4096,
+                chunk_count in 1usize..8
+            ) {
+                // Skip edge cases where chunk_count exceeds data_size (leads to underflow)
+                if chunk_count > data_size {
+                    return Ok(());
+                }
+
+                let mut tmpfile = NamedTempFile::new().unwrap();
+                let data: Vec<u8> = (0..data_size).map(|i| (i % 256) as u8).collect();
+                tmpfile.write_all(&data).unwrap();
+                tmpfile.as_file().sync_all().unwrap();
+                tmpfile.flush().unwrap();
+
+                // Sequential load
+                let sequential = load(tmpfile.path()).unwrap();
+
+                // Parallel load
+                let parallel = load_parallel(tmpfile.path(), chunk_count).unwrap();
+
+                // Property: Results should be identical
+                prop_assert_eq!(&sequential, &parallel);
+                prop_assert_eq!(&parallel, &data);
+            }
+
+            #[test]
+            fn test_load_range_subslice_property(
+                total_size in 10usize..1000,
+                offset in 0usize..500,
+                len in 1usize..200
+            ) {
+                // Ensure offset + len doesn't exceed total_size
+                let offset = offset % (total_size - 1);
+                let len = len.min(total_size - offset);
+
+                let mut tmpfile = NamedTempFile::new().unwrap();
+                let data: Vec<u8> = (0..total_size).map(|i| (i % 256) as u8).collect();
+                tmpfile.write_all(&data).unwrap();
+                tmpfile.flush().unwrap();
+
+                let range_result = load_range(tmpfile.path(), offset as u64, len).unwrap();
+
+                // Property: load_range should equal the corresponding slice
+                prop_assert_eq!(range_result, &data[offset..offset + len]);
+            }
+
+            #[test]
+            fn test_write_all_roundtrip(data_size in 1usize..10000) {
+                let tmpfile = NamedTempFile::new().unwrap();
+                let data: Vec<u8> = (0..data_size).map(|i| (i % 256) as u8).collect();
+
+                write_all(tmpfile.path(), data.clone()).unwrap();
+                let loaded = load(tmpfile.path()).unwrap();
+
+                // Property: Write then read should preserve data exactly
+                prop_assert_eq!(loaded, data);
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
