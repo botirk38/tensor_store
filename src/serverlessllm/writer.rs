@@ -197,7 +197,8 @@ pub async fn write_index(
     ensure_parent_dir_async(path).await?;
 
     let json = serialize_index(tensors)?;
-    backends::write_all(path, json)
+    backends::async_backend()
+        .write_all(path, json)
         .await
         .map_err(WriterError::from)
 }
@@ -222,7 +223,8 @@ pub async fn write_partition(
     let path = output_path.as_ref();
     ensure_parent_dir_async(path).await?;
     let bytes = data.into();
-    backends::write_all(path, bytes)
+    backends::async_backend()
+        .write_all(path, bytes)
         .await
         .map_err(WriterError::from)
 }

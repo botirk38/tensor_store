@@ -10,7 +10,7 @@ use super::odirect::{
     can_use_direct_write, is_block_aligned, open_direct_read_io_uring, open_direct_write_io_uring,
 };
 use super::{
-    IoResult,
+    AsyncBackend, AsyncBackendFuture, BatchRequest, IoResult,
     batch::{IndexedRequest, flatten_results, group_requests_by_file},
     get_buffer_pool,
 };
@@ -20,6 +20,48 @@ use tokio_uring::fs::File as UringFile;
 /// Maximum size for a single io_uring read operation.
 /// Files larger than this automatically use parallel chunked reading.
 const MAX_SINGLE_READ: usize = 512 * 1024 * 1024; // 512MB
+
+/// Async backend powered by io_uring.
+#[derive(Clone, Copy, Debug)]
+pub struct IoUringBackend;
+
+impl AsyncBackend for IoUringBackend {
+    fn load<'a>(&'a self, path: &'a Path) -> AsyncBackendFuture<'a, Vec<u8>> {
+        Box::pin(async move { load(path).await })
+    }
+
+    fn load_parallel<'a>(
+        &'a self,
+        path: &'a Path,
+        chunks: usize,
+    ) -> AsyncBackendFuture<'a, Vec<u8>> {
+        Box::pin(async move { load_parallel(path, chunks).await })
+    }
+
+    fn load_range<'a>(
+        &'a self,
+        path: &'a Path,
+        offset: u64,
+        len: usize,
+    ) -> AsyncBackendFuture<'a, Vec<u8>> {
+        Box::pin(async move { load_range(path, offset, len).await })
+    }
+
+    fn load_batch<'a>(
+        &'a self,
+        requests: &'a [BatchRequest],
+    ) -> AsyncBackendFuture<'a, Vec<super::batch::FlattenedResult>> {
+        Box::pin(async move { load_batch(requests).await })
+    }
+
+    fn write_all<'a>(
+        &'a self,
+        path: &'a Path,
+        data: Vec<u8>,
+    ) -> AsyncBackendFuture<'a, ()> {
+        Box::pin(async move { write_all(path, data).await })
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Alignment helpers

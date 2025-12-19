@@ -3,9 +3,60 @@
 //! This backend provides cross-platform async I/O operations built on Tokio.
 //! It's used as a fallback on non-Linux platforms where `io_uring` isn't available.
 
-use super::{IoResult, buffer_slice::BufferSlice, get_buffer_pool};
-use std::path::Path;
+use super::{
+    AsyncBackend, AsyncBackendFuture, BatchRequest, IoResult, buffer_slice::BufferSlice,
+    get_buffer_pool,
+};
+use std::path::{Path, PathBuf};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
+
+/// Tokio-based async backend (cross-platform fallback).
+#[derive(Clone, Copy, Debug)]
+pub struct TokioAsyncBackend;
+
+impl AsyncBackend for TokioAsyncBackend {
+    fn load<'a>(&'a self, path: &'a Path) -> AsyncBackendFuture<'a, Vec<u8>> {
+        Box::pin(async move { load(path).await })
+    }
+
+    fn load_parallel<'a>(
+        &'a self,
+        path: &'a Path,
+        chunks: usize,
+    ) -> AsyncBackendFuture<'a, Vec<u8>> {
+        Box::pin(async move { load_parallel(path, chunks).await })
+    }
+
+    fn load_range<'a>(
+        &'a self,
+        path: &'a Path,
+        offset: u64,
+        len: usize,
+    ) -> AsyncBackendFuture<'a, Vec<u8>> {
+        Box::pin(async move { load_range(path, offset, len).await })
+    }
+
+    fn load_batch<'a>(
+        &'a self,
+        requests: &'a [BatchRequest],
+    ) -> AsyncBackendFuture<'a, Vec<super::batch::FlattenedResult>> {
+        Box::pin(async move {
+            let owned: Vec<(PathBuf, u64, usize)> = requests
+                .iter()
+                .map(|(path, offset, len)| (path.clone(), *offset, *len))
+                .collect();
+            load_range_batch(&owned).await
+        })
+    }
+
+    fn write_all<'a>(
+        &'a self,
+        path: &'a Path,
+        data: Vec<u8>,
+    ) -> AsyncBackendFuture<'a, ()> {
+        Box::pin(async move { write_all(path, data).await })
+    }
+}
 
 /// Ceiling division: (a + b - 1) / b
 #[inline]

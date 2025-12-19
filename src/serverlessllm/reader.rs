@@ -70,7 +70,7 @@ use crate::types::traits::{AsyncReader, SyncReader, TensorMetadata};
 use futures::future;
 use rayon::prelude::*;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 #[cfg(target_os = "linux")]
 use tokio_uring::fs::statx;
@@ -193,21 +193,26 @@ impl ServerlessLLMIndex {
             ReaderError::ServerlessLlm(format!("tensor '{tensor_name}' not found in index"))
         })?;
 
-        let base_path_str = base_path.as_ref().to_string_lossy();
-        let partition_path = format!("{}_{}", base_path_str, entry.partition_id);
+        let partition_path = format!(
+            "{}_{}",
+            base_path.as_ref().to_string_lossy(),
+            entry.partition_id
+        );
+        let partition_path_ref = Path::new(&partition_path);
 
         // Validate partition file before loading
-        self.validate_single_partition_async(&partition_path, entry)
+        self.validate_single_partition_async(partition_path_ref, entry)
             .await?;
 
-        let data = backends::load_range(
-            &partition_path,
-            entry.offset,
-            usize::try_from(entry.size)
-                .map_err(|e| ReaderError::ServerlessLlm(format!("size too large: {e}")))?,
-        )
-        .await
-        .map_err(ReaderError::from)?;
+        let data = backends::async_backend()
+            .load_range(
+                partition_path_ref,
+                entry.offset,
+                usize::try_from(entry.size)
+                    .map_err(|e| ReaderError::ServerlessLlm(format!("size too large: {e}")))?,
+            )
+            .await
+            .map_err(ReaderError::from)?;
 
         // Convert pooled buffer to Vec<u8> for API compatibility
         Ok(data)
@@ -244,14 +249,18 @@ impl ServerlessLLMIndex {
             ReaderError::ServerlessLlm(format!("tensor '{tensor_name}' not found in index"))
         })?;
 
-        let base_path_str = base_path.as_ref().to_string_lossy();
-        let partition_path = format!("{}_{}", base_path_str, entry.partition_id);
+        let partition_path = format!(
+            "{}_{}",
+            base_path.as_ref().to_string_lossy(),
+            entry.partition_id
+        );
+        let partition_path_ref = Path::new(&partition_path);
 
         // Validate partition file before loading
-        self.validate_single_partition(&partition_path, entry)?;
+        self.validate_single_partition(partition_path_ref, entry)?;
 
-        let data = backends::sync::load_range(
-            &partition_path,
+        let data = backends::sync_backend().load_range(
+            partition_path_ref,
             entry.offset,
             usize::try_from(entry.size)
                 .map_err(|e| ReaderError::ServerlessLlm(format!("size too large: {e}")))?,
@@ -360,7 +369,7 @@ impl ServerlessLLMIndex {
 
         let partition_sizes_vec = future::try_join_all(partition_paths.iter().map(
             |(partition_id, path)| async move {
-                let size = stat_partition_size(path).await?;
+                let size = stat_partition_size(Path::new(path)).await?;
                 ReaderResult::Ok((*partition_id, size))
             },
         ))
@@ -374,7 +383,7 @@ impl ServerlessLLMIndex {
             }
         }
 
-        let mut batch_requests = Vec::with_capacity(entries.len());
+        let mut batch_requests: Vec<backends::BatchRequest> = Vec::with_capacity(entries.len());
         let mut names = Vec::with_capacity(entries.len());
 
         for (name, entry) in &entries {
@@ -407,11 +416,12 @@ impl ServerlessLLMIndex {
             let len = usize::try_from(entry.size)
                 .map_err(|e| ReaderError::ServerlessLlm(format!("size too large: {e}")))?;
 
-            batch_requests.push((partition_path.as_str(), entry.offset, len));
+            batch_requests.push((PathBuf::from(partition_path), entry.offset, len));
             names.push(name.clone());
         }
 
-        let batch_results = backends::load_batch(&batch_requests)
+        let batch_results = backends::async_backend()
+            .load_batch(&batch_requests)
             .await
             .map_err(ReaderError::from)?;
 
@@ -511,20 +521,21 @@ impl ServerlessLLMIndex {
         }
 
         // Build batch requests: (path, offset, len)
-        let mut batch_requests: Vec<(String, u64, usize)> = Vec::with_capacity(entries.len());
+        let mut batch_requests: Vec<backends::BatchRequest> = Vec::with_capacity(entries.len());
         let mut names = Vec::with_capacity(entries.len());
 
         for (name, entry) in &entries {
             let partition_path = partition_paths.get(&entry.partition_id).unwrap().clone();
             let len = usize::try_from(entry.size)
                 .map_err(|e| ReaderError::ServerlessLlm(format!("size too large: {e}")))?;
-            batch_requests.push((partition_path, entry.offset, len));
+            batch_requests.push((PathBuf::from(partition_path), entry.offset, len));
             names.push(name.clone());
         }
 
         // Load all tensors in parallel using batch API
-        let batch_results =
-            backends::sync::load_range_batch(&batch_requests).map_err(ReaderError::from)?;
+        let batch_results = backends::sync_backend()
+            .load_range_batch(&batch_requests)
+            .map_err(ReaderError::from)?;
 
         // Convert results to HashMap
         let mut result = HashMap::with_capacity(names.len());
@@ -559,13 +570,14 @@ impl ServerlessLLMIndex {
 
     async fn validate_single_partition_async(
         &self,
-        partition_path: &str,
+        partition_path: &Path,
         entry: &TensorEntry,
     ) -> ReaderResult<()> {
         let required_size = entry
             .offset
             .checked_add(entry.size)
             .ok_or_else(|| ReaderError::ServerlessLlm("offset + size overflow".to_owned()))?;
+        let partition_path_display = partition_path.display();
 
         // Fast path: check cached size if present
         if let Some(cached_size) = self
@@ -576,7 +588,7 @@ impl ServerlessLLMIndex {
         {
             if cached_size < required_size {
                 return Err(ReaderError::ServerlessLlm(format!(
-                    "partition file '{partition_path}' is too small: has {cached_size} bytes, needs at least {required_size} bytes for tensor at offset {} size {} (cached)",
+                    "partition file '{partition_path_display}' is too small: has {cached_size} bytes, needs at least {required_size} bytes for tensor at offset {} size {} (cached)",
                     entry.offset, entry.size
                 )));
             }
@@ -591,7 +603,7 @@ impl ServerlessLLMIndex {
 
         if actual_size < required_size {
             return Err(ReaderError::ServerlessLlm(format!(
-                "partition file '{partition_path}' is too small: has {actual_size} bytes, needs at least {required_size} bytes for tensor at offset {} size {}",
+                "partition file '{partition_path_display}' is too small: has {actual_size} bytes, needs at least {required_size} bytes for tensor at offset {} size {}",
                 entry.offset, entry.size
             )));
         }
@@ -600,13 +612,14 @@ impl ServerlessLLMIndex {
     }
     fn validate_single_partition(
         &self,
-        partition_path: &str,
+        partition_path: &Path,
         entry: &TensorEntry,
     ) -> ReaderResult<()> {
         let required_size = entry
             .offset
             .checked_add(entry.size)
             .ok_or_else(|| ReaderError::ServerlessLlm("offset + size overflow".to_owned()))?;
+        let partition_path_display = partition_path.display();
 
         // Check cache first
         {
@@ -614,7 +627,7 @@ impl ServerlessLLMIndex {
             if let Some(&cached_size) = cache.get(&entry.partition_id) {
                 if cached_size < required_size {
                     return Err(ReaderError::ServerlessLlm(format!(
-                        "partition file '{partition_path}' is too small: has {cached_size} bytes, needs at least {required_size} bytes for tensor at offset {} size {} (cached)",
+                        "partition file '{partition_path_display}' is too small: has {cached_size} bytes, needs at least {required_size} bytes for tensor at offset {} size {} (cached)",
                         entry.offset, entry.size
                     )));
                 }
@@ -630,7 +643,7 @@ impl ServerlessLLMIndex {
                 .unwrap()
                 .insert(entry.partition_id, 0);
             ReaderError::ServerlessLlm(format!(
-                "partition file '{partition_path}' not found or inaccessible: {e}"
+                "partition file '{partition_path_display}' not found or inaccessible: {e}"
             ))
         })?;
 
@@ -644,7 +657,7 @@ impl ServerlessLLMIndex {
 
         if actual_size < required_size {
             return Err(ReaderError::ServerlessLlm(format!(
-                "partition file '{partition_path}' is too small: has {actual_size} bytes, needs at least {required_size} bytes for tensor at offset {} size {}",
+                "partition file '{partition_path_display}' is too small: has {actual_size} bytes, needs at least {required_size} bytes for tensor at offset {} size {}",
                 entry.offset, entry.size
             )));
         }
@@ -670,13 +683,13 @@ impl ServerlessLLMIndex {
 }
 
 #[cfg(target_os = "linux")]
-async fn stat_partition_size(path: &str) -> ReaderResult<u64> {
+async fn stat_partition_size(path: &Path) -> ReaderResult<u64> {
     let stat = statx(path).await.map_err(ReaderError::from)?;
     Ok(stat.stx_size)
 }
 
 #[cfg(not(target_os = "linux"))]
-async fn stat_partition_size(path: &str) -> ReaderResult<u64> {
+async fn stat_partition_size(path: &Path) -> ReaderResult<u64> {
     let meta = tokio::fs::metadata(path).await.map_err(ReaderError::from)?;
     Ok(meta.len())
 }
@@ -716,10 +729,9 @@ impl AsyncReader for ServerlessLLMIndex {
 
     #[inline]
     async fn load(path: impl AsRef<Path>) -> ReaderResult<Self::Output> {
-        let data = backends::load(path.as_ref().to_str().ok_or_else(|| {
-            ReaderError::InvalidMetadata("path contains invalid UTF-8".to_owned())
-        })?)
-        .await?;
+        let data = backends::async_backend()
+            .load(path.as_ref())
+            .await?;
         parse_index_impl(&data)
     }
 }
@@ -729,9 +741,7 @@ impl SyncReader for ServerlessLLMIndex {
 
     #[inline]
     fn load_sync(path: impl AsRef<Path>) -> ReaderResult<Self::Output> {
-        let data = backends::sync::load(path.as_ref().to_str().ok_or_else(|| {
-            ReaderError::InvalidMetadata("path contains invalid UTF-8".to_owned())
-        })?)?;
+        let data = backends::sync_backend().load(path.as_ref())?;
         parse_index_impl(&data)
     }
 }

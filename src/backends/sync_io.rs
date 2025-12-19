@@ -1,12 +1,45 @@
 //! Synchronous blocking I/O using std::fs
 
-use super::{IoResult, buffer_slice::BufferSlice, get_buffer_pool};
-use std::path::Path;
+use super::{IoResult, SyncBackend, buffer_slice::BufferSlice, get_buffer_pool};
+use std::path::{Path, PathBuf};
 
 /// Ceiling division: (a + b - 1) / b
 #[inline]
 const fn div_ceil(a: usize, b: usize) -> usize {
     a.div_ceil(b)
+}
+
+/// Default synchronous backend using std::fs.
+#[derive(Clone, Copy, Debug)]
+pub struct DefaultSyncBackend;
+
+impl SyncBackend for DefaultSyncBackend {
+    fn load(&self, path: &Path) -> IoResult<Vec<u8>> {
+        load(path)
+    }
+
+    fn load_parallel(&self, path: &Path, chunks: usize) -> IoResult<Vec<u8>> {
+        load_parallel(path, chunks)
+    }
+
+    fn load_range(&self, path: &Path, offset: u64, len: usize) -> IoResult<Vec<u8>> {
+        load_range(path, offset, len)
+    }
+
+    fn load_range_batch(
+        &self,
+        requests: &[super::BatchRequest],
+    ) -> IoResult<Vec<super::batch::FlattenedResult>> {
+        let owned: Vec<(PathBuf, u64, usize)> = requests
+            .iter()
+            .map(|(path, offset, len)| (path.clone(), *offset, *len))
+            .collect();
+        load_range_batch(&owned)
+    }
+
+    fn write_all(&self, path: &Path, data: Vec<u8>) -> IoResult<()> {
+        write_all(path, data)
+    }
 }
 
 #[cfg(target_os = "linux")]

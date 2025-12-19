@@ -16,13 +16,17 @@
 //! use std::path::Path;
 //!
 //! // Async operations (default, recommended)
-//! let data = backends::load("model.safetensors").await?;
-//! let data = backends::load_parallel("model.safetensors", 4).await?;
-//! backends::write_all("output.bin", data).await?;
+//! let backend = backends::async_backend();
+//! let data = backend.load(Path::new("model.safetensors")).await?;
+//! let data = backend
+//!     .load_parallel(Path::new("model.safetensors"), 4)
+//!     .await?;
+//! backend.write_all(Path::new("output.bin"), data).await?;
 //!
 //! // Sync operations (for blocking contexts)
-//! let data = backends::sync::load("model.safetensors")?;
-//! let chunk = backends::sync::load_range("model.safetensors", 1024, 512)?;
+//! let sync_backend = backends::sync_backend();
+//! let data = sync_backend.load(Path::new("model.safetensors"))?;
+//! let chunk = sync_backend.load_range(Path::new("model.safetensors"), 1024, 512)?;
 //! ```
 
 pub mod async_io;
@@ -34,6 +38,9 @@ pub mod odirect;
 pub mod sync_io;
 
 pub use std::io::Result as IoResult;
+use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use zeropool::BufferPool;
 
 // Tuned for ML checkpoint loading (matches zeropool's profiling example).
@@ -44,6 +51,50 @@ const CHECKPOINT_MIN_BUFFER_SIZE: usize = 1024 * 1024; // 1MB minimum (drop tiny
 /// Global buffer pool for tensor data.
 /// Uses BufferPool for efficient buffer management.
 static BUFFER_POOL: std::sync::OnceLock<BufferPool> = std::sync::OnceLock::new();
+
+/// Batch request type used by backend interfaces.
+pub type BatchRequest = (PathBuf, u64, usize);
+
+/// Boxed future alias to keep backend trait signatures readable.
+pub type AsyncBackendFuture<'a, T> =
+    Pin<Box<dyn Future<Output = IoResult<T>> + 'a>>;
+
+/// Safe interface for asynchronous backends.
+pub trait AsyncBackend: Send + Sync + 'static {
+    fn load<'a>(&'a self, path: &'a Path) -> AsyncBackendFuture<'a, Vec<u8>>;
+    fn load_parallel<'a>(
+        &'a self,
+        path: &'a Path,
+        chunks: usize,
+    ) -> AsyncBackendFuture<'a, Vec<u8>>;
+    fn load_range<'a>(
+        &'a self,
+        path: &'a Path,
+        offset: u64,
+        len: usize,
+    ) -> AsyncBackendFuture<'a, Vec<u8>>;
+    fn load_batch<'a>(
+        &'a self,
+        requests: &'a [BatchRequest],
+    ) -> AsyncBackendFuture<'a, Vec<batch::FlattenedResult>>;
+    fn write_all<'a>(
+        &'a self,
+        path: &'a Path,
+        data: Vec<u8>,
+    ) -> AsyncBackendFuture<'a, ()>;
+}
+
+/// Safe interface for synchronous backends.
+pub trait SyncBackend: Send + Sync + 'static {
+    fn load(&self, path: &Path) -> IoResult<Vec<u8>>;
+    fn load_parallel(&self, path: &Path, chunks: usize) -> IoResult<Vec<u8>>;
+    fn load_range(&self, path: &Path, offset: u64, len: usize) -> IoResult<Vec<u8>>;
+    fn load_range_batch(
+        &self,
+        requests: &[BatchRequest],
+    ) -> IoResult<Vec<batch::FlattenedResult>>;
+    fn write_all(&self, path: &Path, data: Vec<u8>) -> IoResult<()>;
+}
 
 /// Build a buffer pool tuned for checkpoint loading workloads.
 ///
@@ -69,66 +120,20 @@ pub fn get_buffer_pool() -> &'static BufferPool {
     BUFFER_POOL.get_or_init(build_buffer_pool)
 }
 
-// ============================================================================
-// Async operations (default, platform-optimized)
-// ============================================================================
-
-/// Load entire file contents asynchronously.
-///
-/// Uses `io_uring` on Linux, tokio async I/O elsewhere.
 #[cfg(target_os = "linux")]
-pub use io_uring::load;
-
-/// Load entire file contents asynchronously.
-///
-/// Uses tokio async I/O (fallback for non-Linux).
+static ASYNC_BACKEND: io_uring::IoUringBackend = io_uring::IoUringBackend;
 #[cfg(not(target_os = "linux"))]
-pub use async_io::load;
+static ASYNC_BACKEND: async_io::TokioAsyncBackend = async_io::TokioAsyncBackend;
+static SYNC_BACKEND: sync_io::DefaultSyncBackend = sync_io::DefaultSyncBackend;
 
-/// Load file in parallel chunks asynchronously.
-///
-/// Uses `io_uring` on Linux, tokio async I/O elsewhere.
-#[cfg(target_os = "linux")]
-pub use io_uring::load_parallel;
+/// Get the default asynchronous backend for the current platform.
+pub fn async_backend() -> &'static dyn AsyncBackend {
+    &ASYNC_BACKEND
+}
 
-#[cfg(not(target_os = "linux"))]
-pub use async_io::load_parallel;
-
-/// Load a specific byte range from file asynchronously.
-///
-/// Uses `io_uring` on Linux, tokio async I/O elsewhere.
-#[cfg(target_os = "linux")]
-pub use io_uring::load_range;
-
-#[cfg(not(target_os = "linux"))]
-pub use async_io::load_range;
-
-/// Load multiple byte ranges from files asynchronously.
-///
-/// Uses `io_uring` on Linux, tokio async I/O elsewhere.
-#[cfg(target_os = "linux")]
-pub use io_uring::load_batch;
-
-/// Load multiple byte ranges from files asynchronously.
-///
-/// Uses tokio async I/O (fallback for non-Linux).
-#[cfg(not(target_os = "linux"))]
-pub use async_io::load_batch;
-
-/// Write entire buffer to file asynchronously.
-///
-/// Uses `io_uring` on Linux, tokio async I/O elsewhere.
-/// Write entire buffer to file asynchronously.
-#[cfg(target_os = "linux")]
-pub use io_uring::write_all;
-
-/// Write entire buffer to file asynchronously (tokio fallback).
-#[cfg(not(target_os = "linux"))]
-pub use async_io::write_all;
-
-/// Synchronous blocking I/O
-pub mod sync {
-    pub use super::sync_io::{load, load_range, load_range_batch, write_all};
+/// Get the default synchronous backend for the current platform.
+pub fn sync_backend() -> &'static dyn SyncBackend {
+    &SYNC_BACKEND
 }
 
 #[cfg(test)]
@@ -171,31 +176,13 @@ mod tests {
 
     #[test]
     fn test_platform_specific_exports() {
-        // This test just verifies the conditional compilation works
-        // and that the functions are exported correctly
-        #[cfg(target_os = "linux")]
-        {
-            // On Linux, verify io_uring functions are exported
-            let _ = stringify!(load);
-            let _ = stringify!(load_parallel);
-            let _ = stringify!(load_range);
-            let _ = stringify!(load_batch);
-            let _ = stringify!(write_all);
-        }
+        // Ensure singletons are stable and non-null
+        let async_b1 = async_backend();
+        let async_b2 = async_backend();
+        assert!(std::ptr::eq(async_b1, async_b2));
 
-        #[cfg(not(target_os = "linux"))]
-        {
-            // On non-Linux, verify async_io functions are exported
-            let _ = stringify!(load);
-            let _ = stringify!(load_parallel);
-            let _ = stringify!(load_range);
-            let _ = stringify!(load_batch);
-            let _ = stringify!(write_all);
-        }
-
-        // Sync functions should always be available
-        let _ = stringify!(sync::load);
-        let _ = stringify!(sync::load_range);
-        let _ = stringify!(sync::write_all);
+        let sync_b1 = sync_backend();
+        let sync_b2 = sync_backend();
+        assert!(std::ptr::eq(sync_b1, sync_b2));
     }
 }

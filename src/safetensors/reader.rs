@@ -253,10 +253,8 @@ impl AsyncReader for SafeTensorsOwned {
 
     #[inline]
     async fn load(path: impl AsRef<Path>) -> ReaderResult<Self::Output> {
-        let path_str = path.as_ref().to_str().ok_or_else(|| {
-            ReaderError::InvalidMetadata("path contains invalid UTF-8".to_owned())
-        })?;
-        let bytes = backends::load(path_str).await?;
+        let path_ref = path.as_ref();
+        let bytes = backends::async_backend().load(path_ref).await?;
         Self::from_bytes(bytes)
     }
 }
@@ -266,10 +264,8 @@ impl SyncReader for SafeTensorsOwned {
 
     #[inline]
     fn load_sync(path: impl AsRef<Path>) -> ReaderResult<Self::Output> {
-        let path_str = path.as_ref().to_str().ok_or_else(|| {
-            ReaderError::InvalidMetadata("path contains invalid UTF-8".to_owned())
-        })?;
-        let bytes = backends::sync::load(path_str)?;
+        let path_ref = path.as_ref();
+        let bytes = backends::sync_backend().load(path_ref)?;
         Self::from_bytes(bytes)
     }
 }
@@ -290,11 +286,10 @@ pub async fn load_parallel(
     path: impl AsRef<Path>,
     chunks: usize,
 ) -> ReaderResult<SafeTensorsOwned> {
-    let path_str = path
-        .as_ref()
-        .to_str()
-        .ok_or_else(|| ReaderError::InvalidMetadata("path contains invalid UTF-8".to_owned()))?;
-    let bytes = backends::load_parallel(path_str, chunks).await?;
+    let path_ref = path.as_ref();
+    let bytes = backends::async_backend()
+        .load_parallel(path_ref, chunks)
+        .await?;
     SafeTensorsOwned::from_bytes(bytes)
 }
 
@@ -323,9 +318,6 @@ pub fn load_range_sync(
     }
 
     let path_ref = path.as_ref();
-    let path_str = path_ref
-        .to_str()
-        .ok_or_else(|| ReaderError::InvalidMetadata("path contains invalid UTF-8".to_owned()))?;
 
     let file_len = std::fs::metadata(path_ref)
         .map_err(ReaderError::from)?
@@ -340,7 +332,7 @@ pub fn load_range_sync(
         )));
     }
 
-    let bytes = backends::sync::load_range(path_str, offset, len)?;
+    let bytes = backends::sync_backend().load_range(path_ref, offset, len)?;
     SafeTensorsOwned::from_bytes(bytes)
 }
 

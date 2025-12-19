@@ -166,7 +166,8 @@ impl SafeTensorsWriter {
         let path_ref = path.as_ref();
         ensure_parent_dir(path_ref)?;
         let buffer = safetensors::serialize(tensors, metadata)?;
-        backends::write_all(path_ref, buffer)
+        backends::async_backend()
+            .write_all(path_ref, buffer)
             .await
             .map_err(Into::into)
     }
