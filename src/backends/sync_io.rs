@@ -60,6 +60,12 @@ mod linux {
         matches!(err.raw_os_error(), Some(libc::EINVAL | libc::EOPNOTSUPP))
     }
 
+    /// Loads an entire file into memory using Direct I/O when possible.
+    ///
+    /// # Errors
+    ///
+    /// - File cannot be opened or read
+    /// - File size exceeds `usize` limits
     pub fn load(path: impl AsRef<Path>) -> IoResult<Vec<u8>> {
         let mut file = File::open(path.as_ref())?;
         let len = usize::try_from(file.metadata()?.len())
@@ -87,6 +93,13 @@ mod linux {
         Ok(buf.to_vec())
     }
 
+    /// Loads a file using parallel threads for improved throughput.
+    ///
+    /// # Errors
+    ///
+    /// - `chunks` is zero
+    /// - File cannot be opened or read
+    /// - File size exceeds `usize` limits
     #[inline]
     pub fn load_parallel<P: AsRef<Path>>(path: P, chunks: usize) -> IoResult<Vec<u8>> {
         if chunks == 0 {
@@ -245,6 +258,12 @@ mod linux {
         Ok(final_buf.to_vec())
     }
 
+    /// Loads a range of bytes from a file at the specified offset.
+    ///
+    /// # Errors
+    ///
+    /// - File cannot be opened or read
+    /// - Seek or read operation fails
     pub fn load_range(path: impl AsRef<Path>, offset: u64, len: usize) -> IoResult<Vec<u8>> {
         if len == 0 {
             return Ok(Vec::new());
@@ -300,7 +319,12 @@ mod linux {
             .collect())
     }
 
-    /// Write an entire buffer to a file synchronously.
+    /// Write an entire buffer to a file synchronously using Direct I/O when possible.
+    ///
+    /// # Errors
+    ///
+    /// - File cannot be created or written to
+    /// - Sync operation fails
     pub fn write_all(path: impl AsRef<Path>, data: Vec<u8>) -> IoResult<()> {
         let path_ref = path.as_ref();
         if data.is_empty() {

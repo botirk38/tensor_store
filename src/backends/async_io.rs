@@ -83,6 +83,12 @@ mod linux {
         )
     }
 
+    /// Loads an entire file into memory using Direct I/O when possible.
+    ///
+    /// # Errors
+    ///
+    /// - File cannot be opened or read
+    /// - File size exceeds `usize` limits
     #[inline]
     pub async fn load<P: AsRef<Path>>(path: P) -> IoResult<Vec<u8>> {
         let path_ref = path.as_ref();
@@ -115,6 +121,12 @@ mod linux {
         Ok(buf.to_vec())
     }
 
+    /// Internal write implementation using Direct I/O when possible.
+    ///
+    /// # Errors
+    ///
+    /// - File cannot be created or written to
+    /// - Sync operation fails
     #[inline]
     pub async fn write_all_internal(path: &Path, data: Vec<u8>) -> IoResult<()> {
         if data.is_empty() {
@@ -146,6 +158,13 @@ mod linux {
         }
     }
 
+    /// Loads a file using parallel chunk reads for improved throughput.
+    ///
+    /// # Errors
+    ///
+    /// - `chunks` is zero
+    /// - File cannot be opened or read
+    /// - File size exceeds `usize` limits
     #[inline]
     pub async fn load_parallel<P: AsRef<Path>>(path: P, chunks: usize) -> IoResult<Vec<u8>> {
         if chunks == 0 {
@@ -307,6 +326,12 @@ mod linux {
         Ok(final_buf.to_vec())
     }
 
+    /// Loads a range of bytes from a file at the specified offset.
+    ///
+    /// # Errors
+    ///
+    /// - File cannot be opened or read
+    /// - Seek or read operation fails
     #[inline]
     pub async fn load_range<P: AsRef<Path>>(path: P, offset: u64, len: usize) -> IoResult<Vec<u8>> {
         if len == 0 {
@@ -375,6 +400,12 @@ mod non_linux {
     use super::*;
     use tokio::fs::File as TokioFile;
 
+    /// Loads an entire file into memory.
+    ///
+    /// # Errors
+    ///
+    /// - File cannot be opened or read
+    /// - File size exceeds `usize` limits
     #[inline]
     pub async fn load<P: AsRef<Path>>(path: P) -> IoResult<Vec<u8>> {
         let path_ref = path.as_ref();
@@ -552,6 +583,11 @@ mod non_linux {
 }
 
 /// Write an entire buffer to a file asynchronously.
+///
+/// # Errors
+///
+/// - File cannot be created or written to
+/// - Sync operation fails
 #[inline]
 pub async fn write_all<P: AsRef<Path>>(path: P, data: Vec<u8>) -> IoResult<()> {
     #[cfg(target_os = "linux")]
