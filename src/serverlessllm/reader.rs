@@ -189,8 +189,8 @@ impl ServerlessLLMIndex {
         base_path: impl AsRef<Path>,
         tensor_name: &str,
     ) -> ReaderResult<Vec<u8>> {
-        let entry = self.tensors.get(tensor_name).ok_or_else(|| {
-            ReaderError::ServerlessLlm(format!("tensor '{tensor_name}' not found in index"))
+        let entry = self.tensors.get(tensor_name).ok_or_else(|| ReaderError::TensorNotFound {
+            name: tensor_name.to_string(),
         })?;
 
         let partition_path = format!(
@@ -245,8 +245,8 @@ impl ServerlessLLMIndex {
         base_path: impl AsRef<Path>,
         tensor_name: &str,
     ) -> ReaderResult<Vec<u8>> {
-        let entry = self.tensors.get(tensor_name).ok_or_else(|| {
-            ReaderError::ServerlessLlm(format!("tensor '{tensor_name}' not found in index"))
+        let entry = self.tensors.get(tensor_name).ok_or_else(|| ReaderError::TensorNotFound {
+            name: tensor_name.to_string(),
         })?;
 
         let partition_path = format!(
@@ -344,7 +344,7 @@ impl ServerlessLLMIndex {
         let mut entries = Vec::with_capacity(tensor_names.len());
         for &name in tensor_names {
             let entry = self.tensors.get(name).ok_or_else(|| {
-                ReaderError::ServerlessLlm(format!("tensor '{name}' not found in index"))
+                ReaderError::TensorNotFound { name: name.to_string() }
             })?;
             entries.push((name.to_string(), entry));
         }
@@ -390,31 +390,32 @@ impl ServerlessLLMIndex {
             let required_size = entry
                 .offset
                 .checked_add(entry.size)
-                .ok_or_else(|| ReaderError::ServerlessLlm("offset + size overflow".to_owned()))?;
+                .ok_or_else(|| ReaderError::OffsetOverflow { name: name.clone() })?;
 
             let partition_path = partition_paths.get(&entry.partition_id).ok_or_else(|| {
-                ReaderError::ServerlessLlm(format!(
-                    "partition {} missing path resolution",
-                    entry.partition_id
-                ))
+                ReaderError::PartitionNotFound {
+                    partition_id: entry.partition_id,
+                    path: format!("{}_{}", base_path_str, entry.partition_id),
+                }
             })?;
 
             let actual_size = *partition_sizes.get(&entry.partition_id).ok_or_else(|| {
-                ReaderError::ServerlessLlm(format!(
-                    "partition file '{}' not found or inaccessible",
-                    partition_path
-                ))
+                ReaderError::PartitionNotFound {
+                    partition_id: entry.partition_id,
+                    path: partition_path.clone(),
+                }
             })?;
 
             if actual_size < required_size {
-                return Err(ReaderError::ServerlessLlm(format!(
-                    "partition file '{}' is too small: has {actual_size} bytes, needs at least {required_size} bytes for tensor at offset {} size {}",
-                    partition_path, entry.offset, entry.size
-                )));
+                return Err(ReaderError::PartitionTooSmall {
+                    path: partition_path.clone(),
+                    actual: actual_size,
+                    required: required_size,
+                });
             }
 
             let len = usize::try_from(entry.size)
-                .map_err(|e| ReaderError::ServerlessLlm(format!("size too large: {e}")))?;
+                .map_err(|_| ReaderError::SizeTooLarge { name: name.clone(), size: entry.size })?;
 
             batch_requests.push((PathBuf::from(partition_path), entry.offset, len));
             names.push(name.clone());
@@ -457,7 +458,7 @@ impl ServerlessLLMIndex {
         let mut entries = Vec::with_capacity(tensor_names.len());
         for &name in tensor_names {
             let entry = self.tensors.get(name).ok_or_else(|| {
-                ReaderError::ServerlessLlm(format!("tensor '{name}' not found in index"))
+                ReaderError::TensorNotFound { name: name.to_string() }
             })?;
             entries.push((name.to_string(), entry));
         }
@@ -474,18 +475,22 @@ impl ServerlessLLMIndex {
 
         // Collect unique partition validations needed
         let mut partition_validations: StdHashMap<usize, (String, u64)> = StdHashMap::new();
-        for (_, entry) in &entries {
+        for (name, entry) in &entries {
             let required_size = entry
                 .offset
                 .checked_add(entry.size)
-                .ok_or_else(|| ReaderError::ServerlessLlm("offset + size overflow".to_owned()))?;
+                .ok_or_else(|| ReaderError::OffsetOverflow { name: name.clone() })?;
 
             partition_validations
                 .entry(entry.partition_id)
                 .and_modify(|(_, max_size)| *max_size = (*max_size).max(required_size))
                 .or_insert_with(|| {
                     (
-                        partition_paths.get(&entry.partition_id).unwrap().clone(),
+                        // SAFETY: partition_paths is populated from the same entries iterator above
+                        partition_paths
+                            .get(&entry.partition_id)
+                            .expect("partition path must exist - populated in loop above")
+                            .clone(),
                         required_size,
                     )
                 });
@@ -495,18 +500,19 @@ impl ServerlessLLMIndex {
         let validation_results: Vec<Result<(usize, u64), ReaderError>> = partition_validations
             .par_iter()
             .map(|(&partition_id, (path, required_size))| {
-                let metadata = std::fs::metadata(path).map_err(|e| {
-                    ReaderError::ServerlessLlm(format!(
-                        "partition file '{}' not found or inaccessible: {e}",
-                        path
-                    ))
+                let metadata = std::fs::metadata(path).map_err(|_| {
+                    ReaderError::PartitionNotFound {
+                        partition_id,
+                        path: path.clone(),
+                    }
                 })?;
                 let actual_size = metadata.len();
                 if actual_size < *required_size {
-                    return Err(ReaderError::ServerlessLlm(format!(
-                        "partition file '{}' is too small: has {actual_size} bytes, needs at least {required_size} bytes",
-                        path
-                    )));
+                    return Err(ReaderError::PartitionTooSmall {
+                        path: path.clone(),
+                        actual: actual_size,
+                        required: *required_size,
+                    });
                 }
                 Ok((partition_id, actual_size))
             })
@@ -525,10 +531,17 @@ impl ServerlessLLMIndex {
         let mut names = Vec::with_capacity(entries.len());
 
         for (name, entry) in &entries {
-            let partition_path = partition_paths.get(&entry.partition_id).unwrap().clone();
-            let len = usize::try_from(entry.size)
-                .map_err(|e| ReaderError::ServerlessLlm(format!("size too large: {e}")))?;
-            batch_requests.push((PathBuf::from(partition_path), entry.offset, len));
+            let partition_path = partition_paths
+                .get(&entry.partition_id)
+                .ok_or_else(|| ReaderError::PartitionNotFound {
+                    partition_id: entry.partition_id,
+                    path: format!("{}_{}", base_path_str, entry.partition_id),
+                })?;
+            let len = usize::try_from(entry.size).map_err(|_| ReaderError::SizeTooLarge {
+                name: name.clone(),
+                size: entry.size,
+            })?;
+            batch_requests.push((PathBuf::from(partition_path.as_str()), entry.offset, len));
             names.push(name.clone());
         }
 
@@ -623,13 +636,14 @@ impl ServerlessLLMIndex {
 
         // Check cache first
         {
-            let cache = self.partition_cache.lock().unwrap();
+            let cache = self.partition_cache.lock().map_err(|_| ReaderError::MutexPoisoned)?;
             if let Some(&cached_size) = cache.get(&entry.partition_id) {
                 if cached_size < required_size {
-                    return Err(ReaderError::ServerlessLlm(format!(
-                        "partition file '{partition_path_display}' is too small: has {cached_size} bytes, needs at least {required_size} bytes for tensor at offset {} size {} (cached)",
-                        entry.offset, entry.size
-                    )));
+                    return Err(ReaderError::PartitionTooSmall {
+                        path: partition_path_display.to_string(),
+                        actual: cached_size,
+                        required: required_size,
+                    });
                 }
                 return Ok(());
             }
@@ -651,15 +665,16 @@ impl ServerlessLLMIndex {
 
         // Cache the result
         {
-            let mut cache = self.partition_cache.lock().unwrap();
+            let mut cache = self.partition_cache.lock().map_err(|_| ReaderError::MutexPoisoned)?;
             cache.insert(entry.partition_id, actual_size);
         }
 
         if actual_size < required_size {
-            return Err(ReaderError::ServerlessLlm(format!(
-                "partition file '{partition_path_display}' is too small: has {actual_size} bytes, needs at least {required_size} bytes for tensor at offset {} size {}",
-                entry.offset, entry.size
-            )));
+            return Err(ReaderError::PartitionTooSmall {
+                path: partition_path_display.to_string(),
+                actual: actual_size,
+                required: required_size,
+            });
         }
 
         Ok(())
@@ -1496,7 +1511,7 @@ mod tests {
         );
         let index = parse_index_sync(&index_path).unwrap();
         let err = index.load_tensor_sync(&base_path, "missing").unwrap_err();
-        assert!(format!("{err}").contains("tensor 'missing' not found"));
+        assert!(format!("{err}").contains("Tensor 'missing' not found"));
     }
 
     #[test]
