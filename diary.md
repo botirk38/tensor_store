@@ -6,6 +6,20 @@ Final year project at Royal Holloway investigating whether io_uring can provide 
 
 The hypothesis: Can io_uring's kernel-offloaded I/O eliminate CPU overhead from thread context switching, achieving measurably better performance than multi-threaded approaches?
 
+## 2025-02-11
+
+Code review day. Went through everything with fresh eyes looking for Rust idioms and best practices violations.
+
+Fixed 14 clippy warnings that had accumulated. Most were minor - unused imports, missing is_empty() methods, that sort of thing. The type_complexity one in tests was annoying until I realized I could just make a type alias.
+
+Bigger win was converting ReaderError to use thiserror. Had manual Display and Error impls that were copy-pasted from WriterError which already used thiserror. Now both are consistent - less code, same behavior.
+
+Spent time improving unsafe documentation. The BufferSlice and odirect code does tricky pointer stuff for zero-copy I/O. Future me (or anyone else reading this) needs to understand why it's safe. Added proper SAFETY comments explaining preconditions and invariants.
+
+Also added rust-version = "1.92" to Cargo.toml. Should've done this earlier - makes MSRV explicit.
+
+Small stuff but code quality matters. Technical debt compounds.
+
 ## 2025-12-17
 
 Documentation week. The project had accumulated a lot of doc debt - broken links in the main README, empty files, no module docs. Spent time fixing all of it.
