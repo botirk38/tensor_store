@@ -346,6 +346,10 @@ impl OwnedAlignedBuffer {
 // ---------------------------------------------------------------------------
 
 /// Open a file for direct reading (O_DIRECT) using tokio-uring.
+///
+/// # Errors
+///
+/// - File does not exist or cannot be opened
 #[inline]
 pub async fn open_direct_read_io_uring(path: &Path) -> IoResult<UringFile> {
     OpenOptions::new()
@@ -356,6 +360,10 @@ pub async fn open_direct_read_io_uring(path: &Path) -> IoResult<UringFile> {
 }
 
 /// Open a file for direct writing (O_DIRECT) using tokio-uring.
+///
+/// # Errors
+///
+/// - File cannot be created or opened for writing
 #[inline]
 pub async fn open_direct_write_io_uring(path: &Path) -> IoResult<UringFile> {
     OpenOptions::new()
@@ -368,6 +376,10 @@ pub async fn open_direct_write_io_uring(path: &Path) -> IoResult<UringFile> {
 }
 
 /// Open a file for direct reading (O_DIRECT) using Tokio's async file type.
+///
+/// # Errors
+///
+/// - File does not exist or cannot be opened
 #[inline]
 pub async fn open_direct_read_tokio(path: &Path) -> IoResult<tokio::fs::File> {
     TokioOpenOptions::new()
@@ -378,6 +390,10 @@ pub async fn open_direct_read_tokio(path: &Path) -> IoResult<tokio::fs::File> {
 }
 
 /// Open a file for direct writing (O_DIRECT) using Tokio's async file type.
+///
+/// # Errors
+///
+/// - File cannot be created or opened for writing
 #[inline]
 pub async fn open_direct_write_tokio(path: &Path) -> IoResult<tokio::fs::File> {
     TokioOpenOptions::new()
@@ -390,6 +406,10 @@ pub async fn open_direct_write_tokio(path: &Path) -> IoResult<tokio::fs::File> {
 }
 
 /// Open a file for direct reading (O_DIRECT) using std::fs.
+///
+/// # Errors
+///
+/// - File does not exist or cannot be opened
 #[inline]
 pub fn open_direct_read_sync(path: &Path) -> IoResult<std::fs::File> {
     StdOpenOptions::new()
@@ -399,6 +419,10 @@ pub fn open_direct_read_sync(path: &Path) -> IoResult<std::fs::File> {
 }
 
 /// Open a file for direct writing (O_DIRECT) using std::fs.
+///
+/// # Errors
+///
+/// - File cannot be created or opened for writing
 #[inline]
 pub fn open_direct_write_sync(path: &Path) -> IoResult<std::fs::File> {
     StdOpenOptions::new()

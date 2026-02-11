@@ -187,6 +187,11 @@ fn build_chunk_requests(
 // ---------------------------------------------------------------------------
 
 /// Load an entire file using `io_uring`.
+///
+/// # Errors
+///
+/// - File cannot be opened or read
+/// - File size exceeds platform limits
 #[inline]
 pub async fn load(path: impl AsRef<Path> + Send) -> IoResult<Vec<u8>> {
     let path_buf = path.as_ref().to_path_buf();
@@ -237,6 +242,12 @@ pub async fn load(path: impl AsRef<Path> + Send) -> IoResult<Vec<u8>> {
 }
 
 /// Load tensor data in parallel chunks using `io_uring` with batched operations.
+///
+/// # Errors
+///
+/// - `chunks` is zero
+/// - File cannot be opened or read
+/// - File size or chunk size exceeds platform limits
 #[inline]
 pub async fn load_parallel(path: impl AsRef<Path>, chunks: usize) -> IoResult<Vec<u8>> {
     if chunks == 0 {
@@ -333,6 +344,11 @@ pub async fn load_parallel(path: impl AsRef<Path>, chunks: usize) -> IoResult<Ve
 }
 
 /// Load a specific byte range from a file using `io_uring`.
+///
+/// # Errors
+///
+/// - File cannot be opened or read
+/// - Seek or read operation fails
 #[inline]
 pub async fn load_range(path: impl AsRef<Path>, offset: u64, len: usize) -> IoResult<Vec<u8>> {
     if len == 0 {
@@ -468,6 +484,11 @@ pub async fn load_batch(
 // ---------------------------------------------------------------------------
 
 /// Write an entire buffer to a file, creating or truncating it first.
+///
+/// # Errors
+///
+/// - File cannot be created or written to
+/// - Sync operation fails
 #[inline]
 pub async fn write_all(path: impl AsRef<Path>, data: Vec<u8>) -> IoResult<()> {
     let path_ref = path.as_ref();

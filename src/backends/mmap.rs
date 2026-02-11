@@ -68,6 +68,12 @@ impl std::ops::Deref for Mmap {
 }
 
 /// Map entire file into memory
+///
+/// # Errors
+///
+/// - File does not exist or cannot be opened
+/// - File is empty (cannot mmap empty files)
+/// - File size exceeds `usize` limits
 pub fn map(path: impl AsRef<Path>) -> IoResult<Mmap> {
     let file = File::open(path.as_ref())?;
     let len = file.metadata()?.len();
@@ -89,6 +95,11 @@ pub fn map(path: impl AsRef<Path>) -> IoResult<Mmap> {
 }
 
 /// Map a byte range from file into memory
+///
+/// # Errors
+///
+/// - File does not exist or cannot be opened
+/// - Requested range is empty, overflows, or exceeds file size
 pub fn map_range(path: impl AsRef<Path>, offset: u64, len: usize) -> IoResult<Mmap> {
     if len == 0 {
         return Err(Error::new(
