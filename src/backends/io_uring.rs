@@ -543,8 +543,6 @@ mod tests {
         build_chunk_requests, checked_arithmetic, load, load_parallel, load_range,
         statx_file_size, validate_chunk_size, validate_read_count, write_all,
     };
-    use std::io::Write;
-    use tempfile::NamedTempFile;
 
     // Helper to run async tests in tokio-uring runtime
     fn run_test<F, R>(f: F) -> R
@@ -750,7 +748,7 @@ mod tests {
     mod integration {
         use super::{load, load_parallel, load_range, run_test, write_all};
         use crate::backends::io_uring::load_batch;
-        use crate::backends::odirect::{align_to_block, BLOCK_SIZE};
+        use crate::backends::odirect::BLOCK_SIZE;
         use std::io::Write;
         use tempfile::NamedTempFile;
 
