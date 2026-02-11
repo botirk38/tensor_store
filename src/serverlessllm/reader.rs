@@ -1092,12 +1092,22 @@ impl ServerlessLLM {
 }
 
 /// Parse `ServerlessLLM` tensor index asynchronously.
+///
+/// # Errors
+///
+/// - File cannot be read or is not valid JSON
+/// - Index format is invalid
 #[inline]
 pub async fn parse_index(path: impl AsRef<Path>) -> ReaderResult<ServerlessLLMIndex> {
     ServerlessLLMIndex::load(path.as_ref()).await
 }
 
 /// Parse `ServerlessLLM` tensor index synchronously (mmap on Linux).
+///
+/// # Errors
+///
+/// - File cannot be read or is not valid JSON
+/// - Index format is invalid
 #[inline]
 pub fn parse_index_sync(path: impl AsRef<Path>) -> ReaderResult<ServerlessLLMIndex> {
     ServerlessLLMIndex::load_sync(path.as_ref())
@@ -1115,6 +1125,11 @@ pub fn parse_index_sync(path: impl AsRef<Path>) -> ReaderResult<ServerlessLLMInd
 /// # Returns
 ///
 /// An `ServerlessLLM` with all tensors loaded and ready for access.
+///
+/// # Errors
+///
+/// - Index or partition files cannot be read
+/// - Invalid index format
 #[inline]
 pub async fn load(directory: impl AsRef<Path>) -> ReaderResult<ServerlessLLM> {
     ServerlessLLM::from_directory_async(directory).await
@@ -1129,6 +1144,11 @@ pub async fn load(directory: impl AsRef<Path>) -> ReaderResult<ServerlessLLM> {
 /// # Returns
 ///
 /// An `ServerlessLLM` with all tensors loaded and ready for access.
+///
+/// # Errors
+///
+/// - Index or partition files cannot be read
+/// - Invalid index format
 #[inline]
 pub fn load_sync(directory: impl AsRef<Path>) -> ReaderResult<ServerlessLLM> {
     ServerlessLLM::from_directory(directory)

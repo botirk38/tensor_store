@@ -271,6 +271,11 @@ impl SyncReader for SafeTensorsOwned {
 /// Load tensor data using the best backend for the current platform and parse it.
 ///
 /// Returns a `SafeTensorsOwned` with the parsed tensors.
+///
+/// # Errors
+///
+/// - File cannot be read
+/// - Invalid SafeTensors format
 #[inline]
 pub async fn load(path: impl AsRef<Path>) -> ReaderResult<SafeTensorsOwned> {
     SafeTensorsOwned::load(path.as_ref()).await
@@ -294,6 +299,11 @@ pub async fn load_parallel(
 /// Synchronous load using buffered I/O (owned `Vec<u8>`).
 ///
 /// Returns a `SafeTensorsOwned` with the parsed tensors.
+///
+/// # Errors
+///
+/// - File cannot be read
+/// - Invalid SafeTensors format
 #[inline]
 pub fn load_sync(path: impl AsRef<Path>) -> ReaderResult<SafeTensorsOwned> {
     SafeTensorsOwned::load_sync(path.as_ref())
@@ -337,6 +347,11 @@ pub fn load_range_sync(
 /// Load tensor data synchronously using memory mapping (lazy loading).
 ///
 /// Returns a `SafeTensorsMmap` with memory-mapped tensors.
+///
+/// # Errors
+///
+/// - File cannot be memory-mapped
+/// - Invalid SafeTensors format
 #[inline]
 pub fn load_mmap(path: impl AsRef<Path>) -> ReaderResult<SafeTensorsMmap> {
     SafeTensorsMmap::load_sync(path.as_ref())
