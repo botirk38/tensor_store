@@ -1,141 +1,36 @@
-use std::collections::BTreeMap;
 use std::time::Duration;
-use systemstat::{BlockDeviceStats, Platform, System};
-
-#[derive(Debug, Clone)]
-pub struct DiskSnapshot {
-    stats: BTreeMap<String, BlockDeviceStats>,
-}
 
 #[derive(Debug)]
 pub struct IoMetrics {
-    pub read_iops: f64,
-    pub write_iops: f64,
-    pub total_iops: f64,
+    pub read_iops: Option<f64>,
+    pub write_iops: Option<f64>,
+    pub total_iops: Option<f64>,
     pub read_bandwidth_gbs: f64,
     pub write_bandwidth_gbs: f64,
     pub total_bandwidth_gbs: f64,
-    pub io_utilization_pct: f64,
-    pub avg_read_latency_ms: f64,
-    pub avg_write_latency_ms: f64,
-    pub is_saturated: bool,
+    pub io_utilization_pct: Option<f64>,
+    pub avg_read_latency_ms: Option<f64>,
+    pub avg_write_latency_ms: Option<f64>,
+    pub is_saturated: Option<bool>,
 }
 
-pub fn capture_disk_snapshot() -> Result<DiskSnapshot, Box<dyn std::error::Error>> {
-    let sys = System::new();
-    let stats = sys.block_device_statistics()?;
-    Ok(DiskSnapshot { stats })
-}
-
-pub fn compute_metrics(
-    before: &DiskSnapshot,
-    after: &DiskSnapshot,
-    duration: Duration,
-) -> Option<IoMetrics> {
-    let duration_secs = duration.as_secs_f64();
-    if duration_secs <= 0.0 {
-        return None;
+fn fmt_opt(o: Option<f64>, decimals: u32) -> String {
+    match o {
+        Some(v) => match decimals {
+            0 => format!("{:.0}", v),
+            1 => format!("{:.1}", v),
+            2 => format!("{:.2}", v),
+            _ => format!("{}", v),
+        },
+        None => "N/A".to_string(),
     }
-
-    let duration_ms = duration_secs * 1000.0;
-
-    let mut total_read_ios = 0usize;
-    let mut total_write_ios = 0usize;
-    let mut total_read_bytes = 0usize;
-    let mut total_write_bytes = 0usize;
-    let mut total_read_ticks = 0u64;
-    let mut total_write_ticks = 0u64;
-    let mut max_io_utilization_pct: f64 = 0.0;
-
-    for (device_name, after_stats) in &after.stats {
-        // Skip loop devices and device-mapper devices as they don't represent physical disk utilization
-        if device_name.starts_with("loop") || device_name.starts_with("dm-") {
-            continue;
-        }
-        if let Some(before_stats) = before.stats.get(device_name) {
-            let read_ios_delta = after_stats.read_ios.saturating_sub(before_stats.read_ios);
-            let write_ios_delta = after_stats.write_ios.saturating_sub(before_stats.write_ios);
-
-            let read_sectors_delta = after_stats
-                .read_sectors
-                .saturating_sub(before_stats.read_sectors);
-            let write_sectors_delta = after_stats
-                .write_sectors
-                .saturating_sub(before_stats.write_sectors);
-
-            let io_ticks_delta = after_stats.io_ticks.saturating_sub(before_stats.io_ticks);
-            let read_ticks_delta = after_stats
-                .read_ticks
-                .saturating_sub(before_stats.read_ticks);
-            let write_ticks_delta = after_stats
-                .write_ticks
-                .saturating_sub(before_stats.write_ticks);
-
-            // Calculate per-device IO utilization and track the maximum
-            let device_utilization_pct = if duration_ms > 0.0 {
-                (io_ticks_delta as f64 / duration_ms) * 100.0
-            } else {
-                0.0
-            };
-            max_io_utilization_pct = max_io_utilization_pct.max(device_utilization_pct);
-
-            total_read_ios += read_ios_delta;
-            total_write_ios += write_ios_delta;
-            total_read_bytes += read_sectors_delta * 512;
-            total_write_bytes += write_sectors_delta * 512;
-            total_read_ticks += read_ticks_delta as u64;
-            total_write_ticks += write_ticks_delta as u64;
-        }
-    }
-
-    if total_read_ios == 0 && total_write_ios == 0 {
-        return None;
-    }
-
-    let read_iops = total_read_ios as f64 / duration_secs;
-    let write_iops = total_write_ios as f64 / duration_secs;
-    let total_iops = read_iops + write_iops;
-
-    let read_bandwidth_gbs = total_read_bytes as f64 / duration_secs / 1e9;
-    let write_bandwidth_gbs = total_write_bytes as f64 / duration_secs / 1e9;
-    let total_bandwidth_gbs = read_bandwidth_gbs + write_bandwidth_gbs;
-
-    // IO utilization is the maximum utilization across all active devices
-    let io_utilization_pct = max_io_utilization_pct;
-
-    // Calculate average latencies (ticks are in milliseconds)
-    let avg_read_latency_ms = if total_read_ios > 0 {
-        total_read_ticks as f64 / total_read_ios as f64
-    } else {
-        0.0
-    };
-    let avg_write_latency_ms = if total_write_ios > 0 {
-        total_write_ticks as f64 / total_write_ios as f64
-    } else {
-        0.0
-    };
-
-    let is_saturated = io_utilization_pct > 90.0;
-
-    Some(IoMetrics {
-        read_iops,
-        write_iops,
-        total_iops,
-        read_bandwidth_gbs,
-        write_bandwidth_gbs,
-        total_bandwidth_gbs,
-        io_utilization_pct,
-        avg_read_latency_ms,
-        avg_write_latency_ms,
-        is_saturated,
-    })
 }
 
 pub fn display_metrics(metrics: &IoMetrics) {
     println!("  I/O Metrics:");
-    println!("    Read IOPS: {:.0}", metrics.read_iops);
-    println!("    Write IOPS: {:.0}", metrics.write_iops);
-    println!("    Total IOPS: {:.0}", metrics.total_iops);
+    println!("    Read IOPS: {}", fmt_opt(metrics.read_iops, 0));
+    println!("    Write IOPS: {}", fmt_opt(metrics.write_iops, 0));
+    println!("    Total IOPS: {}", fmt_opt(metrics.total_iops, 0));
     println!("    Read bandwidth: {:.2} GB/s", metrics.read_bandwidth_gbs);
     println!(
         "    Write bandwidth: {:.2} GB/s",
@@ -145,19 +40,373 @@ pub fn display_metrics(metrics: &IoMetrics) {
         "    Total bandwidth: {:.2} GB/s",
         metrics.total_bandwidth_gbs
     );
-    println!("    IO Utilization: {:.1}%", metrics.io_utilization_pct);
     println!(
-        "    Avg read latency: {:.2} ms",
-        metrics.avg_read_latency_ms
+        "    IO Utilization: {}%",
+        fmt_opt(metrics.io_utilization_pct, 1)
     );
     println!(
-        "    Avg write latency: {:.2} ms",
-        metrics.avg_write_latency_ms
+        "    Avg read latency: {} ms",
+        fmt_opt(metrics.avg_read_latency_ms, 2)
     );
-    if metrics.is_saturated {
+    println!(
+        "    Avg write latency: {} ms",
+        fmt_opt(metrics.avg_write_latency_ms, 2)
+    );
+    if metrics.is_saturated == Some(true) {
         println!("    Status: SATURATED");
     }
 }
+
+#[cfg(target_os = "linux")]
+mod imp {
+    use std::collections::BTreeMap;
+    use std::time::Duration;
+
+    use super::IoMetrics;
+
+    /// /proc/diskstats: major minor name read_ios read_merges read_sectors read_ticks
+    ///                 write_ios write_merges write_sectors write_ticks in_flight io_ticks time_in_queue
+    #[derive(Debug, Clone)]
+    pub struct DiskSnapshot {
+        pub(super) stats: BTreeMap<String, (u64, u64, u64, u64, u64, u64, u64)>,
+    }
+
+    fn parse_proc_diskstats(s: &str) -> BTreeMap<String, (u64, u64, u64, u64, u64, u64, u64)> {
+        let mut stats = BTreeMap::new();
+        for line in s.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 14 {
+                continue;
+            }
+            let name = parts[2].to_string();
+            if name.starts_with("loop") || name.starts_with("dm-") {
+                continue;
+            }
+            let read_ios: u64 = parts[3].parse().unwrap_or(0);
+            let read_sectors: u64 = parts[5].parse().unwrap_or(0);
+            let read_ticks: u64 = parts[6].parse().unwrap_or(0);
+            let write_ios: u64 = parts[7].parse().unwrap_or(0);
+            let write_sectors: u64 = parts[9].parse().unwrap_or(0);
+            let write_ticks: u64 = parts[10].parse().unwrap_or(0);
+            let io_ticks: u64 = parts[12].parse().unwrap_or(0);
+            stats.insert(
+                name,
+                (
+                    read_ios,
+                    read_sectors,
+                    read_ticks,
+                    write_ios,
+                    write_sectors,
+                    write_ticks,
+                    io_ticks,
+                ),
+            );
+        }
+        stats
+    }
+
+    pub fn capture_disk_snapshot() -> Result<DiskSnapshot, Box<dyn std::error::Error>> {
+        let s = std::fs::read_to_string("/proc/diskstats")?;
+        Ok(DiskSnapshot {
+            stats: parse_proc_diskstats(&s),
+        })
+    }
+
+    pub fn compute_metrics(
+        before: &DiskSnapshot,
+        after: &DiskSnapshot,
+        duration: Duration,
+    ) -> Option<IoMetrics> {
+        let duration_secs = duration.as_secs_f64();
+        if duration_secs <= 0.0 {
+            return None;
+        }
+        let duration_ms = duration_secs * 1000.0;
+
+        let mut total_read_ios = 0u64;
+        let mut total_write_ios = 0u64;
+        let mut total_read_bytes = 0u64;
+        let mut total_write_bytes = 0u64;
+        let mut total_read_ticks = 0u64;
+        let mut total_write_ticks = 0u64;
+        let mut total_io_ticks = 0u64;
+
+        for (name, after_v) in &after.stats {
+            if let Some(before_v) = before.stats.get(name) {
+                total_read_ios += after_v.0.saturating_sub(before_v.0);
+                total_read_bytes += (after_v.1.saturating_sub(before_v.1)) * 512;
+                total_read_ticks += after_v.2.saturating_sub(before_v.2);
+                total_write_ios += after_v.3.saturating_sub(before_v.3);
+                total_write_bytes += (after_v.4.saturating_sub(before_v.4)) * 512;
+                total_write_ticks += after_v.5.saturating_sub(before_v.5);
+                total_io_ticks += after_v.6.saturating_sub(before_v.6);
+            }
+        }
+
+        if total_read_ios == 0 && total_write_ios == 0 {
+            return None;
+        }
+
+        let read_iops = total_read_ios as f64 / duration_secs;
+        let write_iops = total_write_ios as f64 / duration_secs;
+        let total_iops = read_iops + write_iops;
+
+        let read_bandwidth_gbs = total_read_bytes as f64 / duration_secs / 1e9;
+        let write_bandwidth_gbs = total_write_bytes as f64 / duration_secs / 1e9;
+        let total_bandwidth_gbs = read_bandwidth_gbs + write_bandwidth_gbs;
+
+        let io_utilization_pct = (total_io_ticks as f64 / duration_ms) * 100.0;
+
+        let avg_read_latency_ms = if total_read_ios > 0 {
+            total_read_ticks as f64 / total_read_ios as f64
+        } else {
+            0.0
+        };
+        let avg_write_latency_ms = if total_write_ios > 0 {
+            total_write_ticks as f64 / total_write_ios as f64
+        } else {
+            0.0
+        };
+
+        let is_saturated = io_utilization_pct > 90.0;
+
+        Some(IoMetrics {
+            read_iops: Some(read_iops),
+            write_iops: Some(write_iops),
+            total_iops: Some(total_iops),
+            read_bandwidth_gbs,
+            write_bandwidth_gbs,
+            total_bandwidth_gbs,
+            io_utilization_pct: Some(io_utilization_pct),
+            avg_read_latency_ms: Some(avg_read_latency_ms),
+            avg_write_latency_ms: Some(avg_write_latency_ms),
+            is_saturated: Some(is_saturated),
+        })
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod imp {
+    use std::collections::BTreeMap;
+    use std::process::Command;
+    use std::time::Duration;
+
+    use super::IoMetrics;
+
+    /// iostat -d -I -c 1: disk name, KB/t, xfrs (total transfers), MB (total MB)
+    #[derive(Debug, Clone)]
+    pub struct DiskSnapshot {
+        pub(super) stats: BTreeMap<String, (u64, f64)>,
+    }
+
+    fn run_iostat() -> Result<String, Box<dyn std::error::Error>> {
+        let output = Command::new("iostat")
+            .args(["-d", "-I", "-c", "1"])
+            .output()?;
+        if !output.status.success() {
+            return Err("iostat failed".into());
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    fn parse_iostat_simple(s: &str) -> BTreeMap<String, (u64, f64)> {
+        let mut stats = BTreeMap::new();
+        let lines: Vec<&str> = s.lines().collect();
+        if lines.len() < 3 {
+            return stats;
+        }
+        let names: Vec<&str> = lines[0].split_whitespace().collect();
+        let values: Vec<&str> = lines[2].split_whitespace().collect();
+        for (i, name) in names.iter().enumerate() {
+            let base = i * 3;
+            let xfrs = values
+                .get(base + 1)
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0u64);
+            let mb = values
+                .get(base + 2)
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.0f64);
+            stats.insert((*name).to_string(), (xfrs, mb));
+        }
+        stats
+    }
+
+    pub fn capture_disk_snapshot() -> Result<DiskSnapshot, Box<dyn std::error::Error>> {
+        let s = run_iostat()?;
+        let stats = parse_iostat_simple(&s);
+        Ok(DiskSnapshot { stats })
+    }
+
+    pub fn compute_metrics(
+        before: &DiskSnapshot,
+        after: &DiskSnapshot,
+        duration: Duration,
+    ) -> Option<IoMetrics> {
+        let duration_secs = duration.as_secs_f64();
+        if duration_secs <= 0.0 {
+            return None;
+        }
+
+        let mut total_xfrs = 0u64;
+        let mut total_mb = 0.0f64;
+
+        for (name, (after_xfrs, after_mb)) in &after.stats {
+            if let Some((before_xfrs, before_mb)) = before.stats.get(name) {
+                total_xfrs += after_xfrs.saturating_sub(*before_xfrs);
+                total_mb += (after_mb - before_mb).max(0.0);
+            }
+        }
+
+        if total_xfrs == 0 && total_mb <= 0.0 {
+            return None;
+        }
+
+        let total_iops = total_xfrs as f64 / duration_secs;
+        let total_bandwidth_gbs = (total_mb * 1e6) / duration_secs / 1e9;
+
+        Some(IoMetrics {
+            read_iops: None,
+            write_iops: None,
+            total_iops: Some(total_iops),
+            read_bandwidth_gbs: total_bandwidth_gbs / 2.0,
+            write_bandwidth_gbs: total_bandwidth_gbs / 2.0,
+            total_bandwidth_gbs,
+            io_utilization_pct: None,
+            avg_read_latency_ms: None,
+            avg_write_latency_ms: None,
+            is_saturated: None,
+        })
+    }
+}
+
+#[cfg(target_os = "windows")]
+mod imp {
+    use std::collections::BTreeMap;
+    use std::process::Command;
+    use std::time::Duration;
+
+    use super::IoMetrics;
+
+    #[derive(Debug, Clone)]
+    pub struct DiskSnapshot {
+        pub(super) stats: BTreeMap<String, (u64, u64)>,
+    }
+
+    fn run_get_counter() -> Result<String, Box<dyn std::error::Error>> {
+        let script = r#"Get-Counter '\PhysicalDisk(*)\Disk Read Bytes','\PhysicalDisk(*)\Disk Write Bytes' -ErrorAction SilentlyContinue | ForEach-Object { $_.CounterSamples } | ForEach-Object { "$($_.InstanceName) $($_.Path) $($_.CookedValue)" }"#;
+        let output = Command::new("powershell")
+            .args(["-NoProfile", "-Command", script])
+            .output()?;
+        if !output.status.success() {
+            return Err("Get-Counter failed".into());
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    fn parse_get_counter(s: &str) -> BTreeMap<String, (u64, u64)> {
+        let mut stats: BTreeMap<String, (u64, u64)> = BTreeMap::new();
+        for line in s.lines() {
+            if line.contains("disk read bytes") {
+                if let Some((inst, val)) = parse_counter_line(line, "read") {
+                    let e = stats.entry(inst).or_insert((0, 0));
+                    e.0 = val;
+                }
+            } else if line.contains("disk write bytes") {
+                if let Some((inst, val)) = parse_counter_line(line, "write") {
+                    let e = stats.entry(inst).or_insert((0, 0));
+                    e.1 = val;
+                }
+            }
+        }
+        stats
+    }
+
+    fn parse_counter_line(line: &str, _kind: &str) -> Option<(String, u64)> {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 2 {
+            let inst = parts[0].to_string();
+            let val = parts.last()?.parse().ok()?;
+            return Some((inst, val));
+        }
+        None
+    }
+
+    pub fn capture_disk_snapshot() -> Result<DiskSnapshot, Box<dyn std::error::Error>> {
+        let s = run_get_counter()?;
+        let stats = parse_get_counter(&s);
+        Ok(DiskSnapshot { stats })
+    }
+
+    pub fn compute_metrics(
+        before: &DiskSnapshot,
+        after: &DiskSnapshot,
+        duration: Duration,
+    ) -> Option<IoMetrics> {
+        let duration_secs = duration.as_secs_f64();
+        if duration_secs <= 0.0 {
+            return None;
+        }
+
+        let mut total_read_bytes = 0u64;
+        let mut total_write_bytes = 0u64;
+
+        for (name, (after_r, after_w)) in &after.stats {
+            if let Some((before_r, before_w)) = before.stats.get(name) {
+                total_read_bytes += after_r.saturating_sub(*before_r);
+                total_write_bytes += after_w.saturating_sub(*before_w);
+            }
+        }
+
+        if total_read_bytes == 0 && total_write_bytes == 0 {
+            return None;
+        }
+
+        let read_bandwidth_gbs = total_read_bytes as f64 / duration_secs / 1e9;
+        let write_bandwidth_gbs = total_write_bytes as f64 / duration_secs / 1e9;
+        let total_bandwidth_gbs = read_bandwidth_gbs + write_bandwidth_gbs;
+
+        Some(IoMetrics {
+            read_iops: None,
+            write_iops: None,
+            total_iops: None,
+            read_bandwidth_gbs,
+            write_bandwidth_gbs,
+            total_bandwidth_gbs,
+            io_utilization_pct: None,
+            avg_read_latency_ms: None,
+            avg_write_latency_ms: None,
+            is_saturated: None,
+        })
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+mod imp {
+    use std::collections::BTreeMap;
+    use std::time::Duration;
+
+    use super::IoMetrics;
+
+    #[derive(Debug, Clone)]
+    pub struct DiskSnapshot {
+        pub(super) stats: BTreeMap<String, ()>,
+    }
+
+    pub fn capture_disk_snapshot() -> Result<DiskSnapshot, Box<dyn std::error::Error>> {
+        Err("I/O metrics not supported on this platform".into())
+    }
+
+    pub fn compute_metrics(
+        _before: &DiskSnapshot,
+        _after: &DiskSnapshot,
+        _duration: Duration,
+    ) -> Option<IoMetrics> {
+        None
+    }
+}
+
+pub use imp::{DiskSnapshot, capture_disk_snapshot, compute_metrics};
 
 pub fn display_io_metrics_delta(before: Option<DiskSnapshot>, duration: Duration) {
     match before {

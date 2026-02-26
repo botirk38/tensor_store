@@ -235,7 +235,7 @@ mod tests {
         let path = dir.path().join("async").join("model.safetensors");
         let writer = SafeTensorsWriter::new();
 
-        tokio_uring::start(async {
+        crate::test_utils::run_async(async {
             writer
                 .write_to_file_async([("a", sample_view())], None, &path)
                 .await

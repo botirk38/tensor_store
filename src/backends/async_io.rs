@@ -3,11 +3,11 @@
 //! This backend provides cross-platform async I/O operations built on Tokio.
 //! It's used as a fallback on non-Linux platforms where `io_uring` isn't available.
 
-use super::{
-    AsyncBackend, AsyncBackendFuture, BatchRequest, IoResult, buffer_slice::BufferSlice,
-    get_buffer_pool,
-};
+use super::{AsyncBackend, AsyncBackendFuture, BatchRequest, IoResult};
+#[cfg(target_os = "linux")]
+use super::{buffer_slice::BufferSlice, get_buffer_pool};
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 
 /// Tokio-based async backend (cross-platform fallback).
@@ -49,16 +49,13 @@ impl AsyncBackend for TokioAsyncBackend {
         })
     }
 
-    fn write_all<'a>(
-        &'a self,
-        path: &'a Path,
-        data: Vec<u8>,
-    ) -> AsyncBackendFuture<'a, ()> {
+    fn write_all<'a>(&'a self, path: &'a Path, data: Vec<u8>) -> AsyncBackendFuture<'a, ()> {
         Box::pin(async move { write_all(path, data).await })
     }
 }
 
 /// Ceiling division: (a + b - 1) / b
+#[cfg(target_os = "linux")]
 #[inline]
 const fn div_ceil(a: usize, b: usize) -> usize {
     a.div_ceil(b)
@@ -77,10 +74,7 @@ mod linux {
 
     #[inline]
     fn allow_direct_fallback(err: &std::io::Error) -> bool {
-        matches!(
-            err.raw_os_error(),
-            Some(libc::EINVAL | libc::EOPNOTSUPP)
-        )
+        matches!(err.raw_os_error(), Some(libc::EINVAL | libc::EOPNOTSUPP))
     }
 
     /// Loads an entire file into memory using Direct I/O when possible.
@@ -152,7 +146,7 @@ mod linux {
                 file.sync_all().await
             }
         } else {
-            let mut file = TokioFile::create(path).await?;
+            let file = TokioFile::create(path).await?;
             file.write_all(&data).await?;
             file.sync_all().await
         }
@@ -402,25 +396,33 @@ mod non_linux {
 
     /// Loads an entire file into memory.
     ///
+    /// On non-Linux platforms, regular files do not support true async I/O.
+    /// This delegates to the sync backend via `spawn_blocking` to avoid
+    /// tokio::fs overhead (double indirection through blocking pool).
+    ///
     /// # Errors
     ///
     /// - File cannot be opened or read
     /// - File size exceeds `usize` limits
     #[inline]
     pub async fn load<P: AsRef<Path>>(path: P) -> IoResult<Vec<u8>> {
-        let path_ref = path.as_ref();
-        let mut file = TokioFile::open(path_ref).await?;
-        let metadata = file.metadata().await?;
-        let file_size = usize::try_from(metadata.len()).map_err(|_e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidInput, "file too large")
-        })?;
-
-        let mut buf = get_buffer_pool().get(file_size);
-        file.read_exact(buf.as_mut_slice()).await?;
-        buf.truncate(file_size);
-        Ok(buf.to_vec())
+        let path_buf = path.as_ref().to_path_buf();
+        tokio::task::spawn_blocking(move || super::super::sync_backend().load(path_buf.as_path()))
+            .await
+            .map_err(|_| std::io::Error::other("spawn_blocking panicked"))?
     }
 
+    /// Loads a file in parallel chunks using the sync backend.
+    ///
+    /// On non-Linux platforms, this delegates to the sync backend's
+    /// `load_parallel` (native threads + blocking I/O) via `spawn_blocking`,
+    /// matching sync parallel performance while preserving the async API.
+    ///
+    /// # Errors
+    ///
+    /// - `chunks` is zero
+    /// - File cannot be opened or read
+    /// - File size exceeds `usize` limits
     #[inline]
     pub async fn load_parallel<P: AsRef<Path>>(path: P, chunks: usize) -> IoResult<Vec<u8>> {
         if chunks == 0 {
@@ -429,108 +431,22 @@ mod non_linux {
                 "chunks must be greater than 0",
             ));
         }
-
-        let path_ref = path.as_ref();
-        let file = TokioFile::open(path_ref).await?;
-        let metadata = file.metadata().await?;
-        let file_size = usize::try_from(metadata.len()).map_err(|_e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidInput, "file too large")
-        })?;
-
-        let chunk_size = div_ceil(file_size, chunks);
-
-        let max_capacity = usize::try_from(isize::MAX)
-            .expect("isize::MAX should always fit in usize on the same platform");
-        if chunk_size > max_capacity {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!(
-                    "Chunk size ({} bytes) exceeds maximum Vec capacity ({} bytes). \
-                     Increase chunks to at least {} to proceed.",
-                    chunk_size,
-                    max_capacity,
-                    file_size.div_ceil(max_capacity)
-                ),
-            ));
-        }
-
-        let mut final_buf = get_buffer_pool().get(file_size);
-        let mut handles = Vec::with_capacity(chunks);
-
-        for i in 0..chunks {
-            let start = i.checked_mul(chunk_size).ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "chunk calculation overflow",
-                )
-            })?;
-            let end = std::cmp::min(
-                start.checked_add(chunk_size).ok_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "chunk calculation overflow",
-                    )
-                })?,
-                file_size,
-            );
-            let actual_chunk_size = end.checked_sub(start).ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "chunk calculation underflow",
-                )
-            })?;
-
-            if actual_chunk_size == 0 {
-                break;
-            }
-
-            let chunk_slice = final_buf
-                .as_mut_slice()
-                .get_mut(start..end)
-                .ok_or_else(|| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid chunk range")
-                })?;
-
-            let mut buffer_slice = unsafe { BufferSlice::from_slice(chunk_slice) };
-            let path_clone = path_ref.to_path_buf();
-
-            let handle = tokio::spawn(async move {
-                // Open a NEW file handle instead of cloning to avoid shared file position cursor
-                let mut file_for_chunk = TokioFile::open(&path_clone).await?;
-
-                file_for_chunk
-                    .seek(SeekFrom::Start(u64::try_from(start).map_err(|_e| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::InvalidInput,
-                            "seek offset too large",
-                        )
-                    })?))
-                    .await?;
-
-                let slice = unsafe { buffer_slice.as_mut_slice() };
-                file_for_chunk.read_exact(slice).await?;
-                IoResult::Ok(())
-            });
-
-            handles.push(handle);
-        }
-
-        for handle in handles {
-            handle.await??;
-        }
-
-        final_buf.truncate(file_size);
-        Ok(final_buf.to_vec())
+        let path_buf = path.as_ref().to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            super::super::sync_backend().load_parallel(path_buf.as_path(), chunks)
+        })
+        .await
+        .map_err(|_| std::io::Error::other("spawn_blocking panicked"))?
     }
 
     #[inline]
     pub async fn load_range<P: AsRef<Path>>(path: P, offset: u64, len: usize) -> IoResult<Vec<u8>> {
-        let mut file = TokioFile::open(path.as_ref()).await?;
-        file.seek(SeekFrom::Start(offset)).await?;
-        let mut buf = get_buffer_pool().get(len);
-        file.read_exact(buf.as_mut_slice()).await?;
-        buf.truncate(len);
-        Ok(buf.to_vec())
+        let path_buf = path.as_ref().to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            super::super::sync_backend().load_range(path_buf.as_path(), offset, len)
+        })
+        .await
+        .map_err(|_| std::io::Error::other("spawn_blocking panicked"))?
     }
 
     #[inline]
@@ -571,7 +487,7 @@ mod non_linux {
         use tokio::io::AsyncWriteExt;
 
         if data.is_empty() {
-            let mut file = TokioFile::create(path).await?;
+            let file = TokioFile::create(path).await?;
             file.sync_all().await?;
             return Ok(());
         }
@@ -620,6 +536,7 @@ mod tests {
     // Unit Tests - Pure Functions
     // -----------------------------------------------------------------------
 
+    #[cfg(target_os = "linux")]
     mod helpers {
         use super::*;
 

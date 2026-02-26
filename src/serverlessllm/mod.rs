@@ -11,8 +11,8 @@ pub use types::TensorEntry;
 
 // Re-export reader types
 pub use reader::{
-    ServerlessLLMOwned, ServerlessLLMIndex, ServerlessLLMMmap, Tensor, TensorMmap, load, load_mmap,
-    load_sync, parse_index, parse_index_sync,
+    ServerlessLLMIndex, ServerlessLLMMmap, ServerlessLLMOwned, Tensor, TensorMmap, load, load_mmap,
+    load_parallel, load_parallel_sync, load_sync, parse_index, parse_index_sync,
 };
 
 // Re-export writer types

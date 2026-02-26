@@ -345,6 +345,21 @@ pub fn load_sync(path: impl AsRef<Path>) -> ReaderResult<SafeTensorsOwned> {
     SafeTensorsOwned::load_sync(path.as_ref())
 }
 
+/// Synchronous parallel load using multiple threads (blocking I/O).
+///
+/// Splits the file into `chunks` segments and reads them concurrently via
+/// `std::thread`. Returns a `SafeTensorsOwned` with the parsed tensors.
+///
+/// # Errors
+///
+/// - File cannot be read
+/// - Invalid SafeTensors format
+#[inline]
+pub fn load_parallel_sync(path: impl AsRef<Path>, chunks: usize) -> ReaderResult<SafeTensorsOwned> {
+    let bytes = backends::sync_backend().load_parallel(path.as_ref(), chunks)?;
+    SafeTensorsOwned::from_bytes(bytes)
+}
+
 /// Synchronous ranged load **only when the range covers the full file**.
 ///
 /// SafeTensors cannot be deserialized from partial ranges; this helper enforces
@@ -459,7 +474,7 @@ mod tests {
         let path = dir.path().join("model.safetensors");
         std::fs::write(&path, sample_bytes()).unwrap();
 
-        tokio_uring::start(async {
+        crate::test_utils::run_async(async {
             let owned = load(&path).await.expect("load async");
             assert_eq!(owned.len(), 1);
 
@@ -488,19 +503,19 @@ mod tests {
     fn test_transmute_soundness_owned() {
         // Verify that the transmute lifetime hack doesn't allow use-after-free
         // This test ensures drop order is correct
-        
+
         let bytes = sample_bytes();
         let reader = SafeTensorsOwned::from_bytes(bytes).unwrap();
-        
+
         // Access is fine while reader lives
         let _view = reader.tensor("tensor").unwrap();
         assert_eq!(_view.shape(), &[4]);
-        
+
         // This would not compile if lifetimes were incorrect (uncomment to verify):
         // let view = reader.tensor("tensor").unwrap();
         // drop(reader);
         // let _ = view.data();  // ERROR: use after free
-        
+
         // Reader can be cloned (re-parses from buffer)
         let reader2 = reader.clone();
         drop(reader);
@@ -515,11 +530,11 @@ mod tests {
         std::fs::write(&path, sample_bytes()).unwrap();
 
         let reader = load_mmap(&path).unwrap();
-        
+
         // Access is fine while reader lives
         let _view = reader.tensor("tensor").unwrap();
         assert_eq!(_view.shape(), &[4]);
-        
+
         // Mmap data remains valid for struct lifetime
         drop(reader);
         // _view is now invalid (would not compile)
@@ -529,17 +544,21 @@ mod tests {
     fn test_field_drop_order_owned() {
         // Verify fields are declared in correct order for drop safety
         // tensors must be declared before buffer so it drops first
-        
+
         let owned = SafeTensorsOwned::from_bytes(sample_bytes()).unwrap();
         let base = &owned as *const _ as usize;
-        
+
         // Get field offsets
         let tensors_offset = &owned.tensors as *const _ as usize - base;
         let buffer_offset = &owned.buffer as *const _ as usize - base;
-        
-        assert!(tensors_offset < buffer_offset, 
+
+        assert!(
+            tensors_offset < buffer_offset,
             "tensors field must be declared before buffer for correct drop order. \
-             tensors offset: {}, buffer offset: {}", tensors_offset, buffer_offset);
+             tensors offset: {}, buffer offset: {}",
+            tensors_offset,
+            buffer_offset
+        );
     }
 
     #[test]
@@ -551,30 +570,34 @@ mod tests {
 
         let mmap_reader = load_mmap(&path).unwrap();
         let base = &mmap_reader as *const _ as usize;
-        
+
         // Get field offsets
         let tensors_offset = &mmap_reader.tensors as *const _ as usize - base;
         let mmap_offset = &mmap_reader.mmap as *const _ as usize - base;
-        
-        assert!(tensors_offset < mmap_offset, 
+
+        assert!(
+            tensors_offset < mmap_offset,
             "tensors field must be declared before mmap for correct drop order. \
-             tensors offset: {}, mmap offset: {}", tensors_offset, mmap_offset);
+             tensors offset: {}, mmap offset: {}",
+            tensors_offset,
+            mmap_offset
+        );
     }
 
     #[test]
     fn test_no_send_sync_by_default() {
         // Verify that these types are not Send/Sync without explicit impl
         // This prevents accidental threading issues
-        
+
         fn assert_not_send<T: Send>() {}
         fn assert_not_sync<T: Sync>() {}
-        
+
         // These should fail to compile if uncommented:
         // assert_not_send::<SafeTensorsOwned>();
         // assert_not_sync::<SafeTensorsOwned>();
         // assert_not_send::<SafeTensorsMmap>();
         // assert_not_sync::<SafeTensorsMmap>();
-        
+
         // SafeTensors from upstream IS Send+Sync, which is fine since it borrows external data
         assert_not_send::<SafeTensors<'_>>();
         assert_not_sync::<SafeTensors<'_>>();

@@ -118,6 +118,10 @@ Cross-platform async I/O using Tokio's filesystem operations.
 - Integrates with existing Tokio applications
 - Parallel loading support
 
+**Platform behavior**:
+- **Linux**: Uses io_uring for true async I/O (best performance)
+- **macOS/Windows**: Regular files do not support true async I/O (no kqueue/epoll for file reads). The async API delegates to the sync backend via `spawn_blocking`, matching sync performance while preserving the async interface. Using `tokio::fs::File` directly would add double indirection (task + blocking pool) and be significantly slower.
+
 **When to use**:
 - Non-Linux platforms
 - Applications already using Tokio runtime
@@ -231,10 +235,12 @@ for (i, slice) in slices.into_iter().enumerate() {
 The module automatically selects the best backend:
 
 ```rust
-// On Linux: uses io_uring::load
-// On macOS/Windows: uses async_io::load
+// On Linux: uses io_uring::load (true async I/O)
+// On macOS/Windows: uses async_io::load (delegates to sync via spawn_blocking)
 let data = backends::load("file.bin").await?;
 ```
+
+**Performance note**: Async is optimized for Linux (io_uring). On macOS and Windows, regular files do not support true async I/O, so the async backend uses the sync backend under the hood. For maximum throughput on non-Linux platforms, `load_sync` and `load_parallel_sync` are equivalent to their async counterparts.
 
 Manual backend selection when needed:
 
@@ -279,6 +285,8 @@ cargo test mmap
 1. **Use parallel loading for large files** (>100MB)
 2. **Match chunk count to CPU cores** for optimal parallelism
 3. **Use buffer pool** for repeated allocations
-4. **Consider O_DIRECT** for very large models
+4. **Consider O_DIRECT** for very large models (Linux only)
 5. **Prefer mmap** for random access patterns
 6. **Benchmark your specific workload** - optimal backend varies
+7. **On macOS/Windows**: Async and sync parallel loading have equivalent performance;
+   the async API uses the sync backend under the hood

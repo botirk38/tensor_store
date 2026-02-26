@@ -6,7 +6,8 @@
 //! # Platform Support
 //!
 //! - **Linux**: `io_uring` backend for async operations (maximum performance)
-//! - **Cross-platform**: tokio async I/O fallback
+//! - **macOS/Windows**: Async API delegates to sync backend via `spawn_blocking`;
+//!   regular files do not support true async I/O, so this matches sync performance
 //! - **Sync operations**: memory-mapped I/O on Linux, standard file I/O elsewhere
 //!
 //! # Usage
@@ -32,13 +33,15 @@
 pub mod async_io;
 pub mod batch;
 pub mod buffer_slice;
+#[cfg(target_os = "linux")]
 pub mod io_uring;
 pub mod mmap;
+#[cfg(target_os = "linux")]
 pub mod odirect;
 pub mod sync_io;
 
-pub use std::io::Result as IoResult;
 use std::future::Future;
+pub use std::io::Result as IoResult;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use zeropool::BufferPool;
@@ -56,8 +59,7 @@ static BUFFER_POOL: std::sync::OnceLock<BufferPool> = std::sync::OnceLock::new()
 pub type BatchRequest = (PathBuf, u64, usize);
 
 /// Boxed future alias to keep backend trait signatures readable.
-pub type AsyncBackendFuture<'a, T> =
-    Pin<Box<dyn Future<Output = IoResult<T>> + 'a>>;
+pub type AsyncBackendFuture<'a, T> = Pin<Box<dyn Future<Output = IoResult<T>> + 'a>>;
 
 /// Safe interface for asynchronous backends.
 pub trait AsyncBackend: Send + Sync + 'static {
@@ -77,11 +79,7 @@ pub trait AsyncBackend: Send + Sync + 'static {
         &'a self,
         requests: &'a [BatchRequest],
     ) -> AsyncBackendFuture<'a, Vec<batch::FlattenedResult>>;
-    fn write_all<'a>(
-        &'a self,
-        path: &'a Path,
-        data: Vec<u8>,
-    ) -> AsyncBackendFuture<'a, ()>;
+    fn write_all<'a>(&'a self, path: &'a Path, data: Vec<u8>) -> AsyncBackendFuture<'a, ()>;
 }
 
 /// Safe interface for synchronous backends.
@@ -89,10 +87,7 @@ pub trait SyncBackend: Send + Sync + 'static {
     fn load(&self, path: &Path) -> IoResult<Vec<u8>>;
     fn load_parallel(&self, path: &Path, chunks: usize) -> IoResult<Vec<u8>>;
     fn load_range(&self, path: &Path, offset: u64, len: usize) -> IoResult<Vec<u8>>;
-    fn load_range_batch(
-        &self,
-        requests: &[BatchRequest],
-    ) -> IoResult<Vec<batch::FlattenedResult>>;
+    fn load_range_batch(&self, requests: &[BatchRequest]) -> IoResult<Vec<batch::FlattenedResult>>;
     fn write_all(&self, path: &Path, data: Vec<u8>) -> IoResult<()>;
 }
 
@@ -121,7 +116,8 @@ pub fn get_buffer_pool() -> &'static BufferPool {
 }
 
 #[cfg(target_os = "linux")]
-static ASYNC_BACKEND: io_uring::IoUringBackend = io_uring::IoUringBackend;
+static ASYNC_BACKEND: crate::backends::io_uring::IoUringBackend =
+    crate::backends::io_uring::IoUringBackend;
 #[cfg(not(target_os = "linux"))]
 static ASYNC_BACKEND: async_io::TokioAsyncBackend = async_io::TokioAsyncBackend;
 static SYNC_BACKEND: sync_io::DefaultSyncBackend = sync_io::DefaultSyncBackend;
@@ -139,8 +135,8 @@ pub fn sync_backend() -> &'static dyn SyncBackend {
 #[cfg(test)]
 mod tests {
     use super::{
-        async_backend, get_buffer_pool, sync_backend, CHECKPOINT_MAX_BUFFERS_PER_SHARD,
-        CHECKPOINT_MIN_BUFFER_SIZE, CHECKPOINT_NUM_SHARDS, CHECKPOINT_TLS_CACHE_SIZE,
+        CHECKPOINT_MAX_BUFFERS_PER_SHARD, CHECKPOINT_MIN_BUFFER_SIZE, CHECKPOINT_NUM_SHARDS,
+        CHECKPOINT_TLS_CACHE_SIZE, async_backend, get_buffer_pool, sync_backend,
     };
 
     #[test]

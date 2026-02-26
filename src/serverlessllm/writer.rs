@@ -327,7 +327,7 @@ mod tests {
         let index_path = dir.path().join("async").join("tensor_index.json");
         let part_path = dir.path().join("tensor.data_1");
 
-        tokio_uring::start(async {
+        crate::test_utils::run_async(async {
             write_index(&index_path, &sample_entries())
                 .await
                 .expect("write index async");

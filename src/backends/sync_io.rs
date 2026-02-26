@@ -1,6 +1,6 @@
 //! Synchronous blocking I/O using std::fs
 
-use super::{buffer_slice::BufferSlice, get_buffer_pool, IoResult, SyncBackend};
+use super::{IoResult, SyncBackend, buffer_slice::BufferSlice, get_buffer_pool};
 use std::path::{Path, PathBuf};
 
 /// Ceiling division: (a + b - 1) / b
@@ -46,8 +46,8 @@ impl SyncBackend for DefaultSyncBackend {
 mod linux {
 
     use super::super::odirect::{
-        alloc_aligned, can_use_direct_read, can_use_direct_write, is_block_aligned,
-        open_direct_read_sync, open_direct_write_sync, BLOCK_SIZE,
+        BLOCK_SIZE, alloc_aligned, can_use_direct_read, can_use_direct_write, is_block_aligned,
+        open_direct_read_sync, open_direct_write_sync,
     };
     use super::*;
     use rayon::prelude::*;
@@ -516,7 +516,7 @@ mod non_linux {
     /// Write an entire buffer to a file synchronously.
     pub fn write_all(path: impl AsRef<Path>, data: Vec<u8>) -> IoResult<()> {
         if data.is_empty() {
-            let mut file = File::create(path.as_ref())?;
+            let file = File::create(path.as_ref())?;
             file.sync_all()?;
             return Ok(());
         }

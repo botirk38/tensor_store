@@ -23,10 +23,11 @@ cargo run --bin demo -- safetensors <SCENARIO> [--fixture <NAME>]
 ```
 
 **Available Scenarios:**
-- `async` - Async loading with io_uring (Linux) or tokio (other platforms)
+- `async` - Async sequential loading (io_uring on Linux, tokio elsewhere)
 - `sync` - Synchronous loading
 - `mmap` - Memory-mapped lazy loading
-- `parallel` - Parallel multi-core loading
+- `parallel-async` - Async parallel multi-core loading (io_uring on Linux, tokio elsewhere)
+- `parallel-sync` - Sync parallel multi-core loading (blocking I/O, multiple threads)
 - `metadata` - Detailed tensor metadata exploration
 - `all` - Run all scenarios sequentially
 
@@ -37,9 +38,11 @@ cargo run --bin demo -- serverlessllm <SCENARIO> [--fixture <NAME>]
 ```
 
 **Available Scenarios:**
-- `async` - Async loading with partition information
+- `async` - Async sequential loading (io_uring on Linux, tokio elsewhere)
 - `sync` - Synchronous loading
 - `mmap` - Memory-mapped lazy loading
+- `parallel-async` - Async parallel multi-core loading (io_uring on Linux, tokio elsewhere)
+- `parallel-sync` - Sync parallel multi-core loading (blocking I/O, multiple threads)
 - `metadata` - Index structure and partition statistics
 - `all` - Run all scenarios sequentially
 
@@ -61,7 +64,7 @@ cargo run --bin demo -- serverlessllm all
 
 Demo with specific fixture:
 ```bash
-cargo run --bin demo -- safetensors parallel --fixture qwen2-0.5b
+cargo run --bin demo -- safetensors parallel-async --fixture qwen2-0.5b
 ```
 
 Explore ServerlessLLM metadata:

@@ -234,6 +234,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Fixture: {}", fixture);
     println!("  Test directory: {}", serverlessllm_dir);
     println!();
+
+    let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         match mode {
             ProfileMode::Async => {

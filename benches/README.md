@@ -30,38 +30,36 @@ cargo bench --bench serverlessllm
 ### Run specific backend benchmarks
 
 ```bash
-# Run only io_uring benchmarks (Linux only)
-cargo bench -- io_uring
-
 # Run only sync benchmarks
 cargo bench -- sync
 
 # Run only mmap benchmarks
 cargo bench -- mmap
+
+# Run only async benchmarks (Linux: io_uring, non-Linux: tokio)
+cargo bench -- async
 ```
 
 ## Benchmark Suite
 
-### SafeTensors Benchmarks
+Each format has benchmarks per backend (`safetensors_*`, `serverlessllm_*`):
 
-| Benchmark | Platform | Description |
-|-----------|----------|-------------|
-| `io_uring_safetensors_load_{model}` | Linux only | Async loading with io_uring backend |
-| `io_uring_safetensors_parallel_{N}_{model}` | Linux only | Parallel loading with N chunks using io_uring |
-| `tokio_safetensors_load_{model}` | Non-Linux | Async loading with Tokio backend |
-| `tokio_safetensors_parallel_4_{model}` | Non-Linux | Parallel loading with 4 chunks using Tokio |
-| `sync_safetensors_load_{model}` | All platforms | Synchronous loading using std::fs |
-| `mmap_safetensors_load_{model}` | All platforms | Memory-mapped loading |
-| `original_safetensors_load_{model}` | All platforms | Reference implementation using safetensors crate |
+### SafeTensors (`benches/safetensors.rs`)
 
-### ServerlessLLM Benchmarks
+| Group | Benchmark | Platform | Description |
+|-------|-----------|----------|-------------|
+| `safetensors_sync` | `load/{model}` | All | Synchronous loading |
+| `safetensors_mmap` | `load/{model}` | All | Memory-mapped loading |
+| `safetensors_async` | `load/{model}` | All | Async loading (io_uring on Linux, tokio elsewhere) |
+| `safetensors_async_parallel` | `load/{model}` | Linux only | Parallel async loading |
 
-| Benchmark | Platform | Description |
-|-----------|----------|-------------|
-| `io_uring_serverlessllm_load_{model}` | Linux only | Async loading with io_uring backend |
-| `tokio_serverlessllm_load_{model}` | Non-Linux | Async loading with Tokio backend |
-| `sync_serverlessllm_load_{model}` | All platforms | Synchronous loading using std::fs |
-| `mmap_serverlessllm_load_{model}` | All platforms | Memory-mapped loading |
+### ServerlessLLM (`benches/serverlessllm.rs`)
+
+| Group | Benchmark | Platform | Description |
+|-------|-----------|----------|-------------|
+| `serverlessllm_sync` | `load/{model}` | All | Synchronous loading |
+| `serverlessllm_mmap` | `load/{model}` | All | Memory-mapped loading |
+| `serverlessllm_async` | `load/{model}` | All | Async loading (io_uring on Linux, tokio elsewhere) |
 
 ## Test Fixtures
 
@@ -112,7 +110,7 @@ Criterion provides statistical analysis including:
 
 Example output:
 ```
-io_uring_safetensors_load_qwen-qwen2-0.5b
+safetensors_sync/load/qwen-qwen2-0.5b
                         time:   [52.341 ms 52.523 ms 52.728 ms]
                         change: [-3.2415% -2.5741% -1.9251%] (p = 0.00 < 0.05)
                         Performance has improved.
@@ -161,14 +159,14 @@ Generate flamegraphs for specific benchmarks:
 # Install cargo-flamegraph
 cargo install flamegraph
 
-# Profile SafeTensors loading
-cargo flamegraph --bench safetensors -- --bench sync_safetensors
+# Profile SafeTensors sync loading
+cargo flamegraph --bench safetensors -- safetensors_sync
 
-# Profile ServerlessLLM loading
-cargo flamegraph --bench serverlessllm -- --bench io_uring_serverlessllm
+# Profile ServerlessLLM async loading (Linux)
+cargo flamegraph --bench serverlessllm -- serverlessllm_async
 
 # Profile with sudo for perf access (Linux)
-sudo cargo flamegraph --bench safetensors -- --bench io_uring_safetensors
+sudo cargo flamegraph --bench safetensors -- safetensors_async
 ```
 
 See [profiling/README.md](../profiling/README.md) for detailed profiling guide.
@@ -214,14 +212,13 @@ Each benchmark:
 Example results from development machine (Linux 6.17.0, 16 cores):
 
 **SafeTensors (523MB file)**:
-- `io_uring_parallel_16`: ~52ms
-- `io_uring_load`: ~55ms
-- `sync_safetensors`: ~58ms
-- `mmap_safetensors`: ~65ms (with page touches)
-- `original_safetensors`: ~60ms
+- `safetensors_async_parallel`: ~52ms
+- `safetensors_async`: ~55ms
+- `safetensors_sync`: ~58ms
+- `safetensors_mmap`: ~65ms (with page touches)
 
 **Key findings**:
-- Parallel io_uring: ~5% faster than sync baseline
+- Parallel async: ~5% faster than sync baseline
 - Zero-copy optimizations: 50% faster than naive parallel
 - Buffer pooling: 70% faster than non-pooled
 

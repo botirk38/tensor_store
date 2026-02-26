@@ -54,11 +54,7 @@ impl AsyncBackend for IoUringBackend {
         Box::pin(async move { load_batch(requests).await })
     }
 
-    fn write_all<'a>(
-        &'a self,
-        path: &'a Path,
-        data: Vec<u8>,
-    ) -> AsyncBackendFuture<'a, ()> {
+    fn write_all<'a>(&'a self, path: &'a Path, data: Vec<u8>) -> AsyncBackendFuture<'a, ()> {
         Box::pin(async move { write_all(path, data).await })
     }
 }
@@ -75,10 +71,7 @@ fn statx_file_size(stat: libc::statx) -> IoResult<usize> {
 
 #[inline]
 fn allow_direct_fallback(err: &std::io::Error) -> bool {
-    matches!(
-        err.raw_os_error(),
-        Some(libc::EINVAL | libc::EOPNOTSUPP)
-    )
+    matches!(err.raw_os_error(), Some(libc::EINVAL | libc::EOPNOTSUPP))
 }
 
 // ---------------------------------------------------------------------------
@@ -540,8 +533,8 @@ pub async fn write_all(path: impl AsRef<Path>, data: Vec<u8>) -> IoResult<()> {
 #[cfg(target_os = "linux")]
 mod tests {
     use super::{
-        build_chunk_requests, checked_arithmetic, load, load_parallel, load_range,
-        statx_file_size, validate_chunk_size, validate_read_count, write_all,
+        build_chunk_requests, checked_arithmetic, load, load_parallel, load_range, statx_file_size,
+        validate_chunk_size, validate_read_count, write_all,
     };
 
     // Helper to run async tests in tokio-uring runtime
@@ -616,7 +609,7 @@ mod tests {
 
     mod chunk_building {
         use super::build_chunk_requests;
-        use crate::backends::odirect::{align_to_block, BLOCK_SIZE};
+        use crate::backends::odirect::{BLOCK_SIZE, align_to_block};
 
         #[test]
         fn test_build_chunk_requests_single_chunk() {

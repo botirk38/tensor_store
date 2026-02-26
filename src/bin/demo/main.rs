@@ -41,14 +41,16 @@ enum Commands {
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 enum SafeTensorsScenario {
-    /// Async loading with io_uring (Linux) or tokio (other platforms)
+    /// Async sequential loading (io_uring on Linux, tokio elsewhere)
     Async,
     /// Synchronous loading
     Sync,
     /// Memory-mapped lazy loading
     Mmap,
-    /// Parallel multi-core loading
-    Parallel,
+    /// Async parallel multi-core loading (io_uring on Linux, tokio elsewhere)
+    ParallelAsync,
+    /// Sync parallel multi-core loading (blocking I/O, multiple threads)
+    ParallelSync,
     /// Detailed tensor metadata exploration
     Metadata,
     /// Run all scenarios sequentially
@@ -57,12 +59,16 @@ enum SafeTensorsScenario {
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 enum ServerlessLLMScenario {
-    /// Async loading with partition information
+    /// Async sequential loading (io_uring on Linux, tokio elsewhere)
     Async,
     /// Synchronous loading
     Sync,
     /// Memory-mapped lazy loading
     Mmap,
+    /// Async parallel multi-core loading (io_uring on Linux, tokio elsewhere)
+    ParallelAsync,
+    /// Sync parallel multi-core loading (blocking I/O, multiple threads)
+    ParallelSync,
     /// Index structure and partition statistics
     Metadata,
     /// Run all scenarios sequentially
@@ -75,7 +81,8 @@ impl SafeTensorsScenario {
             Self::Async => "async",
             Self::Sync => "sync",
             Self::Mmap => "mmap",
-            Self::Parallel => "parallel",
+            Self::ParallelAsync => "parallel-async",
+            Self::ParallelSync => "parallel-sync",
             Self::Metadata => "metadata",
             Self::All => "all",
         }
@@ -88,6 +95,8 @@ impl ServerlessLLMScenario {
             Self::Async => "async",
             Self::Sync => "sync",
             Self::Mmap => "mmap",
+            Self::ParallelAsync => "parallel-async",
+            Self::ParallelSync => "parallel-sync",
             Self::Metadata => "metadata",
             Self::All => "all",
         }

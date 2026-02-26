@@ -48,6 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - [Benchmarks](benches/README.md)
 - [Profiling](profiling/README.md)
 - [Scripts](scripts/README.md)
+- [Python Bindings](bindings/python/README.md)
 - [Changelog](CHANGELOG.md)
 
 ## License

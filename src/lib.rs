@@ -23,9 +23,27 @@ pub use safetensors::{SafeTensorsMmap, SafeTensorsOwned, SafeTensorsWriter};
 
 // ServerlessLLM types
 pub use serverlessllm::{
-    ServerlessLLMOwned, ServerlessLLMIndex, ServerlessLLMMmap, ServerlessLlmWriter, Tensor, TensorEntry,
-    TensorMmap,
+    ServerlessLLMIndex, ServerlessLLMMmap, ServerlessLLMOwned, ServerlessLlmWriter, Tensor,
+    TensorEntry, TensorMmap,
 };
 
 // Conversion functions
 pub use converters::safetensors_to_serverlessllm::convert_safetensors_to_serverlessllm;
+
+#[cfg(test)]
+pub(crate) mod test_utils {
+    /// Run an async block. Uses io_uring on Linux, tokio on other platforms.
+    pub fn run_async<F, O>(f: F) -> O
+    where
+        F: std::future::Future<Output = O>,
+    {
+        #[cfg(target_os = "linux")]
+        {
+            tokio_uring::start(f).unwrap()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            tokio::runtime::Runtime::new().unwrap().block_on(f)
+        }
+    }
+}

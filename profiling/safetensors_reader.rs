@@ -231,7 +231,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Test file: {}", test_file);
     println!();
 
-    // Use minimal queue size for profiling to avoid memory conflicts with perf/flamegraph
+    let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         match mode {
             ProfileMode::Async => {

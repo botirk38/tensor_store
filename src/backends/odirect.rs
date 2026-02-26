@@ -440,8 +440,8 @@ pub fn open_direct_write_sync(path: &Path) -> IoResult<std::fs::File> {
 #[cfg(test)]
 mod tests {
     use super::{
-        align_to_block, alloc_aligned, can_use_direct_read, can_use_direct_write, is_block_aligned,
-        pad_to_block, OwnedAlignedBuffer, BLOCK_SIZE, BLOCK_SIZE_U64,
+        BLOCK_SIZE, BLOCK_SIZE_U64, OwnedAlignedBuffer, align_to_block, alloc_aligned,
+        can_use_direct_read, can_use_direct_write, is_block_aligned, pad_to_block,
     };
     use tokio_uring::buf::IoBuf;
 
@@ -574,4 +574,3 @@ mod tests {
         assert!(result.is_err());
     }
 }
-

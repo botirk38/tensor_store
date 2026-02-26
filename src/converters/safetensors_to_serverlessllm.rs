@@ -223,8 +223,8 @@ mod tests {
         let tensor1 = TensorView::new(Dtype::U8, vec![4], &data1).expect("create tensor1");
         let tensor2 = TensorView::new(Dtype::U8, vec![2, 3], &data2).expect("create tensor2");
 
-        let bytes = serialize([("weight", tensor1), ("bias", tensor2)], None)
-            .expect("serialize tensors");
+        let bytes =
+            serialize([("weight", tensor1), ("bias", tensor2)], None).expect("serialize tensors");
 
         fs::write(&path, bytes).expect("write safetensors file");
         path
@@ -238,7 +238,10 @@ mod tests {
     fn test_dtype_to_serverlessllm_supported() {
         assert_eq!(dtype_to_serverlessllm(Dtype::F32).unwrap(), "torch.float32");
         assert_eq!(dtype_to_serverlessllm(Dtype::F16).unwrap(), "torch.float16");
-        assert_eq!(dtype_to_serverlessllm(Dtype::BF16).unwrap(), "torch.bfloat16");
+        assert_eq!(
+            dtype_to_serverlessllm(Dtype::BF16).unwrap(),
+            "torch.bfloat16"
+        );
         assert_eq!(dtype_to_serverlessllm(Dtype::I32).unwrap(), "torch.int32");
         assert_eq!(dtype_to_serverlessllm(Dtype::I8).unwrap(), "torch.int8");
         assert_eq!(dtype_to_serverlessllm(Dtype::U8).unwrap(), "torch.uint8");
@@ -293,7 +296,7 @@ mod tests {
         let input = create_test_safetensors(dir.path(), "input.safetensors");
         let output = dir.path().join("output");
 
-        tokio_uring::start(async {
+        crate::test_utils::run_async(async {
             let result = convert_safetensors_to_serverlessllm(
                 input.to_str().unwrap(),
                 output.to_str().unwrap(),
@@ -312,7 +315,7 @@ mod tests {
         let input = create_test_safetensors(dir.path(), "input.safetensors");
         let output = dir.path().join("output");
 
-        tokio_uring::start(async {
+        crate::test_utils::run_async(async {
             convert_safetensors_to_serverlessllm(
                 input.to_str().unwrap(),
                 output.to_str().unwrap(),
@@ -343,7 +346,7 @@ mod tests {
         let input = create_test_safetensors(dir.path(), "input.safetensors");
         let output = dir.path().join("output");
 
-        tokio_uring::start(async {
+        crate::test_utils::run_async(async {
             convert_safetensors_to_serverlessllm(
                 input.to_str().unwrap(),
                 output.to_str().unwrap(),
@@ -375,7 +378,7 @@ mod tests {
         let input = create_test_safetensors(dir.path(), "input.safetensors");
         let output = dir.path().join("output");
 
-        tokio_uring::start(async {
+        crate::test_utils::run_async(async {
             convert_safetensors_to_serverlessllm(
                 input.to_str().unwrap(),
                 output.to_str().unwrap(),
@@ -394,12 +397,10 @@ mod tests {
         let partition_data = fs::read(output.join("tensor.data_0")).expect("read partition");
 
         // Extract tensor data from partition
-        let weight_data = &partition_data[
-            weight_entry.offset as usize..(weight_entry.offset + weight_entry.size) as usize
-        ];
-        let bias_data = &partition_data[
-            bias_entry.offset as usize..(bias_entry.offset + bias_entry.size) as usize
-        ];
+        let weight_data = &partition_data
+            [weight_entry.offset as usize..(weight_entry.offset + weight_entry.size) as usize];
+        let bias_data = &partition_data
+            [bias_entry.offset as usize..(bias_entry.offset + bias_entry.size) as usize];
 
         // Verify data matches original
         assert_eq!(weight_data, &[1u8, 2, 3, 4]);
@@ -412,7 +413,7 @@ mod tests {
         let input = create_test_safetensors(dir.path(), "input.safetensors");
         let output = dir.path().join("output");
 
-        tokio_uring::start(async {
+        crate::test_utils::run_async(async {
             convert_safetensors_to_serverlessllm(
                 input.to_str().unwrap(),
                 output.to_str().unwrap(),
@@ -448,7 +449,7 @@ mod tests {
         // Output directory doesn't exist yet
         assert!(!output.exists());
 
-        tokio_uring::start(async {
+        crate::test_utils::run_async(async {
             convert_safetensors_to_serverlessllm(
                 input.to_str().unwrap(),
                 output.to_str().unwrap(),
@@ -469,7 +470,7 @@ mod tests {
         let input = dir.path().join("nonexistent.safetensors");
         let output = dir.path().join("output");
 
-        tokio_uring::start(async {
+        crate::test_utils::run_async(async {
             let result = convert_safetensors_to_serverlessllm(
                 input.to_str().unwrap(),
                 output.to_str().unwrap(),

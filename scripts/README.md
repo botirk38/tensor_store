@@ -9,7 +9,7 @@ This directory contains Python scripts for downloading model fixtures and prepar
 ## Requirements
 
 - Python 3.12+
-- [uv](https://github.com/astral-sh/uv) package manager (recommended) or pip
+- [uv](https://github.com/astral-sh/uv) package manager
 
 ### Dependencies
 
@@ -21,16 +21,9 @@ Managed via `pyproject.toml`:
 
 ## Setup
 
-Using uv (recommended):
 ```bash
 cd scripts
 uv sync
-```
-
-Or using pip:
-```bash
-cd scripts
-pip install -e .
 ```
 
 ## Scripts
