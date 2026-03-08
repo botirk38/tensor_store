@@ -24,4 +24,11 @@ features = ["pyo3/extension-module"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-asyncio_mode = "auto"
+
+[dependency-groups]
+dev = [
+    "numpy>=2.0.2",
+    "py-spy>=0.4.1",
+    "pytest-benchmark>=5.2.3",
+    "safetensors>=0.7.0",
+]

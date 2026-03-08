@@ -3,7 +3,7 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 use std::path::PathBuf;
-use tensor_store::safetensors;
+use tensor_store::formats::safetensors;
 
 fn touch_pages(data: &[u8]) -> u8 {
     const PAGE: usize = 4096;
