@@ -84,9 +84,9 @@ impl ServerlessLLMHandlePy {
                     py,
                     "torch",
                     TensorData {
-                        shape: tensor.shape().to_vec(),
-                        dtype: tensor.dtype().to_string(),
-                        data: tensor.data().to_vec(),
+                        shape: tensor.shape(),
+                        dtype: tensor.dtype(),
+                        data: tensor.data(),
                     },
                     device,
                 )?
@@ -97,9 +97,9 @@ impl ServerlessLLMHandlePy {
                     py,
                     "torch",
                     TensorData {
-                        shape: tensor.shape().to_vec(),
-                        dtype: tensor.dtype().to_string(),
-                        data: tensor.data().to_vec(),
+                        shape: tensor.shape(),
+                        dtype: tensor.dtype(),
+                        data: tensor.data(),
                     },
                     device,
                 )?
@@ -197,7 +197,7 @@ pub fn load_serverlessllm(py: Python<'_>, path: PathBuf, device: &str) -> PyResu
                 let tensor = convert_tensor(
                     py,
                     "torch",
-                    TensorData { shape, dtype, data },
+                    TensorData { shape: &shape, dtype: &dtype, data: &data },
                     &device,
                 )?;
                 result.call_method1("__setitem__", (k, tensor))?;
@@ -231,9 +231,9 @@ pub fn load_serverlessllm_sync(
             py,
             "torch",
             TensorData {
-                shape: tensor.shape().to_vec(),
-                dtype: tensor.dtype().to_string(),
-                data: tensor.data().to_vec(),
+                shape: tensor.shape(),
+                dtype: tensor.dtype(),
+                data: tensor.data(),
             },
             device,
         )?;
@@ -265,9 +265,9 @@ pub fn load_serverlessllm_mmap(
             py,
             "torch",
             TensorData {
-                shape: tensor.shape().to_vec(),
-                dtype: tensor.dtype().to_string(),
-                data: tensor.data().to_vec(),
+                shape: tensor.shape(),
+                dtype: tensor.dtype(),
+                data: tensor.data(),
             },
             device,
         )?;

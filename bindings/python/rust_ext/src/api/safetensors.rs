@@ -40,6 +40,28 @@ async fn load_safetensors_async(
     .map_err(|e| ReaderError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?
 }
 
+// --- SafeTensors Functions ---
+
+#[pyfunction]
+#[pyo3(signature = (path,))]
+pub fn open_safetensors(py: Python<'_>, path: PathBuf) -> PyResult<PyObject> {
+    let awaitable = pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        validate_path_exists(&path)?;
+        let owned = load_safetensors_async(path)
+            .await
+            .map_err(map_reader_error)?;
+        Python::with_gil(|py| {
+            Ok(Py::new(py, SafeTensorsHandlePy {
+                inner: SafeTensorsHandleInner::Owned(owned),
+            })?
+            .into_pyobject(py)?
+            .into_any()
+            .unbind())
+        })
+    })?;
+    Ok(awaitable.unbind())
+}
+
 // --- SafeTensors Handle ---
 
 /// Python-exposed handle for SafeTensors files.
@@ -85,9 +107,9 @@ impl SafeTensorsHandlePy {
             py,
             "torch",
             TensorData {
-                shape: view.shape().to_vec(),
-                dtype: view.dtype().to_string(),
-                data: view.data().to_vec(),
+                shape: view.shape(),
+                dtype: view.dtype(),
+                data: view.data(),
             },
             device,
         )?;
@@ -96,26 +118,6 @@ impl SafeTensorsHandlePy {
 }
 
 // --- SafeTensors Functions ---
-
-#[pyfunction]
-#[pyo3(signature = (path,))]
-pub fn open_safetensors(py: Python<'_>, path: PathBuf) -> PyResult<PyObject> {
-    let awaitable = pyo3_async_runtimes::tokio::future_into_py(py, async move {
-        validate_path_exists(&path)?;
-        let owned: SafeTensorsOwned = load_safetensors_async(path)
-            .await
-            .map_err(map_reader_error)?;
-        Python::with_gil(|py| {
-            Ok(Py::new(py, SafeTensorsHandlePy {
-                inner: SafeTensorsHandleInner::Owned(owned),
-            })?
-            .into_pyobject(py)?
-            .into_any()
-            .unbind())
-        })
-    })?;
-    Ok(awaitable.unbind())
-}
 
 #[pyfunction]
 #[pyo3(signature = (path,))]
@@ -184,7 +186,7 @@ pub fn load_safetensors(py: Python<'_>, path: PathBuf, device: &str) -> PyResult
                 let tensor = convert_tensor(
                     py,
                     "torch",
-                    TensorData { shape, dtype, data },
+                    TensorData { shape: &shape, dtype: &dtype, data: &data },
                     &device,
                 )?;
                 result.call_method1("__setitem__", (k, tensor))?;
@@ -216,9 +218,9 @@ pub fn load_safetensors_sync(
             py,
             "torch",
             TensorData {
-                shape: view.shape().to_vec(),
-                dtype: view.dtype().to_string(),
-                data: view.data().to_vec(),
+                shape: view.shape(),
+                dtype: view.dtype(),
+                data: view.data(),
             },
             device,
         )?;
@@ -248,9 +250,9 @@ pub fn load_safetensors_mmap(
             py,
             "torch",
             TensorData {
-                shape: view.shape().to_vec(),
-                dtype: view.dtype().to_string(),
-                data: view.data().to_vec(),
+                shape: view.shape(),
+                dtype: view.dtype(),
+                data: view.data(),
             },
             device,
         )?;

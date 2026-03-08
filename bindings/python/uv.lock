@@ -560,6 +560,7 @@ dev = [
 dev = [
     { name = "numpy" },
     { name = "py-spy" },
+    { name = "pytest-asyncio" },
     { name = "pytest-benchmark" },
     { name = "safetensors" },
 ]
@@ -578,6 +579,7 @@ requires-dist = [
 dev = [
     { name = "numpy", specifier = ">=2.0.2" },
     { name = "py-spy", specifier = ">=0.4.1" },
+    { name = "pytest-asyncio", specifier = ">=0.23" },
     { name = "pytest-benchmark", specifier = ">=5.2.3" },
     { name = "safetensors", specifier = ">=0.7.0" },
 ]

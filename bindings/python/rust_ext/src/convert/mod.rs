@@ -7,16 +7,16 @@ use pyo3::prelude::*;
 
 pub use torch::raw_to_torch_tensor;
 
-pub struct TensorData {
-    pub shape: Vec<usize>,
-    pub dtype: String,
-    pub data: Vec<u8>,
+pub struct TensorData<'a> {
+    pub shape: &'a [usize],
+    pub dtype: &'a str,
+    pub data: &'a [u8],
 }
 
-pub fn convert_tensor(
+pub fn convert_tensor<'a>(
     py: Python<'_>,
     framework: &str,
-    tensor_data: TensorData,
+    tensor_data: TensorData<'a>,
     device: &str,
 ) -> PyResult<PyObject> {
     match framework {

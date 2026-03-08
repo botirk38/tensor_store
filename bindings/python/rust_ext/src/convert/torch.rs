@@ -29,14 +29,14 @@ fn safetensors_dtype_to_torch_name(dtype: &str) -> Option<&'static str> {
 /// Builds a torch.Tensor from raw tensor data.
 pub fn raw_to_torch_tensor(
     py: Python<'_>,
-    shape: Vec<usize>,
-    dtype: String,
-    data: Vec<u8>,
+    shape: &[usize],
+    dtype: &str,
+    data: &[u8],
     device: &str,
 ) -> PyResult<PyObject> {
     let torch = py.import("torch")?;
 
-    let dtype_name = safetensors_dtype_to_torch_name(&dtype).ok_or_else(|| {
+    let dtype_name = safetensors_dtype_to_torch_name(dtype).ok_or_else(|| {
         pyo3::exceptions::PyValueError::new_err(format!("unsupported dtype for torch: {}", dtype))
     })?;
 
@@ -52,7 +52,7 @@ pub fn raw_to_torch_tensor(
         kwargs.set_item("dtype", torch_dtype)?;
         torch.call_method("zeros", (shape_py,), Some(&kwargs))?
     } else {
-        let data_bytes = PyBytes::new(py, &data);
+        let data_bytes = PyBytes::new(py, data);
         let buf = data_bytes.as_any();
 
         let kwargs = pyo3::types::PyDict::new(py);
