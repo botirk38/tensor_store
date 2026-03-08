@@ -20,12 +20,6 @@ Fixed clippy warnings: saturating_mul, redundant closures, too_many_arguments (v
 
 All 73 Python tests pass, clippy clean on both core and bindings.
 
-## Project Context
-
-Final year project at Royal Holloway investigating whether io_uring can provide >20% performance improvement for LLM tensor loading compared to traditional approaches. 300-hour constraint, ~15 weeks.
-
-The hypothesis: Can io_uring's kernel-offloaded I/O eliminate CPU overhead from thread context switching, achieving measurably better performance than multi-threaded approaches?
-
 ## 2025-02-11
 
 Code review day that turned into comprehensive refactoring. Started with clippy warnings, ended up touching 15+ files.
