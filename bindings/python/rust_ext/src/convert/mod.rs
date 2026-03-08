@@ -1,6 +1,5 @@
 //! Framework conversion dispatch.
 
-mod dtype_map;
 mod torch;
 
 use pyo3::exceptions::PyValueError;

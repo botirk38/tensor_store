@@ -1,15 +1,44 @@
 //! SafeTensors format: handles and functions.
 
+use pyo3::exceptions::PyFileNotFoundError;
 use pyo3::prelude::*;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tensor_store::formats::safetensors::{self, SafeTensorsMmap, SafeTensorsOwned};
-use tensor_store::TensorView;
+use tensor_store::{TensorView, ReaderError};
 
 use crate::convert::{convert_tensor, TensorData};
 use crate::errors::map_reader_error;
-use super::runtime_async::load_safetensors_async;
-use super::validation::validate_path_exists;
+
+fn validate_path_exists(path: &Path) -> PyResult<()> {
+    if !path.exists() {
+        return Err(PyFileNotFoundError::new_err(format!(
+            "path not found: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+async fn load_safetensors_async(
+    path: PathBuf,
+) -> Result<SafeTensorsOwned, ReaderError> {
+    tokio::task::spawn_blocking(move || {
+        #[cfg(target_os = "linux")]
+        {
+            tokio_uring::start(async move { safetensors::load(&path).await })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let rt = tokio::runtime::Runtime::new().map_err(|e| {
+                ReaderError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
+            })?;
+            rt.block_on(safetensors::load(&path))
+        }
+    })
+    .await
+    .map_err(|e| ReaderError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?
+}
 
 // --- SafeTensors Handle ---
 

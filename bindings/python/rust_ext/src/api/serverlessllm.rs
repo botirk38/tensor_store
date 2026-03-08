@@ -1,15 +1,44 @@
 //! ServerlessLLM format: handles and functions.
 
+use pyo3::exceptions::PyFileNotFoundError;
 use pyo3::prelude::*;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tensor_store::formats::serverlessllm::{self, ServerlessLLMMmap, ServerlessLLMOwned};
-use tensor_store::TensorMetadata;
+use tensor_store::{TensorMetadata, ReaderError};
 
 use crate::convert::{convert_tensor, TensorData};
 use crate::errors::{map_reader_error, tensor_not_found};
-use super::runtime_async::load_serverlessllm_async;
-use super::validation::validate_path_exists;
+
+fn validate_path_exists(path: &Path) -> PyResult<()> {
+    if !path.exists() {
+        return Err(PyFileNotFoundError::new_err(format!(
+            "path not found: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+async fn load_serverlessllm_async(
+    path: PathBuf,
+) -> Result<ServerlessLLMOwned, ReaderError> {
+    tokio::task::spawn_blocking(move || {
+        #[cfg(target_os = "linux")]
+        {
+            tokio_uring::start(async move { serverlessllm::load(&path).await })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let rt = tokio::runtime::Runtime::new().map_err(|e| {
+                ReaderError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
+            })?;
+            rt.block_on(serverlessllm::load(&path))
+        }
+    })
+    .await
+    .map_err(|e| ReaderError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?
+}
 
 // --- ServerlessLLM Handle ---
 
