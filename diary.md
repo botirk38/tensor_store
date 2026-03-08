@@ -1,5 +1,25 @@
 # Project Development Diary
 
+## 2026-03-08
+
+Refactored Python bindings to align with new architecture. Deleted the `bridge/` module which was unnecessarily normalizing tensor data. Renamed `torch/` to `convert/` with a `TensorData` struct to reduce function arguments.
+
+Split the `api/` module by format instead of function type - created `api/safetensors.rs` and `api/serverlessllm.rs` instead of `handles.rs` + `functions.rs`. This matches the core crate's reorganization.
+
+Fixed several bugs discovered during the refactor:
+- `SafeTensorsMmap::from_owned()` was calling non-existent `from_bytes()` - removed the broken method
+- ServerlessLLM was using `.keys()` instead of `.tensor_names()`, `.open_mmap()` instead of module-level `load_mmap()`
+- ServerlessLLM `.tensor()` returns `Option` not `Result` - added `tensor_not_found()` helper
+
+Standardized API between formats:
+- `open_*_sync` now uses `load_sync()` → owned in-memory
+- `open_*_mmap` now uses `load_mmap()` → file-backed mmap
+- Both use inner enum to handle Owned vs Mmap variants
+
+Fixed clippy warnings: saturating_mul, redundant closures, too_many_arguments (via TensorData struct).
+
+All 73 Python tests pass, clippy clean on both core and bindings.
+
 ## Project Context
 
 Final year project at Royal Holloway investigating whether io_uring can provide >20% performance improvement for LLM tensor loading compared to traditional approaches. 300-hour constraint, ~15 weeks.
