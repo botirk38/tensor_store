@@ -14,7 +14,7 @@
 //!
 //! let data = vec![0u8; 4];
 //! let tensor = TensorView::new(Dtype::F32, vec![1, 1], &data).unwrap();
-//! let writer = SafeTensorsWriter::new();
+//! let writer = Writer::new();
 //!
 //! // Sync usage
 //! let bytes = writer.write_to_buffer([("weight", tensor)], None).unwrap();
@@ -42,9 +42,9 @@ pub type MetadataMap = HashMap<String, String>;
 /// This writer is intentionally stateless and can be copied freely.
 /// It provides both synchronous and asynchronous methods for writing `SafeTensors` format.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct SafeTensorsWriter;
+pub struct Writer;
 
-impl SafeTensorsWriter {
+impl Writer {
     /// Create a new writer instance.
     #[inline]
     #[must_use]
@@ -199,7 +199,7 @@ mod tests {
 
     #[test]
     fn write_to_buffer_roundtrips() {
-        let writer = SafeTensorsWriter::new();
+        let writer = Writer::new();
         let bytes = writer
             .write_to_buffer([("a", sample_view())], None)
             .expect("serialize");
@@ -212,7 +212,7 @@ mod tests {
     fn write_to_file_sync_and_metadata() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("model.safetensors");
-        let writer = SafeTensorsWriter::new();
+        let writer = Writer::new();
 
         writer
             .write_to_file(
@@ -233,7 +233,7 @@ mod tests {
     fn write_to_file_async_uses_backends() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("async").join("model.safetensors");
-        let writer = SafeTensorsWriter::new();
+        let writer = Writer::new();
 
         crate::test_utils::run_async(async {
             writer

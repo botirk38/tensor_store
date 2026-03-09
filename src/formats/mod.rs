@@ -8,4 +8,4 @@ pub mod serverlessllm;
 pub mod traits;
 
 pub use error::{ReaderError, ReaderResult, WriterError, WriterResult};
-pub use traits::{AsyncReader, AsyncWriter, SyncReader, SyncWriter, TensorMetadata, TensorView};
+pub use traits::{AsyncWriter, SyncWriter, TensorMetadata, TensorView};

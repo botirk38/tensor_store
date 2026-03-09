@@ -14,15 +14,16 @@ pub use formats::error::{ReaderError, ReaderResult};
 pub use formats::error::{WriterError, WriterResult};
 
 // Traits
-pub use formats::traits::{AsyncReader, AsyncWriter, SyncReader, SyncWriter, TensorMetadata, TensorView};
+pub use formats::traits::{AsyncWriter, SyncWriter, TensorMetadata, TensorView};
 
-// SafeTensors types
-pub use formats::safetensors::{SafeTensorsMmap, SafeTensorsOwned, SafeTensorsWriter};
+// SafeTensors types (aliased to avoid conflict with ServerlessLLM)
+pub use formats::safetensors::Model as SafeTensorsModel;
+pub use formats::safetensors::MmapModel as SafeTensorsMmapModel;
+pub use formats::safetensors::Writer as SafeTensorsWriter;
 
 // ServerlessLLM types
 pub use formats::serverlessllm::{
-    ServerlessLLMIndex, ServerlessLLMMmap, ServerlessLLMOwned, ServerlessLlmWriter, Tensor,
-    TensorEntry, TensorMmap,
+    Index, Model, MmapModel, Tensor, IndexEntry, TensorMmap,
 };
 
 // Conversion functions

@@ -45,7 +45,7 @@ fn bench_sync(c: &mut Criterion) {
         let path_str = path.to_str().unwrap().to_string();
         group.bench_with_input(BenchmarkId::new("load", &model_name), &path_str, |b, p| {
             b.iter(|| {
-                let data = safetensors::load_sync(black_box(p)).unwrap();
+                let data = safetensors::Model::load_sync(black_box(p)).unwrap();
                 black_box((data.names().len(), data.into_bytes()))
             });
         });
@@ -59,7 +59,7 @@ fn bench_mmap(c: &mut Criterion) {
         let path_str = path.to_str().unwrap().to_string();
         group.bench_with_input(BenchmarkId::new("load", &model_name), &path_str, |b, p| {
             b.iter(|| {
-                let data = safetensors::load_mmap(black_box(p)).unwrap();
+                let data = safetensors::MmapModel::load(black_box(p)).unwrap();
                 let tensors = data.tensors();
                 let names = tensors.names();
                 let mut checksum = 0u8;
@@ -81,7 +81,7 @@ fn bench_async(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("load", &model_name), &path_str, |b, p| {
             b.iter(|| {
                 tokio_uring::start(async {
-                    let data = safetensors::load(black_box(p)).await.unwrap();
+                    let data = safetensors::Model::load(black_box(p)).await.unwrap();
                     black_box((data.names().len(), data))
                 })
             });
@@ -102,7 +102,7 @@ fn bench_async_parallel(c: &mut Criterion) {
             |b, p| {
                 b.iter(|| {
                     tokio_uring::start(async {
-                        let data = safetensors::load_parallel(black_box(p), num_cores)
+                        let data = safetensors::Model::load_parallel(black_box(p), num_cores)
                             .await
                             .unwrap();
                         black_box((data.tensors().names().len(), data))
@@ -122,7 +122,7 @@ fn bench_async(c: &mut Criterion) {
         let path_str = path.to_str().unwrap().to_string();
         group.bench_with_input(BenchmarkId::new("load", &model_name), &path_str, |b, p| {
             b.to_async(&rt).iter(|| async {
-                let data = safetensors::load(black_box(p)).await.unwrap();
+                let data = safetensors::Model::load(black_box(p)).await.unwrap();
                 black_box((data.names().len(), data))
             });
         });

@@ -23,9 +23,8 @@
 //! ).await?;
 //! ```
 
-use crate::formats::safetensors::Dtype;
-use crate::formats::serverlessllm::ServerlessLlmWriter;
-use crate::formats::serverlessllm::TensorEntry;
+use crate::formats::safetensors::{Dtype, Model};
+use crate::formats::serverlessllm::{write_index, write_partition, IndexEntry};
 use crate::formats::error::{WriterError, WriterResult};
 use std::collections::HashMap;
 use std::path::Path;
@@ -60,7 +59,7 @@ pub async fn convert_safetensors_to_serverlessllm(
     let chunks = num_cpus.max(min_chunks_for_size);
 
     // Use parallel loading for better I/O performance
-    let owned = crate::formats::safetensors::load_parallel(input_path, chunks)
+    let owned = Model::load_parallel(input_path, chunks)
         .await
         .map_err(|e| WriterError::Io(std::io::Error::other(e.to_string())))?;
     let tensors = owned.tensors();
@@ -86,7 +85,7 @@ pub async fn convert_safetensors_to_serverlessllm(
     blobs.sort_by(|a, b| b.data.len().cmp(&a.data.len()));
 
     let mut partitions: Vec<Vec<u8>> = vec![Vec::new(); partition_count];
-    let mut index: HashMap<String, TensorEntry> = HashMap::with_capacity(blobs.len());
+    let mut index: HashMap<String, IndexEntry> = HashMap::with_capacity(blobs.len());
 
     for (i, blob) in blobs.into_iter().enumerate() {
         let partition_id = i.checked_rem(partition_count).unwrap_or(0);
@@ -100,7 +99,7 @@ pub async fn convert_safetensors_to_serverlessllm(
 
         index.insert(
             blob.name,
-            TensorEntry {
+            IndexEntry {
                 offset,
                 size,
                 shape: blob.shape,
@@ -111,13 +110,11 @@ pub async fn convert_safetensors_to_serverlessllm(
         );
     }
 
-    let writer = ServerlessLlmWriter::new();
-
     let out_dir = Path::new(output_dir);
     tokio::fs::create_dir_all(out_dir).await?;
 
     let index_path = out_dir.join("tensor_index.json");
-    writer.write_index(&index_path, &index).await?;
+    write_index(&index_path, &index).await?;
 
     // Parallelize partition writing using concurrent futures
     // Uses platform-appropriate backend (io_uring on Linux, async_io elsewhere)
@@ -126,7 +123,7 @@ pub async fn convert_safetensors_to_serverlessllm(
         .enumerate()
         .map(|(id, data)| {
             let part_path = out_dir.join(format!("tensor.data_{id}"));
-            async move { writer.write_partition(&part_path, data).await }
+            async move { write_partition(&part_path, data).await }
         })
         .collect();
 
@@ -200,13 +197,13 @@ struct TensorBlob {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::formats::safetensors::{Dtype, TensorView};
-    use crate::formats::serverlessllm::parse_index_sync;
-    use crate::formats::traits::TensorMetadata;
-    use safetensors::serialize;
-    use std::fs;
-    use tempfile::TempDir;
+     use super::*;
+     use crate::formats::safetensors::{Dtype, TensorView};
+     use crate::formats::serverlessllm::Index;
+     use crate::formats::traits::TensorMetadata;
+     use safetensors::serialize;
+     use std::fs;
+     use tempfile::TempDir;
 
     // Helper to create a simple SafeTensors file
     fn create_test_safetensors(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
@@ -323,11 +320,11 @@ mod tests {
 
         // Verify output files exist
         assert!(output.join("tensor_index.json").exists());
-        assert!(output.join("tensor.data_0").exists());
+         assert!(output.join("tensor.data_0").exists());
 
-        // Verify index is valid
-        let index = parse_index_sync(output.join("tensor_index.json")).expect("parse index");
-        assert_eq!(index.len(), 2);
+         // Verify index is valid
+         let index = Index::load_sync(output.join("tensor_index.json")).expect("parse index");
+         assert_eq!(index.len(), 2);
         assert!(index.contains("weight"));
         assert!(index.contains("bias"));
 
@@ -358,7 +355,7 @@ mod tests {
         assert!(output.join("tensor.data_1").exists());
 
         // Verify index
-        let index = parse_index_sync(output.join("tensor_index.json")).expect("parse index");
+        let index = Index::load_sync(output.join("tensor_index.json")).expect("parse index");
         assert_eq!(index.len(), 2);
 
         // Tensors should be distributed across partitions (round-robin)
@@ -385,7 +382,7 @@ mod tests {
         });
 
         // Load and verify tensor data
-        let index = parse_index_sync(output.join("tensor_index.json")).expect("parse index");
+        let index = Index::load_sync(output.join("tensor_index.json")).expect("parse index");
         let weight_entry = index.get("weight").expect("weight tensor");
         let bias_entry = index.get("bias").expect("bias tensor");
 
@@ -419,7 +416,7 @@ mod tests {
             .expect("conversion failed");
         });
 
-        let index = parse_index_sync(output.join("tensor_index.json")).expect("parse index");
+        let index = Index::load_sync(output.join("tensor_index.json")).expect("parse index");
 
         // Check weight metadata
         let weight = index.get("weight").unwrap();

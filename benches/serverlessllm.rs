@@ -3,7 +3,6 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 use std::path::PathBuf;
-use tensor_store::TensorMetadata;
 use tensor_store::formats::serverlessllm;
 
 fn touch_pages(data: &[u8]) -> u8 {
@@ -46,7 +45,7 @@ fn bench_sync(c: &mut Criterion) {
         let dir_str = dir.to_str().unwrap().to_string();
         group.bench_with_input(BenchmarkId::new("load", &model_name), &dir_str, |b, p| {
             b.iter(|| {
-                let model = serverlessllm::load_sync(black_box(p)).unwrap();
+                let model = serverlessllm::Model::load_sync(black_box(p)).unwrap();
                 let n = model.len();
                 let bytes: usize = model.iter().map(|(_, t)| t.data().len()).sum();
                 black_box((n, bytes))
@@ -62,7 +61,7 @@ fn bench_mmap(c: &mut Criterion) {
         let dir_str = dir.to_str().unwrap().to_string();
         group.bench_with_input(BenchmarkId::new("load", &model_name), &dir_str, |b, p| {
             b.iter(|| {
-                let model = serverlessllm::load_mmap(black_box(p)).unwrap();
+                let model = serverlessllm::MmapModel::load(black_box(p)).unwrap();
                 let names = model.tensor_names();
                 let mut checksum = 0u8;
                 let mut bytes = 0;
@@ -87,7 +86,7 @@ fn bench_async(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("load", &model_name), &dir_str, |b, p| {
             b.iter(|| {
                 tokio_uring::start(async {
-                    let model = serverlessllm::load(black_box(p)).await.unwrap();
+                    let model = serverlessllm::Model::load(black_box(p)).await.unwrap();
                     let n = model.len();
                     let bytes: usize = model.iter().map(|(_, t)| t.data().len()).sum();
                     black_box((n, bytes))
@@ -106,7 +105,7 @@ fn bench_async(c: &mut Criterion) {
         let dir_str = dir.to_str().unwrap().to_string();
         group.bench_with_input(BenchmarkId::new("load", &model_name), &dir_str, |b, p| {
             b.to_async(&rt).iter(|| async {
-                let model = serverlessllm::load(black_box(p)).await.unwrap();
+                let model = serverlessllm::Model::load(black_box(p)).await.unwrap();
                 let n = model.len();
                 let bytes: usize = model.iter().map(|(_, t)| t.data().len()).sum();
                 black_box((n, bytes))

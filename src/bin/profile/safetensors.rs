@@ -94,7 +94,7 @@ fn io_uring_load(config: &ProfileConfig) -> ProfileResult {
         );
         tokio_uring::start(async {
             for _ in 0..iterations {
-                let data = safetensors::load(&path_str).await?;
+                let data = safetensors::Model::load(&path_str).await?;
                 let tensor_count = data.names().len();
                 black_box((data, tensor_count));
             }
@@ -128,7 +128,7 @@ fn io_uring_parallel(config: &ProfileConfig) -> ProfileResult {
         );
         tokio_uring::start(async {
             for _ in 0..iterations {
-                let data = safetensors::load_parallel(&path_str, chunks).await?;
+                let data = safetensors::Model::load_parallel(&path_str, chunks).await?;
                 let tensor_count = data.tensors().names().len();
                 black_box((data, tensor_count));
             }
@@ -161,11 +161,11 @@ fn io_uring_prewarmed(config: &ProfileConfig) -> ProfileResult {
         );
         tokio_uring::start(async {
             for _ in 0..2 {
-                let _ = safetensors::load(&path_str).await?;
+                let _ = safetensors::Model::load(&path_str).await?;
             }
 
             for _ in 0..iterations {
-                let data = safetensors::load(&path_str).await?;
+                let data = safetensors::Model::load(&path_str).await?;
                 let tensor_count = data.names().len();
                 black_box((data, tensor_count));
             }
@@ -199,7 +199,7 @@ fn tokio_load(config: &ProfileConfig) -> ProfileResult {
         );
         rt.block_on(async {
             for _ in 0..iterations {
-                let data = safetensors::load(&path_str).await?;
+                let data = safetensors::Model::load(&path_str).await?;
                 let tensor_count = data.names().len();
                 black_box((data, tensor_count));
             }
@@ -236,7 +236,7 @@ fn tokio_parallel(config: &ProfileConfig) -> ProfileResult {
         );
         rt.block_on(async {
             for _ in 0..iterations {
-                let data = safetensors::load_parallel(&path_str, 4).await?;
+                let data = safetensors::Model::load_parallel(&path_str, 4).await?;
                 let tensor_count = data.tensors().names().len();
                 black_box((data, tensor_count));
             }
@@ -273,11 +273,11 @@ fn tokio_prewarmed(config: &ProfileConfig) -> ProfileResult {
         );
         rt.block_on(async {
             for _ in 0..2 {
-                let _ = safetensors::load(&path_str).await?;
+                let _ = safetensors::Model::load(&path_str).await?;
             }
 
             for _ in 0..iterations {
-                let data = safetensors::load(&path_str).await?;
+                let data = safetensors::Model::load(&path_str).await?;
                 let tensor_count = data.names().len();
                 black_box((data, tensor_count));
             }
@@ -306,7 +306,7 @@ fn sync_load(config: &ProfileConfig) -> ProfileResult {
             fixture
         );
         for _ in 0..iterations {
-            let data = safetensors::load_sync(&path)?;
+            let data = safetensors::Model::load_sync(&path)?;
             let tensor_count = data.names().len();
             black_box((data.into_bytes(), tensor_count));
         }
@@ -325,7 +325,7 @@ fn mmap_load(config: &ProfileConfig) -> ProfileResult {
             fixture
         );
         for _ in 0..iterations {
-            let data = safetensors::load_mmap(&path)?;
+            let data = safetensors::MmapModel::load(&path)?;
             let tensor_count = data.tensors().names().len();
             black_box((data, tensor_count));
         }

@@ -5,8 +5,8 @@
 //!
 //! # Types
 //!
-//! - `SafeTensorsOwned`: Owned reader with buffer-backed storage (eager loading).
-//! - `SafeTensorsMmap`: Mmap-backed reader with lazy loading.
+//! - `Model`: Owned reader with buffer-backed storage (eager loading).
+//! - `MmapModel`: Mmap-backed reader with lazy loading.
 //!
 //! # Usage
 //!
@@ -14,7 +14,7 @@
 //! use tensor_store::safetensors;
 //!
 //! // Load and parse SafeTensors file (owned)
-//! let tensors = safetensors::load("model.safetensors").await?;
+//! let tensors = safetensors::Model::load("model.safetensors").await?;
 //!
 //! // Access tensors
 //! for name in tensors.names() {
@@ -23,16 +23,16 @@
 //! }
 //!
 //! // Load with mmap (cross platform lazy loading)
-//! let tensors_mmap = safetensors::load_mmap("model.safetensors");
+//! let tensors_mmap = safetensors::MmapModel::load("model.safetensors");
 //! let tensors = tensors_mmap.tensors(); // Access parsed structure
 //!
-//! let tensors_sync = safetensors::load_sync("model.safetensors")?;
+//! let tensors_sync = safetensors::Model::load_sync("model.safetensors")?;
 //! let tensors = tensors_sync.tensors(); // Access parsed structure
 //! ```
 
 use crate::backends;
 use crate::formats::error::{ReaderError, ReaderResult};
-use crate::formats::traits::{AsyncReader, SyncReader, TensorMetadata, TensorView};
+use crate::formats::traits::{TensorMetadata, TensorView};
 pub use safetensors::SafeTensorError;
 pub use safetensors::tensor::{Dtype, SafeTensors};
 use std::ops::Deref;
@@ -50,7 +50,7 @@ use std::path::Path;
 /// so `tensors` (which references `mmap`) MUST be declared before `mmap`.
 /// Do not reorder these fields.
 #[derive(Debug)]
-pub struct SafeTensorsMmap {
+pub struct MmapModel {
     tensors: SafeTensors<'static>,
     mmap: backends::mmap::Mmap,
 }
@@ -66,12 +66,12 @@ pub struct SafeTensorsMmap {
 /// so `tensors` (which references `buffer`) MUST be declared before `buffer`.
 /// Do not reorder these fields.
 #[derive(Debug)]
-pub struct SafeTensorsOwned {
+pub struct Model {
     tensors: SafeTensors<'static>,
     buffer: Box<[u8]>,
 }
 
-impl SafeTensorsOwned {
+impl Model {
     /// Creates an owned `SafeTensors` from raw bytes.
     ///
     /// # Errors
@@ -138,9 +138,9 @@ impl SafeTensorsOwned {
 
     /// Returns a tensor view by name using `ReaderError` for convenience.
     #[inline]
-    pub fn tensor(&self, name: &str) -> ReaderResult<SafeTensorView<'static>> {
+    pub fn tensor(&self, name: &str) -> ReaderResult<Tensor<'static>> {
         self.tensors.tensor(name)
-            .map(SafeTensorView)
+            .map(Tensor)
             .map_err(ReaderError::from)
     }
 
@@ -157,9 +157,105 @@ impl SafeTensorsOwned {
     pub fn is_empty(&self) -> bool {
         self.tensors.is_empty()
     }
+
+    /// Load SafeTensors data asynchronously using the best backend for the current platform.
+    ///
+    /// # Errors
+    ///
+    /// - File cannot be read
+    /// - Invalid SafeTensors format
+    pub async fn load(path: impl AsRef<Path>) -> ReaderResult<Self> {
+        let bytes = backends::async_backend()
+            .load(path.as_ref())
+            .await?;
+        Self::from_bytes(bytes)
+    }
+
+    /// Load SafeTensors data asynchronously in parallel chunks.
+    ///
+    /// # Errors
+    ///
+    /// - File cannot be read
+    /// - Invalid SafeTensors format
+    pub async fn load_parallel(
+        path: impl AsRef<Path>,
+        chunks: usize,
+    ) -> ReaderResult<Self> {
+        let path_ref = path.as_ref();
+        let bytes = backends::async_backend()
+            .load_parallel(path_ref, chunks)
+            .await?;
+        Self::from_bytes(bytes)
+    }
+
+    /// Load SafeTensors data synchronously using buffered I/O.
+    ///
+    /// # Errors
+    ///
+    /// - File cannot be read
+    /// - Invalid SafeTensors format
+    pub fn load_sync(path: impl AsRef<Path>) -> ReaderResult<Self> {
+        let bytes = backends::sync_backend()
+            .load(path.as_ref())?;
+        Self::from_bytes(bytes)
+    }
+
+    /// Load SafeTensors data synchronously in parallel chunks using multiple threads.
+    ///
+    /// # Errors
+    ///
+    /// - File cannot be read
+    /// - Invalid SafeTensors format
+    pub fn load_parallel_sync(path: impl AsRef<Path>, chunks: usize) -> ReaderResult<Self> {
+        let bytes = backends::sync_backend()
+            .load_parallel(path.as_ref(), chunks)?;
+        Self::from_bytes(bytes)
+    }
+
+    /// Load SafeTensors data synchronously from a specific byte range.
+    ///
+    /// SafeTensors cannot be deserialized from partial ranges; this requires
+    /// the range to cover the full file starting at offset 0.
+    ///
+    /// # Errors
+    ///
+    /// - Offset is not 0
+    /// - Range does not cover the full file
+    /// - File cannot be read
+    /// - Invalid SafeTensors format
+    pub fn load_range_sync(
+        path: impl AsRef<Path>,
+        offset: u64,
+        len: usize,
+    ) -> ReaderResult<Self> {
+        if offset != 0 {
+            return Err(ReaderError::InvalidMetadata(
+                "SafeTensors requires the full file; offset must be 0".to_owned(),
+            ));
+        }
+
+        let path_ref = path.as_ref();
+
+        let file_len = std::fs::metadata(path_ref)
+            .map_err(ReaderError::from)?
+            .len();
+
+        let expected_len = u64::try_from(len)
+            .map_err(|_| ReaderError::InvalidMetadata("requested length overflows u64".to_owned()))?;
+
+        if file_len != expected_len {
+            return Err(ReaderError::InvalidMetadata(format!(
+                "SafeTensors requires full file: requested len {len}, file size {file_len}"
+            )));
+        }
+
+        let bytes = backends::sync_backend()
+            .load_range(path_ref, offset, len)?;
+        Self::from_bytes(bytes)
+    }
 }
 
-impl Clone for SafeTensorsOwned {
+impl Clone for Model {
     fn clone(&self) -> Self {
         // We can safely clone by copying the buffer and re-parsing
         Self::from_bytes(self.buffer.to_vec())
@@ -167,7 +263,7 @@ impl Clone for SafeTensorsOwned {
     }
 }
 
-impl Deref for SafeTensorsOwned {
+impl Deref for Model {
     type Target = SafeTensors<'static>;
 
     #[inline]
@@ -177,9 +273,9 @@ impl Deref for SafeTensorsOwned {
 }
 
 /// Newtype wrapper around safetensors tensor view to implement TensorView trait.
-pub struct SafeTensorView<'a>(pub(super) safetensors::tensor::TensorView<'a>);
+pub struct Tensor<'a>(pub(super) safetensors::tensor::TensorView<'a>);
 
-impl<'a> TensorView for SafeTensorView<'a> {
+impl<'a> TensorView for Tensor<'a> {
     #[inline]
     fn shape(&self) -> &[usize] {
         // safetensors already uses usize for shapes - return directly
@@ -199,7 +295,7 @@ impl<'a> TensorView for SafeTensorView<'a> {
     }
 }
 
-impl SafeTensorsMmap {
+impl MmapModel {
     /// # Errors
     ///
     /// Returns an error if the mapped data cannot be parsed as `SafeTensors` format.
@@ -207,7 +303,7 @@ impl SafeTensorsMmap {
     pub fn from_mmap(mmap: backends::mmap::Mmap) -> ReaderResult<Self> {
         let slice: &[u8] = mmap.as_slice();
 
-        // SAFETY: Same pattern as SafeTensorsOwned::from_bytes - see detailed comment there.
+        // SAFETY: Same pattern as Model::from_bytes - see detailed comment there.
         // TL;DR: SafeTensors<'static> references self.mmap, drop order is tensors-then-mmap,
         // no mutation after construction, so the reference remains valid for struct lifetime.
         let static_slice: &'static [u8] = unsafe { std::mem::transmute(slice) };
@@ -225,9 +321,9 @@ impl SafeTensorsMmap {
 
     /// Returns a tensor view by name using `ReaderError` for convenience.
     #[inline]
-    pub fn tensor(&self, name: &str) -> ReaderResult<SafeTensorView<'static>> {
+    pub fn tensor(&self, name: &str) -> ReaderResult<Tensor<'static>> {
         self.tensors.tensor(name)
-            .map(SafeTensorView)
+            .map(Tensor)
             .map_err(ReaderError::from)
     }
 
@@ -251,9 +347,23 @@ impl SafeTensorsMmap {
     pub const fn mmap(&self) -> &backends::mmap::Mmap {
         &self.mmap
     }
+
+    /// Load SafeTensors data using memory mapping (lazy loading).
+    ///
+    /// # Errors
+    ///
+    /// - File cannot be memory-mapped
+    /// - Invalid SafeTensors format
+    pub fn load(path: impl AsRef<Path>) -> ReaderResult<Self> {
+        let path_str = path.as_ref().to_str().ok_or_else(|| {
+            ReaderError::InvalidMetadata("path contains invalid UTF-8".to_owned())
+        })?;
+        let mmap = backends::mmap::map(path_str)?;
+        Self::from_mmap(mmap)
+    }
 }
 
-impl TensorMetadata for SafeTensorsMmap {
+impl TensorMetadata for MmapModel {
     #[inline]
     fn len(&self) -> usize {
         self.tensors.len()
@@ -270,20 +380,7 @@ impl TensorMetadata for SafeTensorsMmap {
     }
 }
 
-impl SyncReader for SafeTensorsMmap {
-    type Output = Self;
-
-    #[inline]
-    fn load_sync(path: &Path) -> ReaderResult<Self::Output> {
-        let path_str = path.to_str().ok_or_else(|| {
-            ReaderError::InvalidMetadata("path contains invalid UTF-8".to_owned())
-        })?;
-        let mmap = backends::mmap::map(path_str)?;
-        Self::from_mmap(mmap)
-    }
-}
-
-impl TryFrom<Vec<u8>> for SafeTensorsOwned {
+impl TryFrom<Vec<u8>> for Model {
     type Error = ReaderError;
 
     #[inline]
@@ -292,7 +389,7 @@ impl TryFrom<Vec<u8>> for SafeTensorsOwned {
     }
 }
 
-impl TensorMetadata for SafeTensorsOwned {
+impl TensorMetadata for Model {
     #[inline]
     fn len(&self) -> usize {
         self.tensors.len()
@@ -307,130 +404,6 @@ impl TensorMetadata for SafeTensorsOwned {
     fn tensor_names(&self) -> Vec<&str> {
         self.tensors.names()
     }
-}
-
-impl AsyncReader for SafeTensorsOwned {
-    type Output = Self;
-
-    #[inline]
-    async fn load(path: &Path) -> ReaderResult<Self::Output> {
-        let bytes = backends::async_backend().load(path).await?;
-        Self::from_bytes(bytes)
-    }
-}
-
-impl SyncReader for SafeTensorsOwned {
-    type Output = Self;
-
-    #[inline]
-    fn load_sync(path: &Path) -> ReaderResult<Self::Output> {
-        let bytes = backends::sync_backend().load(path)?;
-        Self::from_bytes(bytes)
-    }
-}
-
-/// Load tensor data using the best backend for the current platform and parse it.
-///
-/// Returns a `SafeTensorsOwned` with the parsed tensors.
-///
-/// # Errors
-///
-/// - File cannot be read
-/// - Invalid SafeTensors format
-#[inline]
-pub async fn load(path: impl AsRef<Path>) -> ReaderResult<SafeTensorsOwned> {
-    SafeTensorsOwned::load(path.as_ref()).await
-}
-
-/// Load tensor data in parallel chunks and parse it.
-///
-/// Returns a `SafeTensorsOwned` with the parsed tensors.
-#[inline]
-pub async fn load_parallel(
-    path: impl AsRef<Path>,
-    chunks: usize,
-) -> ReaderResult<SafeTensorsOwned> {
-    let path_ref = path.as_ref();
-    let bytes = backends::async_backend()
-        .load_parallel(path_ref, chunks)
-        .await?;
-    SafeTensorsOwned::from_bytes(bytes)
-}
-
-/// Synchronous load using buffered I/O (owned `Vec<u8>`).
-///
-/// Returns a `SafeTensorsOwned` with the parsed tensors.
-///
-/// # Errors
-///
-/// - File cannot be read
-/// - Invalid SafeTensors format
-#[inline]
-pub fn load_sync(path: impl AsRef<Path>) -> ReaderResult<SafeTensorsOwned> {
-    SafeTensorsOwned::load_sync(path.as_ref())
-}
-
-/// Synchronous parallel load using multiple threads (blocking I/O).
-///
-/// Splits the file into `chunks` segments and reads them concurrently via
-/// `std::thread`. Returns a `SafeTensorsOwned` with the parsed tensors.
-///
-/// # Errors
-///
-/// - File cannot be read
-/// - Invalid SafeTensors format
-#[inline]
-pub fn load_parallel_sync(path: impl AsRef<Path>, chunks: usize) -> ReaderResult<SafeTensorsOwned> {
-    let bytes = backends::sync_backend().load_parallel(path.as_ref(), chunks)?;
-    SafeTensorsOwned::from_bytes(bytes)
-}
-
-/// Synchronous ranged load **only when the range covers the full file**.
-///
-/// SafeTensors cannot be deserialized from partial ranges; this helper enforces
-/// that the requested range matches the file size starting at offset 0.
-#[inline]
-pub fn load_range_sync(
-    path: impl AsRef<Path>,
-    offset: u64,
-    len: usize,
-) -> ReaderResult<SafeTensorsOwned> {
-    if offset != 0 {
-        return Err(ReaderError::InvalidMetadata(
-            "SafeTensors requires the full file; offset must be 0".to_owned(),
-        ));
-    }
-
-    let path_ref = path.as_ref();
-
-    let file_len = std::fs::metadata(path_ref)
-        .map_err(ReaderError::from)?
-        .len();
-
-    let expected_len = u64::try_from(len)
-        .map_err(|_| ReaderError::InvalidMetadata("requested length overflows u64".to_owned()))?;
-
-    if file_len != expected_len {
-        return Err(ReaderError::InvalidMetadata(format!(
-            "SafeTensors requires full file: requested len {len}, file size {file_len}"
-        )));
-    }
-
-    let bytes = backends::sync_backend().load_range(path_ref, offset, len)?;
-    SafeTensorsOwned::from_bytes(bytes)
-}
-
-/// Load tensor data synchronously using memory mapping (lazy loading).
-///
-/// Returns a `SafeTensorsMmap` with memory-mapped tensors.
-///
-/// # Errors
-///
-/// - File cannot be memory-mapped
-/// - Invalid SafeTensors format
-#[inline]
-pub fn load_mmap(path: impl AsRef<Path>) -> ReaderResult<SafeTensorsMmap> {
-    SafeTensorsMmap::load_sync(path.as_ref())
 }
 
 // ---------------------------------------------------------------------------
@@ -454,7 +427,7 @@ mod tests {
     #[test]
     fn owned_from_bytes_roundtrips_and_clones() {
         let bytes = sample_bytes();
-        let owned = SafeTensorsOwned::from_bytes(bytes.clone()).expect("parse");
+        let owned = Model::from_bytes(bytes.clone()).expect("parse");
         assert_eq!(owned.tensor_names(), vec!["tensor"]);
         assert_eq!(owned.as_bytes(), bytes.as_slice());
         assert_eq!(owned.tensor("tensor").unwrap().shape(), &[4]);
@@ -466,7 +439,7 @@ mod tests {
 
     #[test]
     fn owned_from_bytes_rejects_invalid_data() {
-        let err = SafeTensorsOwned::from_bytes(vec![0, 1, 2]).unwrap_err();
+        let err = Model::from_bytes(vec![0, 1, 2]).unwrap_err();
         assert!(matches!(err, ReaderError::SafeTensors(_)));
     }
 
@@ -476,7 +449,7 @@ mod tests {
         let path = dir.path().join("model.safetensors");
         std::fs::write(&path, sample_bytes()).unwrap();
 
-        let owned = load_sync(&path).expect("load sync");
+        let owned = Model::load_sync(&path).expect("load sync");
         assert!(owned.contains("tensor"));
         assert_eq!(owned.tensor_names(), vec!["tensor"]);
         assert!(!owned.is_empty());
@@ -490,7 +463,7 @@ mod tests {
         let bytes = sample_bytes();
         std::fs::write(&path, &bytes).unwrap();
 
-        let err = load_range_sync(&path, 1, bytes.len()).unwrap_err();
+        let err = Model::load_range_sync(&path, 1, bytes.len()).unwrap_err();
         assert!(matches!(err, ReaderError::InvalidMetadata(_)));
     }
 
@@ -501,10 +474,10 @@ mod tests {
         std::fs::write(&path, sample_bytes()).unwrap();
 
         crate::test_utils::run_async(async {
-            let owned = load(&path).await.expect("load async");
+            let owned = Model::load(&path).await.expect("load async");
             assert_eq!(owned.len(), 1);
 
-            let parallel = load_parallel(&path, 2).await.expect("load parallel");
+            let parallel = Model::load_parallel(&path, 2).await.expect("load parallel");
             assert_eq!(parallel.len(), 1);
         });
     }
@@ -515,7 +488,7 @@ mod tests {
         let path = dir.path().join("model.safetensors");
         std::fs::write(&path, sample_bytes()).unwrap();
 
-        let mmap = load_mmap(&path).expect("load mmap");
+        let mmap = MmapModel::load(&path).expect("load mmap");
         assert_eq!(mmap.len(), 1);
         assert!(mmap.contains("tensor"));
         assert_eq!(mmap.tensor("tensor").unwrap().dtype(), "U8");
@@ -531,7 +504,7 @@ mod tests {
         // This test ensures drop order is correct
 
         let bytes = sample_bytes();
-        let reader = SafeTensorsOwned::from_bytes(bytes).unwrap();
+        let reader = Model::from_bytes(bytes).unwrap();
 
         // Access is fine while reader lives
         let _view = reader.tensor("tensor").unwrap();
@@ -555,7 +528,7 @@ mod tests {
         let path = dir.path().join("model.safetensors");
         std::fs::write(&path, sample_bytes()).unwrap();
 
-        let reader = load_mmap(&path).unwrap();
+        let reader = MmapModel::load(&path).unwrap();
 
         // Access is fine while reader lives
         let _view = reader.tensor("tensor").unwrap();
@@ -571,7 +544,7 @@ mod tests {
         // Verify fields are declared in correct order for drop safety
         // tensors must be declared before buffer so it drops first
 
-        let owned = SafeTensorsOwned::from_bytes(sample_bytes()).unwrap();
+        let owned = Model::from_bytes(sample_bytes()).unwrap();
         let base = &owned as *const _ as usize;
 
         // Get field offsets
@@ -594,7 +567,7 @@ mod tests {
         let path = dir.path().join("model.safetensors");
         std::fs::write(&path, sample_bytes()).unwrap();
 
-        let mmap_reader = load_mmap(&path).unwrap();
+        let mmap_reader = MmapModel::load(&path).unwrap();
         let base = &mmap_reader as *const _ as usize;
 
         // Get field offsets
@@ -619,10 +592,10 @@ mod tests {
         fn assert_not_sync<T: Sync>() {}
 
         // These should fail to compile if uncommented:
-        // assert_not_send::<SafeTensorsOwned>();
-        // assert_not_sync::<SafeTensorsOwned>();
-        // assert_not_send::<SafeTensorsMmap>();
-        // assert_not_sync::<SafeTensorsMmap>();
+        // assert_not_send::<Model>();
+        // assert_not_sync::<Model>();
+        // assert_not_send::<MmapModel>();
+        // assert_not_sync::<MmapModel>();
 
         // SafeTensors from upstream IS Send+Sync, which is fine since it borrows external data
         assert_not_send::<SafeTensors<'_>>();

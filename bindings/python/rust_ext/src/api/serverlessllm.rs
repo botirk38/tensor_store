@@ -4,7 +4,7 @@ use pyo3::exceptions::PyFileNotFoundError;
 use pyo3::prelude::*;
 use std::path::{Path, PathBuf};
 
-use tensor_store::formats::serverlessllm::{self, ServerlessLLMMmap, ServerlessLLMOwned};
+use tensor_store::formats::serverlessllm::{self, MmapModel, Model};
 use tensor_store::{TensorMetadata, ReaderError};
 
 use crate::convert::{convert_tensor, TensorData};
@@ -22,18 +22,18 @@ fn validate_path_exists(path: &Path) -> PyResult<()> {
 
 async fn load_serverlessllm_async(
     path: PathBuf,
-) -> Result<ServerlessLLMOwned, ReaderError> {
+) -> Result<Model, ReaderError> {
     tokio::task::spawn_blocking(move || {
         #[cfg(target_os = "linux")]
         {
-            tokio_uring::start(async move { serverlessllm::load(&path).await })
+            tokio_uring::start(async move { serverlessllm::Model::load(&path).await })
         }
         #[cfg(not(target_os = "linux"))]
         {
             let rt = tokio::runtime::Runtime::new().map_err(|e| {
                 ReaderError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
             })?;
-            rt.block_on(serverlessllm::load(&path))
+            rt.block_on(serverlessllm::Model::load(&path))
         }
     })
     .await
@@ -50,8 +50,8 @@ pub struct ServerlessLLMHandlePy {
 }
 
 enum ServerlessLLMHandleInner {
-    Mmap(ServerlessLLMMmap),
-    Owned(ServerlessLLMOwned),
+    Mmap(MmapModel),
+    Owned(Model),
 }
 
 #[pymethods]
@@ -60,7 +60,7 @@ impl ServerlessLLMHandlePy {
     fn new(path: PathBuf) -> PyResult<Self> {
         validate_path_exists(&path)?;
         let inner = Python::with_gil(|py| {
-            py.allow_threads(|| serverlessllm::load_mmap(&path))
+            py.allow_threads(|| serverlessllm::MmapModel::load(&path))
                 .map_err(map_reader_error)
         })?;
         Ok(ServerlessLLMHandlePy {
@@ -116,7 +116,7 @@ impl ServerlessLLMHandlePy {
 pub fn open_serverlessllm(py: Python<'_>, path: PathBuf) -> PyResult<PyObject> {
     let awaitable = pyo3_async_runtimes::tokio::future_into_py(py, async move {
         validate_path_exists(&path)?;
-        let inner = serverlessllm::load_mmap(&path).map_err(map_reader_error)?;
+        let inner = serverlessllm::MmapModel::load(&path).map_err(map_reader_error)?;
         Python::with_gil(|py| {
             Ok(Py::new(py, ServerlessLLMHandlePy {
                 inner: ServerlessLLMHandleInner::Mmap(inner),
@@ -134,7 +134,7 @@ pub fn open_serverlessllm(py: Python<'_>, path: PathBuf) -> PyResult<PyObject> {
 pub fn open_serverlessllm_sync(path: PathBuf) -> PyResult<PyObject> {
     validate_path_exists(&path)?;
     let inner = Python::with_gil(|py| {
-        py.allow_threads(|| serverlessllm::load_sync(&path))
+        py.allow_threads(|| serverlessllm::Model::load_sync(&path))
             .map_err(map_reader_error)
     })?;
     Python::with_gil(|py| {
@@ -151,7 +151,7 @@ pub fn open_serverlessllm_sync(path: PathBuf) -> PyResult<PyObject> {
 pub fn open_serverlessllm_mmap(path: PathBuf) -> PyResult<PyObject> {
     validate_path_exists(&path)?;
     let inner = Python::with_gil(|py| {
-        py.allow_threads(|| serverlessllm::load_mmap(&path))
+        py.allow_threads(|| serverlessllm::MmapModel::load(&path))
             .map_err(map_reader_error)
     })?;
     Python::with_gil(|py| {
@@ -167,13 +167,13 @@ pub fn open_serverlessllm_mmap(path: PathBuf) -> PyResult<PyObject> {
 #[pyo3(signature = (path, device="cpu"))]
 pub fn load_serverlessllm(py: Python<'_>, path: PathBuf, device: &str) -> PyResult<PyObject> {
     validate_path_exists(&path)?;
-    let path = path.to_path_buf();
-    let device = device.to_string();
+     let path = path.to_path_buf();
+     let device = device.to_string();
 
-    let awaitable = pyo3_async_runtimes::tokio::future_into_py(py, async move {
-        let owned: ServerlessLLMOwned = load_serverlessllm_async(path)
-            .await
-            .map_err(map_reader_error)?;
+     let awaitable = pyo3_async_runtimes::tokio::future_into_py(py, async move {
+         let owned: Model = load_serverlessllm_async(path)
+             .await
+             .map_err(map_reader_error)?;
         
         let tensor_names: Vec<String> = owned.tensor_names().into_iter().map(String::from).collect();
 
@@ -219,10 +219,10 @@ pub fn load_serverlessllm_sync(
     let builtins = py.import("builtins")?;
     let result = builtins.getattr("dict")?.call0()?;
 
-    let path_ref = path.as_path();
-    let handle: ServerlessLLMOwned = py
-        .allow_threads(|| serverlessllm::load_sync(path_ref))
-        .map_err(map_reader_error)?;
+     let path_ref = path.as_path();
+     let handle: Model = py
+         .allow_threads(|| serverlessllm::Model::load_sync(path_ref))
+         .map_err(map_reader_error)?;
     
     let tensor_names: Vec<String> = handle.tensor_names().into_iter().map(String::from).collect();
     for k in tensor_names {
@@ -253,10 +253,10 @@ pub fn load_serverlessllm_mmap(
     let builtins = py.import("builtins")?;
     let result = builtins.getattr("dict")?.call0()?;
 
-    let path_ref = path.as_path();
-    let handle: ServerlessLLMMmap = py
-        .allow_threads(|| serverlessllm::load_mmap(path_ref))
-        .map_err(map_reader_error)?;
+     let path_ref = path.as_path();
+     let handle: MmapModel = py
+         .allow_threads(|| serverlessllm::MmapModel::load(path_ref))
+         .map_err(map_reader_error)?;
     
     let tensor_names: Vec<String> = handle.tensor_names().into_iter().map(String::from).collect();
     for k in tensor_names {

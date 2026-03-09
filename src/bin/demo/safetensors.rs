@@ -103,7 +103,7 @@ fn demo_async(config: &DemoConfig) -> DemoResult {
             let io_before = crate::io_metrics::capture_disk_snapshot().ok();
 
             let start = Instant::now();
-            let data = safetensors::load(&path).await?;
+            let data = safetensors::Model::load(&path).await?;
             let duration = start.elapsed();
 
             println!("  Loaded in: {:.2}ms", duration.as_secs_f64() * 1000.0);
@@ -143,7 +143,7 @@ fn demo_async(config: &DemoConfig) -> DemoResult {
             println!("  Size: {}", format_bytes(file_size));
 
             let start = Instant::now();
-            let data = safetensors::load(&path).await?;
+            let data = safetensors::Model::load(&path).await?;
             let duration = start.elapsed();
 
             println!("  Loaded in: {:.2}ms", duration.as_secs_f64() * 1000.0);
@@ -176,7 +176,7 @@ fn demo_sync(config: &DemoConfig) -> DemoResult {
         let io_before = crate::io_metrics::capture_disk_snapshot().ok();
 
         let start = Instant::now();
-        let data = safetensors::load_sync(&path)?;
+        let data = safetensors::Model::load_sync(&path)?;
         let duration = start.elapsed();
 
         println!("  Loaded in: {:.2}ms", duration.as_secs_f64() * 1000.0);
@@ -210,7 +210,7 @@ fn demo_mmap(config: &DemoConfig) -> DemoResult {
         let io_before = crate::io_metrics::capture_disk_snapshot().ok();
 
         let start = Instant::now();
-        let data = safetensors::load_mmap(&path)?;
+        let data = safetensors::MmapModel::load(&path)?;
         let duration = start.elapsed();
 
         println!("  Loaded in: {:.2}ms", duration.as_secs_f64() * 1000.0);
@@ -247,7 +247,7 @@ fn demo_parallel_async(config: &DemoConfig) -> DemoResult {
             let io_before = crate::io_metrics::capture_disk_snapshot().ok();
 
             let start = Instant::now();
-            let data = safetensors::load_parallel(&path, chunks).await?;
+            let data = safetensors::Model::load_parallel(&path, chunks).await?;
             let duration = start.elapsed();
 
             println!("  Loaded in: {:.2}ms", duration.as_secs_f64() * 1000.0);
@@ -289,7 +289,7 @@ fn demo_parallel_async(config: &DemoConfig) -> DemoResult {
             println!("  Chunks: {}", chunks);
 
             let start = Instant::now();
-            let data = safetensors::load_parallel(&path, chunks).await?;
+            let data = safetensors::Model::load_parallel(&path, chunks).await?;
             let duration = start.elapsed();
 
             println!("  Loaded in: {:.2}ms", duration.as_secs_f64() * 1000.0);
@@ -324,7 +324,7 @@ fn demo_parallel_sync(config: &DemoConfig) -> DemoResult {
         let io_before = crate::io_metrics::capture_disk_snapshot().ok();
 
         let start = Instant::now();
-        let data = safetensors::load_parallel_sync(&path, chunks)?;
+        let data = safetensors::Model::load_parallel_sync(&path, chunks)?;
         let duration = start.elapsed();
 
         println!("  Loaded in: {:.2}ms", duration.as_secs_f64() * 1000.0);
@@ -354,7 +354,7 @@ fn demo_metadata(config: &DemoConfig) -> DemoResult {
         println!("  File: {}", path.file_name().unwrap().to_str().unwrap());
         println!("  Size: {}", format_bytes(file_size));
 
-        let data = safetensors::load_sync(&path)?;
+        let data = safetensors::Model::load_sync(&path)?;
         let tensors = data.tensors();
         let names = tensors.names();
 

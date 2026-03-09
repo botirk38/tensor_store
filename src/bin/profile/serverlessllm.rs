@@ -2,7 +2,6 @@ use std::hint::black_box;
 use std::path::PathBuf;
 
 use tensor_store::formats::serverlessllm;
-use tensor_store::formats::traits::TensorMetadata;
 
 use crate::config::{ProfileConfig, ProfileError, ProfileResult};
 
@@ -87,7 +86,7 @@ fn async_load(config: &ProfileConfig) -> ProfileResult {
         );
         tokio_uring::start(async {
             for _ in 0..iterations {
-                let model = serverlessllm::load(&dir_str).await?;
+                let model = serverlessllm::Model::load(&dir_str).await?;
                 let tensor_count = model.len();
                 let mut total_bytes = 0;
                 for (_name, tensor) in &model {
@@ -121,7 +120,7 @@ fn async_load(config: &ProfileConfig) -> ProfileResult {
         );
         rt.block_on(async {
             for _ in 0..iterations {
-                let model = serverlessllm::load(&dir_str).await?;
+                let model = serverlessllm::Model::load(&dir_str).await?;
                 let tensor_count = model.len();
                 let mut total_bytes = 0;
                 for (_name, tensor) in &model {
@@ -146,7 +145,7 @@ fn sync_load(config: &ProfileConfig) -> ProfileResult {
             fixture
         );
         for _ in 0..iterations {
-            let model = serverlessllm::load_sync(&dir)?;
+            let model = serverlessllm::Model::load_sync(&dir)?;
             let tensor_count = model.len();
             let mut total_bytes = 0;
             for (_name, tensor) in &model {
@@ -169,7 +168,7 @@ fn mmap_load(config: &ProfileConfig) -> ProfileResult {
             fixture
         );
         for _ in 0..iterations {
-            let model = serverlessllm::load_mmap(&dir)?;
+            let model = serverlessllm::MmapModel::load(&dir)?;
             let tensor_count = model.len();
             let mut total_bytes = 0;
             for name in model.tensor_names() {

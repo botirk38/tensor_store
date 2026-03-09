@@ -85,14 +85,14 @@ async fn profile_async(test_file: &str) {
     // Warmup phase - populate buffer pools and caches
     println!("  Warming up...");
     for i in 0..3 {
-        let _warmup = safetensors::load(test_file).await.unwrap();
+        let _warmup = safetensors::Model::load(test_file).await.unwrap();
         println!("    Warmup iteration {} complete", i + 1);
     }
 
     // Profiling phase - single iteration to avoid memory accumulation
     println!("  Starting profiling...");
     let start = Instant::now();
-    let data = safetensors::load(black_box(test_file)).await.unwrap();
+    let data = safetensors::Model::load(black_box(test_file)).await.unwrap();
     let load_time = start.elapsed();
 
     let tensor_count = data.names().len();
@@ -120,14 +120,14 @@ fn profile_sync(test_file: &str) {
     // Warmup phase
     println!("  Warming up...");
     for i in 0..3 {
-        let _warmup = safetensors::load_sync(test_file).unwrap();
+        let _warmup = safetensors::Model::load_sync(test_file).unwrap();
         println!("    Warmup iteration {} complete", i + 1);
     }
 
     // Profiling phase
     println!("  Starting profiling...");
     let start = Instant::now();
-    let data = safetensors::load_sync(black_box(test_file)).unwrap();
+    let data = safetensors::Model::load_sync(black_box(test_file)).unwrap();
     let load_time = start.elapsed();
 
     let tensor_count = data.names().len();

@@ -1,41 +1,9 @@
 //! Traits for tensor readers and writers.
 
-use crate::formats::error::{ReaderResult, WriterResult};
+use crate::formats::error::WriterResult;
 use std::path::Path;
 
-// ============================================================================
-// Reader Traits
-// ============================================================================
 
-/// Trait for asynchronous tensor readers.
-///
-/// Note: The returned futures are not required to implement `Send` because some
-/// backends (like `tokio-uring`) use thread-local runtimes.
-#[allow(async_fn_in_trait)]
-pub trait AsyncReader {
-    /// The output type produced by this reader.
-    type Output;
-
-    /// Asynchronously loads tensor data from the given path.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the file cannot be read or parsed.
-    async fn load(path: &Path) -> ReaderResult<Self::Output>;
-}
-
-/// Trait for synchronous tensor readers.
-pub trait SyncReader {
-    /// The output type produced by this reader.
-    type Output;
-
-    /// Synchronously loads tensor data from the given path.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the file cannot be read or parsed.
-    fn load_sync(path: &Path) -> ReaderResult<Self::Output>;
-}
 
 /// Trait for types that provide tensor metadata.
 pub trait TensorMetadata {
@@ -98,6 +66,7 @@ pub trait SyncWriter {
     /// Returns an error if the file cannot be written or if the data is invalid.
     fn write_sync(path: &Path, data: &Self::Input) -> WriterResult<()>;
 }
+
 
 // ============================================================================
 // Tensor View Trait

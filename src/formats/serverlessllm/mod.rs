@@ -2,18 +2,19 @@
 //!
 //! This module provides reading and writing support for the ServerlessLLM format.
 
-pub mod reader;
-pub mod types;
+// Internal modules
+pub mod tensor;
+pub mod index;
+pub mod helpers;
+pub mod owned;
+pub mod mmap;
 pub mod writer;
 
-// Re-export types
-pub use types::TensorEntry;
+// Re-export data types
+pub use tensor::{Tensor, TensorMmap, IndexEntry};
+pub use index::Index;
+pub use owned::Model;
+pub use mmap::MmapModel;
 
-// Re-export reader types
-pub use reader::{
-    ServerlessLLMIndex, ServerlessLLMMmap, ServerlessLLMOwned, Tensor, TensorMmap, load, load_mmap,
-    load_parallel, load_parallel_sync, load_sync, parse_index, parse_index_sync,
-};
-
-// Re-export writer types
-pub use writer::ServerlessLlmWriter;
+// Re-export writer functions
+pub use writer::{write_index, write_partition, write_index_sync, write_partition_sync};

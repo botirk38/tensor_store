@@ -4,7 +4,7 @@ use pyo3::exceptions::PyFileNotFoundError;
 use pyo3::prelude::*;
 use std::path::{Path, PathBuf};
 
-use tensor_store::formats::safetensors::{self, SafeTensorsMmap, SafeTensorsOwned};
+use tensor_store::formats::safetensors::{self, MmapModel, Model};
 use tensor_store::{TensorView, ReaderError};
 
 use crate::convert::{convert_tensor, TensorData};
@@ -22,18 +22,18 @@ fn validate_path_exists(path: &Path) -> PyResult<()> {
 
 async fn load_safetensors_async(
     path: PathBuf,
-) -> Result<SafeTensorsOwned, ReaderError> {
+) -> Result<Model, ReaderError> {
     tokio::task::spawn_blocking(move || {
         #[cfg(target_os = "linux")]
         {
-            tokio_uring::start(async move { safetensors::load(&path).await })
+            tokio_uring::start(async move { safetensors::Model::load(&path).await })
         }
         #[cfg(not(target_os = "linux"))]
         {
             let rt = tokio::runtime::Runtime::new().map_err(|e| {
                 ReaderError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
             })?;
-            rt.block_on(safetensors::load(&path))
+            rt.block_on(safetensors::Model::load(&path))
         }
     })
     .await
@@ -72,8 +72,8 @@ pub struct SafeTensorsHandlePy {
 }
 
 enum SafeTensorsHandleInner {
-    Mmap(SafeTensorsMmap),
-    Owned(SafeTensorsOwned),
+    Mmap(MmapModel),
+    Owned(Model),
 }
 
 #[pymethods]
@@ -82,7 +82,7 @@ impl SafeTensorsHandlePy {
     fn new(path: PathBuf) -> PyResult<Self> {
         validate_path_exists(&path)?;
         let inner = Python::with_gil(|py| {
-            py.allow_threads(|| safetensors::load_mmap(&path))
+            py.allow_threads(|| safetensors::MmapModel::load(&path))
                 .map_err(map_reader_error)
         })?;
         Ok(SafeTensorsHandlePy {
@@ -124,7 +124,7 @@ impl SafeTensorsHandlePy {
 pub fn open_safetensors_sync(path: PathBuf) -> PyResult<PyObject> {
     validate_path_exists(&path)?;
     let inner = Python::with_gil(|py| {
-        py.allow_threads(|| safetensors::load_sync(&path))
+        py.allow_threads(|| safetensors::Model::load_sync(&path))
             .map_err(map_reader_error)
     })?;
     Python::with_gil(|py| {
@@ -141,7 +141,7 @@ pub fn open_safetensors_sync(path: PathBuf) -> PyResult<PyObject> {
 pub fn open_safetensors_mmap(path: PathBuf) -> PyResult<PyObject> {
     validate_path_exists(&path)?;
     let inner = Python::with_gil(|py| {
-        py.allow_threads(|| safetensors::load_mmap(&path))
+        py.allow_threads(|| safetensors::MmapModel::load(&path))
             .map_err(map_reader_error)
     })?;
     Python::with_gil(|py| {
@@ -161,7 +161,7 @@ pub fn load_safetensors(py: Python<'_>, path: PathBuf, device: &str) -> PyResult
     let device = device.to_string();
 
     let awaitable = pyo3_async_runtimes::tokio::future_into_py(py, async move {
-        let owned: SafeTensorsOwned = load_safetensors_async(path)
+        let owned: Model = load_safetensors_async(path)
             .await
             .map_err(map_reader_error)?;
         let keys: Vec<String> = owned.tensor_names().into_iter().map(String::from).collect();
@@ -209,8 +209,8 @@ pub fn load_safetensors_sync(
     let result = builtins.getattr("dict")?.call0()?;
 
     let path_ref = path.as_path();
-    let handle: SafeTensorsOwned = py
-        .allow_threads(|| safetensors::load_sync(path_ref))
+    let handle: Model = py
+        .allow_threads(|| safetensors::Model::load_sync(path_ref))
         .map_err(map_reader_error)?;
     for k in handle.tensor_names() {
         let view = handle.tensor(k).map_err(map_reader_error)?;
@@ -241,8 +241,8 @@ pub fn load_safetensors_mmap(
     let result = builtins.getattr("dict")?.call0()?;
 
     let path_ref = path.as_path();
-    let handle: SafeTensorsMmap = py
-        .allow_threads(|| safetensors::load_mmap(path_ref))
+    let handle: MmapModel = py
+        .allow_threads(|| safetensors::MmapModel::load(path_ref))
         .map_err(map_reader_error)?;
     for k in handle.tensor_names() {
         let view = handle.tensor(k).map_err(map_reader_error)?;
