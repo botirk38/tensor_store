@@ -1,25 +1,29 @@
-# tensor_store_py Benchmarks
+# Tensor Store Benchmarks
 
-Benchmarks for the Python bindings. Uses pytest-benchmark with synthetic GPT-2-like fixtures.
+Benchmarks live under `bindings/python/benchmarks` and use `pytest-benchmark`.
 
-## Prerequisites
-
-- `uv sync --group dev` so pytest-benchmark and related tools are available (PyTorch/TensorFlow are regular package dependencies)
-
-## Run benchmarks
+Run from `bindings/python` with `uv run`:
 
 ```bash
-uv run pytest benchmarks/bench_safetensors.py benchmarks/bench_serverlessllm.py --benchmark-only
+uv run pytest benchmarks/bench_safetensors.py -v
+uv run pytest benchmarks/bench_serverlessllm.py -v
+uv run pytest benchmarks/bench_vllm.py -v --model-id gpt2
 ```
 
-## Structure
+Files:
 
-- **bench_safetensors.py** – SafeTensors: load_safetensors_sync, open+get_tensor (sync, mmap, async)
-- **bench_serverlessllm.py** – ServerlessLLM: same operations
+- `bench_safetensors.py` - native `safetensors` vs tensor_store backends
+- `bench_serverlessllm.py` - tensor_store ServerlessLLM microbenchmarks
+- `bench_vllm.py` - vLLM integration benchmarks
 
-Each operation has **warm** and **cold** variants:
+vLLM benchmark matrix:
 
-- **Warm**: Data in page cache (typical repeated access).
-- **Cold**: `posix_fadvise(DONTNEED)` before each run to hint the kernel to drop pages (Unix-only).
+- native
+- tensor_store SafeTensors: `sync`, `mmap`
+- tensor_store ServerlessLLM: `sync`, `mmap`
 
-All open+get_tensor benchmarks **touch every page** (`.sum().item()` on each tensor) so mmap results reflect real page faults, not just mapping.
+The vLLM benchmark uses a benchmark-only custom loader named `tensor_store` and
+passes loader behavior through `model_loader_extra_config`.
+
+ServerlessLLM artifacts are generated on demand from resolved local safetensors
+and cached under `bindings/python/benchmarks/.cache/`.
