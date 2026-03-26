@@ -146,7 +146,7 @@ mod linux {
                 file.sync_all().await
             }
         } else {
-            let file = TokioFile::create(path).await?;
+            let mut file = TokioFile::create(path).await?;
             file.write_all(&data).await?;
             file.sync_all().await
         }

@@ -3,11 +3,15 @@
 import pytest
 import torch
 
-from tensor_store_py import load_serverlessllm_sync, open_serverlessllm_sync
+from tensor_store_py._tensor_store_rust import (
+    load_serverlessllm_sync,
+    open_serverlessllm_sync,
+)
 from tests.fixtures import write_serverlessllm_dir
 
 
 # --- Smoke ---
+
 
 def test_open_smoke(tmp_path):
     tensors = {"x": torch.randn(2, 3)}
@@ -29,6 +33,7 @@ def test_load_file_smoke(tmp_path):
 
 
 # --- Error paths ---
+
 
 def test_open_nonexistent_path():
     with pytest.raises(FileNotFoundError, match="path not found"):

@@ -91,3 +91,59 @@ pub fn raw_to_torch_tensor(
 
     Ok(result.into())
 }
+
+pub fn torch_tensor_to_raw(
+    _py: Python<'_>,
+    tensor: &Bound<'_, PyAny>,
+) -> PyResult<(Vec<usize>, String, Vec<u8>)> {
+    Python::with_gil(|py| {
+        if !tensor.is_instance(&py.import("torch")?.getattr("Tensor")?)? {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "expected a torch.Tensor",
+            ));
+        }
+
+        let shape_method = tensor.getattr("shape")?;
+        let shape_tuple: Py<PyAny> = shape_method.into();
+        let shape: Vec<usize> = shape_tuple.extract(py)?;
+
+        let dtype_method = tensor.getattr("dtype")?;
+        let dtype_repr: String = dtype_method.call_method0("__str__")?.extract()?;
+        let dtype_str: &str = dtype_repr.strip_prefix("torch.").unwrap_or(&dtype_repr);
+
+        let dtype_safetensors = match dtype_str {
+            "torch.float64" | "float64" => "F64",
+            "torch.float32" | "float32" => "F32",
+            "torch.float16" | "float16" => "F16",
+            "torch.bfloat16" | "bfloat16" => "BF16",
+            "torch.int64" | "int64" => "I64",
+            "torch.int32" | "int32" => "I32",
+            "torch.int16" | "int16" => "I16",
+            "torch.int8" | "int8" => "I8",
+            "torch.uint64" | "uint64" => "U64",
+            "torch.uint32" | "uint32" => "U32",
+            "torch.uint16" | "uint16" => "U16",
+            "torch.uint8" | "uint8" => "U8",
+            "torch.bool" | "bool" => "BOOL",
+            "torch.complex64" | "complex64" => "C64",
+            "torch.float8_e4m3fn" | "float8_e4m3fn" => "F8_E4M3",
+            "torch.float8_e5m2" | "float8_e5m2" => "F8_E5M2",
+            other => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "unsupported PyTorch dtype: {}",
+                    other
+                )));
+            }
+        };
+
+        let cpu_tensor = tensor.call_method0("cpu")?;
+        let numpy_method = cpu_tensor.getattr("numpy")?;
+        let numpy_arr = numpy_method.call0()?;
+
+        let flat = numpy_arr.call_method1("flatten", ())?;
+        let bytes_obj = flat.call_method0("tobytes")?;
+        let data: Vec<u8> = bytes_obj.extract()?;
+
+        Ok((shape, dtype_safetensors.to_string(), data))
+    })
+}

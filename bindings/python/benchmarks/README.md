@@ -4,7 +4,7 @@ Benchmarks for the Python bindings. Uses pytest-benchmark with synthetic GPT-2-l
 
 ## Prerequisites
 
-- `uv sync` (with dev deps) so the package and pytest-benchmark are available
+- `uv sync --group dev` so pytest-benchmark and related tools are available (PyTorch/TensorFlow are regular package dependencies)
 
 ## Run benchmarks
 

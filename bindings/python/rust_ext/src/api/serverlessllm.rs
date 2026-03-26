@@ -5,7 +5,7 @@ use pyo3::prelude::*;
 use std::path::{Path, PathBuf};
 
 use tensor_store::formats::serverlessllm::{self, MmapModel, Model};
-use tensor_store::{TensorMetadata, ReaderError};
+use tensor_store::{ReaderError};
 
 use crate::convert::{convert_tensor, TensorData};
 use crate::errors::{map_reader_error, tensor_not_found};
@@ -57,6 +57,7 @@ enum ServerlessLLMHandleInner {
 #[pymethods]
 impl ServerlessLLMHandlePy {
     #[new]
+    #[pyo3(signature = (path,))]
     fn new(path: PathBuf) -> PyResult<Self> {
         validate_path_exists(&path)?;
         let inner = Python::with_gil(|py| {
@@ -75,14 +76,14 @@ impl ServerlessLLMHandlePy {
         }
     }
 
-    #[pyo3(signature = (name, device="cpu"))]
-    fn get_tensor(&self, py: Python<'_>, name: &str, device: &str) -> PyResult<PyObject> {
+    #[pyo3(signature = (name, framework="torch", device="cpu"))]
+    fn get_tensor(&self, py: Python<'_>, name: &str, framework: &str, device: &str) -> PyResult<PyObject> {
         let tensor = match &self.inner {
             ServerlessLLMHandleInner::Mmap(h) => {
                 let tensor = h.tensor(name).ok_or_else(|| tensor_not_found(name))?;
                 convert_tensor(
                     py,
-                    "torch",
+                    framework,
                     TensorData {
                         shape: tensor.shape(),
                         dtype: tensor.dtype(),
@@ -95,7 +96,7 @@ impl ServerlessLLMHandlePy {
                 let tensor = h.tensor(name).ok_or_else(|| tensor_not_found(name))?;
                 convert_tensor(
                     py,
-                    "torch",
+                    framework,
                     TensorData {
                         shape: tensor.shape(),
                         dtype: tensor.dtype(),
@@ -164,10 +165,11 @@ pub fn open_serverlessllm_mmap(path: PathBuf) -> PyResult<PyObject> {
 }
 
 #[pyfunction]
-#[pyo3(signature = (path, device="cpu"))]
-pub fn load_serverlessllm(py: Python<'_>, path: PathBuf, device: &str) -> PyResult<PyObject> {
+#[pyo3(signature = (path, framework="torch", device="cpu"))]
+pub fn load_serverlessllm(py: Python<'_>, path: PathBuf, framework: &str, device: &str) -> PyResult<PyObject> {
     validate_path_exists(&path)?;
      let path = path.to_path_buf();
+     let framework = framework.to_string();
      let device = device.to_string();
 
      let awaitable = pyo3_async_runtimes::tokio::future_into_py(py, async move {
@@ -196,7 +198,7 @@ pub fn load_serverlessllm(py: Python<'_>, path: PathBuf, device: &str) -> PyResu
             for (k, shape, dtype, data) in tensors_data {
                 let tensor = convert_tensor(
                     py,
-                    "torch",
+                    &framework,
                     TensorData { shape: &shape, dtype: &dtype, data: &data },
                     &device,
                 )?;
@@ -209,10 +211,11 @@ pub fn load_serverlessllm(py: Python<'_>, path: PathBuf, device: &str) -> PyResu
 }
 
 #[pyfunction]
-#[pyo3(signature = (path, device="cpu"))]
+#[pyo3(signature = (path, framework="torch", device="cpu"))]
 pub fn load_serverlessllm_sync(
     py: Python<'_>,
     path: PathBuf,
+    framework: &str,
     device: &str,
 ) -> PyResult<PyObject> {
     validate_path_exists(&path)?;
@@ -229,7 +232,7 @@ pub fn load_serverlessllm_sync(
         let tensor = handle.tensor(&k).ok_or_else(|| tensor_not_found(&k))?;
         let tensor = convert_tensor(
             py,
-            "torch",
+            framework,
             TensorData {
                 shape: tensor.shape(),
                 dtype: tensor.dtype(),
@@ -243,10 +246,11 @@ pub fn load_serverlessllm_sync(
 }
 
 #[pyfunction]
-#[pyo3(signature = (path, device="cpu"))]
+#[pyo3(signature = (path, framework="torch", device="cpu"))]
 pub fn load_serverlessllm_mmap(
     py: Python<'_>,
     path: PathBuf,
+    framework: &str,
     device: &str,
 ) -> PyResult<PyObject> {
     validate_path_exists(&path)?;
@@ -263,7 +267,7 @@ pub fn load_serverlessllm_mmap(
         let tensor = handle.tensor(&k).ok_or_else(|| tensor_not_found(&k))?;
         let tensor = convert_tensor(
             py,
-            "torch",
+            framework,
             TensorData {
                 shape: tensor.shape(),
                 dtype: tensor.dtype(),

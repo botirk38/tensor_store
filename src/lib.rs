@@ -1,6 +1,3 @@
-#[global_allocator]
-static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
-
 pub mod backends;
 pub mod converters;
 pub mod formats;
@@ -20,6 +17,7 @@ pub use formats::traits::{AsyncWriter, SyncWriter, TensorMetadata, TensorView};
 pub use formats::safetensors::Model as SafeTensorsModel;
 pub use formats::safetensors::MmapModel as SafeTensorsMmapModel;
 pub use formats::safetensors::Writer as SafeTensorsWriter;
+pub use formats::safetensors::serialize;
 
 // ServerlessLLM types
 pub use formats::serverlessllm::{

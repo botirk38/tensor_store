@@ -4,7 +4,7 @@ import asyncio
 import pytest
 import torch
 
-from tensor_store_py import (
+from tensor_store_py._tensor_store_rust import (
     load_safetensors,
     load_safetensors_mmap,
     load_safetensors_sync,
@@ -16,49 +16,53 @@ from tensor_store_py import (
 
 # --- Backend: sync ---
 
-def test_open_sync(safetensors_path):
+
+def test_open_sync(safetensors_path, hidden_dim):
     handle = open_safetensors_sync(safetensors_path)
     assert "wte" in handle.keys() and "wpe" in handle.keys()
-    assert handle.get_tensor("wte").shape == (50257, 768)
+    assert handle.get_tensor("wte").shape == (1024, hidden_dim)
 
 
-def test_load_safetensors_sync(safetensors_path):
+def test_load_safetensors_sync(safetensors_path, hidden_dim):
     d = load_safetensors_sync(safetensors_path)
     assert "wte" in d and "wpe" in d
-    assert d["wte"].shape == (50257, 768)
+    assert d["wte"].shape == (1024, hidden_dim)
 
 
 # --- Backend: mmap ---
 
-def test_open_mmap(safetensors_path):
+
+def test_open_mmap(safetensors_path, hidden_dim):
     handle = open_safetensors_mmap(safetensors_path)
     assert "wte" in handle.keys() and "wpe" in handle.keys()
-    assert handle.get_tensor("wte").shape == (50257, 768)
+    assert handle.get_tensor("wte").shape == (1024, hidden_dim)
 
 
-def test_load_safetensors_mmap(safetensors_path):
+def test_load_safetensors_mmap(safetensors_path, hidden_dim):
     d = load_safetensors_mmap(safetensors_path)
     assert "wte" in d and "wpe" in d
-    assert d["wte"].shape == (50257, 768)
+    assert d["wte"].shape == (1024, hidden_dim)
 
 
 # --- Backend: async ---
 
+
 @pytest.mark.asyncio
-async def test_open_async(safetensors_path):
+async def test_open_async(safetensors_path, hidden_dim):
     handle = await open_safetensors(safetensors_path)
     assert "wte" in handle.keys() and "wpe" in handle.keys()
-    assert handle.get_tensor("wte").shape == (50257, 768)
+    assert handle.get_tensor("wte").shape == (1024, hidden_dim)
 
 
 @pytest.mark.asyncio
-async def test_load_safetensors_async(safetensors_path):
+async def test_load_safetensors_async(safetensors_path, hidden_dim):
     d = await load_safetensors(safetensors_path)
     assert "wte" in d and "wpe" in d
-    assert d["wte"].shape == (50257, 768)
+    assert d["wte"].shape == (1024, hidden_dim)
 
 
 # --- Backend parity (sync/mmap/async consistency) ---
+
 
 def test_load_keys_parity(safetensors_path):
     keys_sync = set(load_safetensors_sync(safetensors_path).keys())
@@ -76,14 +80,18 @@ async def test_load_keys_parity_async(safetensors_path):
 def test_load_shapes_parity(safetensors_path):
     d_sync = load_safetensors_sync(safetensors_path)
     d_mmap = load_safetensors_mmap(safetensors_path)
-    assert {k: tuple(d_sync[k].shape) for k in d_sync} == {k: tuple(d_mmap[k].shape) for k in d_mmap}
+    assert {k: tuple(d_sync[k].shape) for k in d_sync} == {
+        k: tuple(d_mmap[k].shape) for k in d_mmap
+    }
 
 
 @pytest.mark.asyncio
 async def test_load_shapes_parity_async(safetensors_path):
     d_sync = load_safetensors_sync(safetensors_path)
     d_async = await load_safetensors(safetensors_path)
-    assert {k: tuple(d_sync[k].shape) for k in d_sync} == {k: tuple(d_async[k].shape) for k in d_async}
+    assert {k: tuple(d_sync[k].shape) for k in d_sync} == {
+        k: tuple(d_async[k].shape) for k in d_async
+    }
 
 
 def test_open_handle_parity(safetensors_path):
@@ -107,9 +115,10 @@ async def test_open_handle_parity_async(safetensors_path):
 
 # --- Async concurrency ---
 
+
 @pytest.mark.asyncio
 @pytest.mark.slow
-async def test_parallel_open_safetensors(safetensors_path):
+async def test_parallel_open_safetensors(safetensors_path, hidden_dim):
     handles = await asyncio.gather(
         open_safetensors(safetensors_path),
         open_safetensors(safetensors_path),
@@ -117,7 +126,7 @@ async def test_parallel_open_safetensors(safetensors_path):
     )
     for h in handles:
         assert "wte" in h.keys()
-        assert h.get_tensor("wte").shape == (50257, 768)
+        assert h.get_tensor("wte").shape == (1024, hidden_dim)
 
 
 @pytest.mark.asyncio

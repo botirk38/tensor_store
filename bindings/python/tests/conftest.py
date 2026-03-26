@@ -2,7 +2,7 @@
 
 import pytest
 
-from tensor_store_py import (
+from tensor_store_py._tensor_store_rust import (
     load_safetensors,
     load_safetensors_mmap,
     load_safetensors_sync,
@@ -69,6 +69,18 @@ def safetensors_path(tmp_path):
 
 
 @pytest.fixture
+def hidden_dim():
+    """Hidden dimension used by create_gpt2 fixture."""
+    return 126
+
+
+@pytest.fixture
+def seq_len():
+    """Sequence length used by create_gpt2 fixture."""
+    return 128
+
+
+@pytest.fixture
 def serverlessllm_dir(tmp_path):
     """GPT-2-like ServerlessLLM directory (2 layers)."""
     tensors = create_gpt2(n_layers=2)
@@ -80,6 +92,7 @@ def serverlessllm_dir(tmp_path):
 def safetensors_path_small(tmp_path):
     """Small SafeTensors file (single tensor)."""
     import torch
+
     tensors = {"x": torch.randn(2, 3)}
     return str(write_safetensors(tensors, tmp_path / "model.safetensors"))
 
@@ -88,6 +101,7 @@ def safetensors_path_small(tmp_path):
 def serverlessllm_dir_small(tmp_path):
     """Small ServerlessLLM directory (single tensor)."""
     import torch
+
     tensors = {"x": torch.randn(2, 3)}
     out_dir = write_serverlessllm_dir(tensors, tmp_path / "model_sllm")
     return str(out_dir)
@@ -97,6 +111,7 @@ def serverlessllm_dir_small(tmp_path):
 def safetensors_path_dtypes(tmp_path):
     """SafeTensors file with multiple dtypes for roundtrip checks."""
     import torch
+
     tensors = {
         "f32": torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32),
         "i64": torch.tensor([1, 2, 3], dtype=torch.int64),
@@ -123,5 +138,10 @@ def serverlessllm_dir_large(tmp_path):
 
 
 def pytest_configure(config):
-    config.addinivalue_line("markers", "slow: marks tests as slow (deselect with '-m \"not slow\"')")
-    config.addinivalue_line("markers", "integration: marks tests as integration (run with tests/integration/)")
+    config.addinivalue_line(
+        "markers", "slow: marks tests as slow (deselect with '-m \"not slow\"')"
+    )
+    config.addinivalue_line(
+        "markers",
+        "integration: marks tests as integration (run with tests/integration/)",
+    )

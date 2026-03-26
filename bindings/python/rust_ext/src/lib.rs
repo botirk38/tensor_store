@@ -4,14 +4,23 @@ mod api;
 mod convert;
 mod errors;
 
+use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
+
+pyo3::create_exception!(
+    _tensor_store_rust,
+    TensorStoreError,
+    PyException,
+    "Error raised by tensor_store Python bindings."
+);
 
 use api::{
     load_safetensors, load_safetensors_mmap, load_safetensors_sync,
     load_serverlessllm, load_serverlessllm_mmap, load_serverlessllm_sync,
     open_safetensors, open_safetensors_mmap, open_safetensors_sync,
     open_serverlessllm, open_serverlessllm_mmap, open_serverlessllm_sync,
+    save_safetensors, save_safetensors_bytes,
     SafeTensorsHandlePy, ServerlessLLMHandlePy,
 };
 
@@ -33,7 +42,9 @@ fn _tensor_store_rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(load_serverlessllm, m)?)?;
     m.add_function(wrap_pyfunction!(load_serverlessllm_sync, m)?)?;
     m.add_function(wrap_pyfunction!(load_serverlessllm_mmap, m)?)?;
+    m.add_function(wrap_pyfunction!(save_safetensors, m)?)?;
+    m.add_function(wrap_pyfunction!(save_safetensors_bytes, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
-    errors::register_tensor_store_error(m.py(), m)?;
+    m.add("TensorStoreError", m.py().get_type::<TensorStoreError>())?;
     Ok(())
 }

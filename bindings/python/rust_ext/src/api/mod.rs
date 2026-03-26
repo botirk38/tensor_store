@@ -7,6 +7,7 @@ pub use safetensors::{
     SafeTensorsHandlePy,
     load_safetensors, load_safetensors_mmap, load_safetensors_sync,
     open_safetensors, open_safetensors_mmap, open_safetensors_sync,
+    save_safetensors, save_safetensors_bytes,
 };
 pub use serverlessllm::{
     ServerlessLLMHandlePy,

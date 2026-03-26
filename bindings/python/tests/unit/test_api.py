@@ -1,13 +1,15 @@
 """API contract and export regression tests."""
 
 import asyncio
+import importlib
+
 import pytest
 
-from tensor_store_py import (
-    __version__,
-    SafeTensorsHandle,
-    ServerlessLLMHandle,
+from tensor_store_py import __version__
+from tensor_store_py._tensor_store_rust import (
     TensorStoreError,
+    SafeTensorsHandlePy,
+    ServerlessLLMHandlePy,
     load_safetensors,
     load_safetensors_mmap,
     load_safetensors_sync,
@@ -29,16 +31,22 @@ def test_version_is_string():
     assert len(__version__) > 0
 
 
-def test_all_exports_available():
-    from tensor_store_py import __all__
-    for name in __all__:
-        obj = getattr(__import__("tensor_store_py"), name)
-        assert obj is not None, f"{name} should be exported"
+def test_package_version_matches_rust_extension():
+    import tensor_store_py._tensor_store_rust as ext
+
+    assert ext.__version__ == __version__
+
+
+def test_package_all_exports_version_only():
+    import tensor_store_py
+
+    assert tensor_store_py.__all__ == ["__version__"]
+    assert getattr(tensor_store_py, "__version__") == __version__
 
 
 def test_handle_classes_are_types():
-    assert isinstance(SafeTensorsHandle, type)
-    assert isinstance(ServerlessLLMHandle, type)
+    assert isinstance(SafeTensorsHandlePy, type)
+    assert isinstance(ServerlessLLMHandlePy, type)
 
 
 def test_tensor_store_error_is_exception():
@@ -46,18 +54,31 @@ def test_tensor_store_error_is_exception():
 
 
 @pytest.mark.asyncio
-async def test_open_functions_return_awaitables(tmp_path):
+async def test_async_functions_return_awaitables_and_work(tmp_path):
     import torch
-    safetensors_path = write_safetensors({"x": torch.zeros(1)}, tmp_path / "t.safetensors")
+
+    safetensors_path = write_safetensors(
+        {"x": torch.zeros(1)}, tmp_path / "t.safetensors"
+    )
     serverless_path = write_serverlessllm_dir({"x": torch.zeros(1)}, tmp_path / "s")
-    for fn, path in [
-        (open_safetensors, str(safetensors_path)),
-        (open_serverlessllm, str(serverless_path)),
-        (load_safetensors, str(safetensors_path)),
-    ]:
-        assert callable(fn)
-        result = fn(path)
-        assert asyncio.iscoroutine(result) or hasattr(result, "__await__"), f"{fn.__name__} should return awaitable"
+
+    # Test open functions
+    handle = await open_safetensors(str(safetensors_path))
+    assert isinstance(handle, SafeTensorsHandlePy)
+    assert "x" in handle.keys()
+
+    handle = await open_serverlessllm(str(serverless_path))
+    assert isinstance(handle, ServerlessLLMHandlePy)
+    assert "x" in handle.keys()
+
+    # Test load functions
+    result = await load_safetensors(str(safetensors_path))
+    assert isinstance(result, dict)
+    assert "x" in result
+
+    result = await load_serverlessllm(str(serverless_path))
+    assert isinstance(result, dict)
+    assert "x" in result
 
 
 def test_sync_and_mmap_functions_are_callable():
@@ -72,3 +93,9 @@ def test_sync_and_mmap_functions_are_callable():
         load_serverlessllm_sync,
     ):
         assert callable(fn)
+
+
+def test_rust_extension_is_importable():
+    mod = importlib.import_module("tensor_store_py._tensor_store_rust")
+    assert hasattr(mod, "__version__")
+    assert hasattr(mod, "load_safetensors_sync")

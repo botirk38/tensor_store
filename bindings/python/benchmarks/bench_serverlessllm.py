@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 from benchmarks.fixtures import drop_page_cache, touch_tensor
-from tensor_store_py import (
+from tensor_store_py._tensor_store_rust import (
     load_serverlessllm_sync,
     open_serverlessllm,
     open_serverlessllm_mmap,
@@ -15,6 +15,7 @@ from tensor_store_py import (
 
 def test_load_sync_warm(benchmark, serverlessllm_dir):
     """Benchmark load_serverlessllm_sync (warm cache)."""
+
     def run():
         result = load_serverlessllm_sync(serverlessllm_dir)
         sum(touch_tensor(t) for t in result.values())
@@ -26,6 +27,7 @@ def test_load_sync_warm(benchmark, serverlessllm_dir):
 
 def test_load_sync_cold(benchmark, serverlessllm_dir):
     """Benchmark load_serverlessllm_sync (cold cache, drop before each run)."""
+
     def run():
         drop_page_cache(serverlessllm_dir)
         result = load_serverlessllm_sync(serverlessllm_dir)

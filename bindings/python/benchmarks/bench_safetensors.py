@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 from benchmarks.fixtures import drop_page_cache, touch_tensor
-from tensor_store_py import (
+from tensor_store_py._tensor_store_rust import (
     load_safetensors_sync,
     open_safetensors,
     open_safetensors_mmap,
@@ -15,6 +15,7 @@ from tensor_store_py import (
 
 def test_load_sync_warm(benchmark, safetensors_path):
     """Benchmark load_safetensors_sync (warm cache)."""
+
     def run():
         result = load_safetensors_sync(safetensors_path)
         sum(touch_tensor(t) for t in result.values())
@@ -26,6 +27,7 @@ def test_load_sync_warm(benchmark, safetensors_path):
 
 def test_load_sync_cold(benchmark, safetensors_path):
     """Benchmark load_safetensors_sync (cold cache, drop before each run)."""
+
     def run():
         drop_page_cache(safetensors_path)
         result = load_safetensors_sync(safetensors_path)

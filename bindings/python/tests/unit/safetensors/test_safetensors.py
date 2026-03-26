@@ -3,11 +3,15 @@
 import pytest
 import torch
 
-from tensor_store_py import load_safetensors_sync, open_safetensors_sync
+from tensor_store_py._tensor_store_rust import (
+    load_safetensors_sync,
+    open_safetensors_sync,
+)
 from tests.fixtures import write_safetensors
 
 
 # --- Smoke ---
+
 
 def test_open_smoke(tmp_path):
     tensors = {"x": torch.randn(2, 3)}
@@ -30,6 +34,7 @@ def test_load_file_smoke(tmp_path):
 
 # --- Error paths ---
 
+
 def test_open_nonexistent_path():
     with pytest.raises(FileNotFoundError, match="path not found"):
         open_safetensors_sync("/nonexistent/path/model.safetensors")
@@ -41,6 +46,7 @@ def test_load_file_nonexistent_path():
 
 
 # --- Dtype and value roundtrip ---
+
 
 def test_dtype_roundtrip_f32(safetensors_path_dtypes):
     d = load_safetensors_sync(safetensors_path_dtypes)

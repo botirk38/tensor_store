@@ -5,6 +5,8 @@
 pub mod reader;
 pub mod writer;
 
+pub use safetensors::serialize;
+
 // Re-export reader types
 pub use reader::{
     Dtype, SafeTensorError, MmapModel, Model, Tensor,

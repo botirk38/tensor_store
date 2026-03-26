@@ -24,27 +24,34 @@ _DTYPE_MAP = {
 }
 
 
-def create_gpt2(n_layers: int = 12) -> dict[str, torch.Tensor]:
-    """Create GPT-2-like tensor dict (same structure as safetensors benches)."""
+def create_gpt2(n_layers: int = 2) -> dict[str, torch.Tensor]:
+    """Create GPT-2-like tensor dict (same structure as safetensors benches, but small)."""
+    hidden_dim = 126  # must be divisible by 3 for split tests
+    intermediate_dim = hidden_dim * 3  # 378
+
     tensors = {}
-    tensors["wte"] = torch.zeros((50257, 768))
-    tensors["wpe"] = torch.zeros((1024, 768))
+    tensors["wte"] = torch.zeros((1024, hidden_dim))
+    tensors["wpe"] = torch.zeros((128, hidden_dim))
     for i in range(n_layers):
-        tensors[f"h.{i}.ln_1.weight"] = torch.zeros((768,))
-        tensors[f"h.{i}.ln_1.bias"] = torch.zeros((768,))
-        tensors[f"h.{i}.attn.bias"] = torch.zeros((1, 1, 1024, 1024))
-        tensors[f"h.{i}.attn.c_attn.weight"] = torch.zeros((768, 2304))
-        tensors[f"h.{i}.attn.c_attn.bias"] = torch.zeros((2304,))
-        tensors[f"h.{i}.attn.c_proj.weight"] = torch.zeros((768, 768))
-        tensors[f"h.{i}.attn.c_proj.bias"] = torch.zeros((768,))
-        tensors[f"h.{i}.ln_2.weight"] = torch.zeros((768,))
-        tensors[f"h.{i}.ln_2.bias"] = torch.zeros((768,))
-        tensors[f"h.{i}.mlp.c_fc.weight"] = torch.zeros((768, 3072))
-        tensors[f"h.{i}.mlp.c_fc.bias"] = torch.zeros((3072,))
-        tensors[f"h.{i}.mlp.c_proj.weight"] = torch.zeros((3072, 768))
-        tensors[f"h.{i}.mlp.c_proj.bias"] = torch.zeros((768,))
-    tensors["ln_f.weight"] = torch.zeros((768,))
-    tensors["ln_f.bias"] = torch.zeros((768,))
+        tensors[f"h.{i}.ln_1.weight"] = torch.zeros((hidden_dim,))
+        tensors[f"h.{i}.ln_1.bias"] = torch.zeros((hidden_dim,))
+        tensors[f"h.{i}.attn.bias"] = torch.zeros((1, 1, 128, 128))
+        tensors[f"h.{i}.attn.c_attn.weight"] = torch.zeros(
+            (hidden_dim, intermediate_dim)
+        )
+        tensors[f"h.{i}.attn.c_attn.bias"] = torch.zeros((intermediate_dim,))
+        tensors[f"h.{i}.attn.c_proj.weight"] = torch.zeros((hidden_dim, hidden_dim))
+        tensors[f"h.{i}.attn.c_proj.bias"] = torch.zeros((hidden_dim,))
+        tensors[f"h.{i}.ln_2.weight"] = torch.zeros((hidden_dim,))
+        tensors[f"h.{i}.ln_2.bias"] = torch.zeros((hidden_dim,))
+        tensors[f"h.{i}.mlp.c_fc.weight"] = torch.zeros((hidden_dim, intermediate_dim))
+        tensors[f"h.{i}.mlp.c_fc.bias"] = torch.zeros((intermediate_dim,))
+        tensors[f"h.{i}.mlp.c_proj.weight"] = torch.zeros(
+            (intermediate_dim, hidden_dim)
+        )
+        tensors[f"h.{i}.mlp.c_proj.bias"] = torch.zeros((hidden_dim,))
+    tensors["ln_f.weight"] = torch.zeros((hidden_dim,))
+    tensors["ln_f.bias"] = torch.zeros((hidden_dim,))
     return tensors
 
 
