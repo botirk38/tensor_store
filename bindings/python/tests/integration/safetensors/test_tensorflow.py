@@ -1,7 +1,8 @@
 """End-to-end SafeTensors integration tests with TensorFlow."""
 
 import pytest
-import tensorflow as tf
+
+tf = pytest.importorskip("tensorflow")
 
 from tensor_store_py.tensorflow import load_file as tf_load_file
 from tensor_store_py.tensorflow import load_file_mmap as tf_load_file_mmap

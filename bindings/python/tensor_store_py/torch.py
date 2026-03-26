@@ -11,7 +11,12 @@ from tensor_store_py._tensor_store_rust import (
     save_safetensors_bytes,
 )
 
-import torch
+try:
+    import torch
+except ImportError:
+    raise ImportError(
+        "PyTorch is required for this module. Install with: pip install tensor-store-py[torch]"
+    )
 
 
 def load_file(

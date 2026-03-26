@@ -11,7 +11,12 @@ from tensor_store_py._tensor_store_rust import (
     save_safetensors_bytes,
 )
 
-import tensorflow as tf
+try:
+    import tensorflow as tf
+except ImportError:
+    raise ImportError(
+        "TensorFlow is required for this module. Install with: pip install tensor-store-py[tensorflow]"
+    )
 
 
 def load_file(

@@ -1,7 +1,8 @@
 """End-to-end SafeTensors save tests with PyTorch."""
 
 import pytest
-import torch
+
+torch = pytest.importorskip("torch")
 
 from tensor_store_py.torch import load_file as pytorch_load_file
 from tensor_store_py.torch import save_file as pytorch_save_file

@@ -6,11 +6,15 @@ requires-python = ">=3.9,<3.13"
 readme = "README.md"
 license = "Apache-2.0"
 authors = [{ name = "tensor_store contributors" }]
+
 dependencies = [
     "numpy>=2.0.2",
-    "tensorflow>=2.11.0",
-    "torch>=2.1",
 ]
+
+[project.optional-dependencies]
+torch = ["torch>=2.1"]
+tensorflow = ["tensorflow>=2.11.0"]
+all = ["torch>=2.1", "tensorflow>=2.11.0"]
 
 [build-system]
 requires = ["maturin>=1.5,<2.0"]
@@ -35,4 +39,8 @@ dev = [
     "pytest-asyncio>=0.23",
     "pytest-benchmark>=5.2.3",
     "safetensors>=0.7.0",
+    "torch>=2.1",
 ]
+benchmark-torch = ["torch>=2.1"]
+benchmark-tensorflow = ["tensorflow>=2.11.0"]
+benchmark-all = ["torch>=2.1", "tensorflow>=2.11.0"]

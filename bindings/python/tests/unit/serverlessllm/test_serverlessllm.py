@@ -1,7 +1,8 @@
 """ServerlessLLM format unit tests (smoke, error paths)."""
 
 import pytest
-import torch
+
+torch = pytest.importorskip("torch")
 
 from tensor_store_py._tensor_store_rust import (
     load_serverlessllm_sync,

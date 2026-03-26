@@ -25,26 +25,33 @@ _DTYPE_MAP = {
 
 
 def create_gpt2(n_layers: int = 2) -> dict[str, torch.Tensor]:
-    """Create GPT-2-like tensor dict for benchmarks."""
+    """Create GPT-2-like tensor dict for benchmarks (small version)."""
+    hidden_dim = 126  # must be divisible by 3 for split tests
+    intermediate_dim = hidden_dim * 3
+
     tensors = {}
-    tensors["wte"] = torch.zeros((50257, 768))
-    tensors["wpe"] = torch.zeros((1024, 768))
+    tensors["wte"] = torch.zeros((1024, hidden_dim))
+    tensors["wpe"] = torch.zeros((128, hidden_dim))
     for i in range(n_layers):
-        tensors[f"h.{i}.ln_1.weight"] = torch.zeros((768,))
-        tensors[f"h.{i}.ln_1.bias"] = torch.zeros((768,))
-        tensors[f"h.{i}.attn.bias"] = torch.zeros((1, 1, 1024, 1024))
-        tensors[f"h.{i}.attn.c_attn.weight"] = torch.zeros((768, 2304))
-        tensors[f"h.{i}.attn.c_attn.bias"] = torch.zeros((2304,))
-        tensors[f"h.{i}.attn.c_proj.weight"] = torch.zeros((768, 768))
-        tensors[f"h.{i}.attn.c_proj.bias"] = torch.zeros((768,))
-        tensors[f"h.{i}.ln_2.weight"] = torch.zeros((768,))
-        tensors[f"h.{i}.ln_2.bias"] = torch.zeros((768,))
-        tensors[f"h.{i}.mlp.c_fc.weight"] = torch.zeros((768, 3072))
-        tensors[f"h.{i}.mlp.c_fc.bias"] = torch.zeros((3072,))
-        tensors[f"h.{i}.mlp.c_proj.weight"] = torch.zeros((3072, 768))
-        tensors[f"h.{i}.mlp.c_proj.bias"] = torch.zeros((768,))
-    tensors["ln_f.weight"] = torch.zeros((768,))
-    tensors["ln_f.bias"] = torch.zeros((768,))
+        tensors[f"h.{i}.ln_1.weight"] = torch.zeros((hidden_dim,))
+        tensors[f"h.{i}.ln_1.bias"] = torch.zeros((hidden_dim,))
+        tensors[f"h.{i}.attn.bias"] = torch.zeros((1, 1, 128, 128))
+        tensors[f"h.{i}.attn.c_attn.weight"] = torch.zeros(
+            (hidden_dim, intermediate_dim)
+        )
+        tensors[f"h.{i}.attn.c_attn.bias"] = torch.zeros((intermediate_dim,))
+        tensors[f"h.{i}.attn.c_proj.weight"] = torch.zeros((hidden_dim, hidden_dim))
+        tensors[f"h.{i}.attn.c_proj.bias"] = torch.zeros((hidden_dim,))
+        tensors[f"h.{i}.ln_2.weight"] = torch.zeros((hidden_dim,))
+        tensors[f"h.{i}.ln_2.bias"] = torch.zeros((hidden_dim,))
+        tensors[f"h.{i}.mlp.c_fc.weight"] = torch.zeros((hidden_dim, intermediate_dim))
+        tensors[f"h.{i}.mlp.c_fc.bias"] = torch.zeros((intermediate_dim,))
+        tensors[f"h.{i}.mlp.c_proj.weight"] = torch.zeros(
+            (intermediate_dim, hidden_dim)
+        )
+        tensors[f"h.{i}.mlp.c_proj.bias"] = torch.zeros((hidden_dim,))
+    tensors["ln_f.weight"] = torch.zeros((hidden_dim,))
+    tensors["ln_f.bias"] = torch.zeros((hidden_dim,))
     return tensors
 
 
@@ -57,30 +64,56 @@ def _contiguous_stride(shape: tuple[int, ...]) -> tuple[int, ...]:
     return tuple(reversed(stride))
 
 
-def write_serverlessllm_dir(tensors: dict[str, torch.Tensor], out_dir: Path) -> Path:
-    """Write tensors to ServerlessLLM format (tensor_index.json + tensor.data_0)."""
+def write_serverlessllm_dir(
+    tensors: dict[str, torch.Tensor], out_dir: Path, num_partitions: int = 1
+) -> Path:
+    """Write tensors to ServerlessLLM format (tensor_index.json + tensor.data_N).
+
+    Args:
+        tensors: Dictionary of tensor name -> tensor
+        out_dir: Output directory
+        num_partitions: Number of partitions to split tensors across
+    """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     index = {}
-    offset = 0
-    partition_data = bytearray()
+    tensor_items = list(tensors.items())
+    tensors_per_partition = (len(tensor_items) + num_partitions - 1) // num_partitions
 
-    for name, t in tensors.items():
-        t = t.contiguous()
-        shape = list(t.shape)
-        stride = list(_contiguous_stride(t.shape))
-        dtype_str = _DTYPE_MAP.get(t.dtype)
-        if dtype_str is None:
-            raise ValueError(f"unsupported dtype: {t.dtype}")
-        data = t.numpy().tobytes()
-        size = len(data)
-        partition_data.extend(data)
-        index[name] = [offset, size, shape, stride, dtype_str, 0]
-        offset += size
+    # Write each partition
+    for partition_id in range(num_partitions):
+        partition_data = bytearray()
+        partition_offset = 0
+
+        start_idx = partition_id * tensors_per_partition
+        end_idx = min(start_idx + tensors_per_partition, len(tensor_items))
+
+        for name, t in tensor_items[start_idx:end_idx]:
+            t = t.contiguous()
+            shape = list(t.shape)
+            stride = list(_contiguous_stride(t.shape))
+            dtype_str = _DTYPE_MAP.get(t.dtype)
+            if dtype_str is None:
+                raise ValueError(f"unsupported dtype: {t.dtype}")
+            data = t.numpy().tobytes()
+            size = len(data)
+
+            index[name] = [
+                partition_offset,
+                size,
+                shape,
+                stride,
+                dtype_str,
+                partition_id,
+            ]
+            partition_data.extend(data)
+            partition_offset += size
+
+        if partition_data:
+            (out_dir / f"tensor.data_{partition_id}").write_bytes(partition_data)
 
     (out_dir / "tensor_index.json").write_text(json.dumps(index))
-    (out_dir / "tensor.data_0").write_bytes(partition_data)
     return out_dir
 
 

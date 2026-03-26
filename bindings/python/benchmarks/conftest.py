@@ -19,3 +19,23 @@ def serverlessllm_dir(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("bench_fixture")
     tensors = create_gpt2(n_layers=2)
     return str(write_serverlessllm_dir(tensors, tmp / "model_sllm"))
+
+
+@pytest.fixture(scope="session")
+def serverlessllm_dir_4partitions(tmp_path_factory):
+    """Session-scoped path to a synthetic ServerlessLLM directory with 4 partitions."""
+    tmp = tmp_path_factory.mktemp("bench_fixture")
+    tensors = create_gpt2(n_layers=2)
+    return str(
+        write_serverlessllm_dir(tensors, tmp / "model_sllm_4p", num_partitions=4)
+    )
+
+
+@pytest.fixture(scope="session")
+def serverlessllm_dir_8partitions(tmp_path_factory):
+    """Session-scoped path to a synthetic ServerlessLLM directory with 8 partitions."""
+    tmp = tmp_path_factory.mktemp("bench_fixture")
+    tensors = create_gpt2(n_layers=2)
+    return str(
+        write_serverlessllm_dir(tensors, tmp / "model_sllm_8p", num_partitions=8)
+    )

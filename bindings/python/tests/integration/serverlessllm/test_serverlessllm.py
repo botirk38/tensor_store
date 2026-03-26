@@ -1,7 +1,8 @@
 """ServerlessLLM format integration tests (backend, parity)."""
 
 import pytest
-import torch
+
+torch = pytest.importorskip("torch")
 
 from tensor_store_py._tensor_store_rust import (
     load_serverlessllm,

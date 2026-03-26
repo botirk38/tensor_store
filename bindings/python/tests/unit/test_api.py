@@ -55,7 +55,7 @@ def test_tensor_store_error_is_exception():
 
 @pytest.mark.asyncio
 async def test_async_functions_return_awaitables_and_work(tmp_path):
-    import torch
+    torch = pytest.importorskip("torch")
 
     safetensors_path = write_safetensors(
         {"x": torch.zeros(1)}, tmp_path / "t.safetensors"

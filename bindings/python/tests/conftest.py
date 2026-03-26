@@ -89,6 +89,26 @@ def serverlessllm_dir(tmp_path):
 
 
 @pytest.fixture
+def serverlessllm_dir_4partitions(tmp_path):
+    """GPT-2-like ServerlessLLM directory with 4 partitions."""
+    tensors = create_gpt2(n_layers=2)
+    out_dir = write_serverlessllm_dir(
+        tensors, tmp_path / "model_sllm_4p", num_partitions=4
+    )
+    return str(out_dir)
+
+
+@pytest.fixture
+def serverlessllm_dir_8partitions(tmp_path):
+    """GPT-2-like ServerlessLLM directory with 8 partitions."""
+    tensors = create_gpt2(n_layers=2)
+    out_dir = write_serverlessllm_dir(
+        tensors, tmp_path / "model_sllm_8p", num_partitions=8
+    )
+    return str(out_dir)
+
+
+@pytest.fixture
 def safetensors_path_small(tmp_path):
     """Small SafeTensors file (single tensor)."""
     import torch

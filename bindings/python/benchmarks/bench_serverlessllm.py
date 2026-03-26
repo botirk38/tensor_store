@@ -1,4 +1,6 @@
-"""ServerlessLLM benchmarks: load_file and open+get_tensor per backend (sync, mmap, async)."""
+"""ServerlessLLM benchmarks: load_file and open+get_tensor per backend (sync, mmap, async).
+Also benchmarks parallel loading with multiple partitions.
+"""
 
 import asyncio
 
@@ -111,3 +113,58 @@ def test_open_get_tensor_async_cold(benchmark, serverlessllm_dir):
         asyncio.run(run())
 
     benchmark(run_sync)
+
+
+# =============================================================================
+# Multi-partition parallel loading benchmarks
+# =============================================================================
+
+
+def test_load_sync_4partitions_warm(benchmark, serverlessllm_dir_4partitions):
+    """Benchmark load with 4 partitions (parallel loading)."""
+
+    def run():
+        result = load_serverlessllm_sync(serverlessllm_dir_4partitions)
+        sum(touch_tensor(t) for t in result.values())
+        return result
+
+    result = benchmark(run)
+    assert len(result) > 0
+
+
+def test_load_sync_8partitions_warm(benchmark, serverlessllm_dir_8partitions):
+    """Benchmark load with 8 partitions (parallel loading)."""
+
+    def run():
+        result = load_serverlessllm_sync(serverlessllm_dir_8partitions)
+        sum(touch_tensor(t) for t in result.values())
+        return result
+
+    result = benchmark(run)
+    assert len(result) > 0
+
+
+def test_load_sync_4partitions_cold(benchmark, serverlessllm_dir_4partitions):
+    """Benchmark load with 4 partitions (cold cache)."""
+
+    def run():
+        drop_page_cache(serverlessllm_dir_4partitions)
+        result = load_serverlessllm_sync(serverlessllm_dir_4partitions)
+        sum(touch_tensor(t) for t in result.values())
+        return result
+
+    result = benchmark(run)
+    assert len(result) > 0
+
+
+def test_load_sync_8partitions_cold(benchmark, serverlessllm_dir_8partitions):
+    """Benchmark load with 8 partitions (cold cache)."""
+
+    def run():
+        drop_page_cache(serverlessllm_dir_8partitions)
+        result = load_serverlessllm_sync(serverlessllm_dir_8partitions)
+        sum(touch_tensor(t) for t in result.values())
+        return result
+
+    result = benchmark(run)
+    assert len(result) > 0
