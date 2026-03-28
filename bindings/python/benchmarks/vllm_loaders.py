@@ -8,26 +8,11 @@ from collections.abc import Generator
 
 import torch
 
+from benchmarks.fixtures import partition_count
+
 
 def _cache_root() -> str:
     return os.path.join(os.path.dirname(__file__), ".cache", "serverlessllm")
-
-
-def _partition_count(total_bytes: int) -> int:
-    max_parts = min(32, (os.cpu_count() or 4) * 2)
-    if total_bytes < 512 * 1024**2:
-        parts = 1
-    elif total_bytes < 2 * 1024**3:
-        parts = 2
-    elif total_bytes < 8 * 1024**3:
-        parts = 4
-    elif total_bytes < 24 * 1024**3:
-        parts = 8
-    elif total_bytes < 64 * 1024**3:
-        parts = 16
-    else:
-        parts = 32
-    return min(parts, max_parts)
 
 
 def _load_safetensors(path: str, backend: str) -> dict[str, torch.Tensor]:
@@ -73,8 +58,8 @@ def _ensure_serverlessllm_artifact(
         )
 
     total_bytes = sum(os.path.getsize(path) for path in safetensors_files)
-    partition_count = _partition_count(total_bytes)
-    key_input = f"{hf_folder}:{revision or 'main'}:{partition_count}:v1"
+    parts = partition_count(total_bytes)
+    key_input = f"{hf_folder}:{revision or 'main'}:{parts}:v1"
     cache_key = hashlib.sha256(key_input.encode()).hexdigest()[:16]
     out_dir = os.path.join(_cache_root(), cache_key)
 
@@ -86,7 +71,7 @@ def _ensure_serverlessllm_artifact(
 
     from tensor_store_py._tensor_store_rust import convert_safetensors_to_serverlessllm
 
-    convert_safetensors_to_serverlessllm(safetensors_files[0], out_dir, partition_count)
+    convert_safetensors_to_serverlessllm(safetensors_files[0], out_dir, parts)
     return out_dir
 
 

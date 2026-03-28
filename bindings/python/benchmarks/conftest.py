@@ -1,5 +1,7 @@
 """Pytest configuration for benchmarks: CLI options and fixtures."""
 
+from pathlib import Path
+
 import pytest
 
 
@@ -8,8 +10,14 @@ def pytest_addoption(parser):
     parser.addoption(
         "--model-id",
         action="store",
-        default="gpt2",
+        required=True,
         help="HuggingFace model ID (e.g., gpt2, Qwen/Qwen2-0.5B)",
+    )
+    parser.addoption(
+        "--fixtures-dir",
+        action="store",
+        default=None,
+        help="Directory to store downloaded models and artifacts",
     )
 
 
@@ -20,44 +28,45 @@ def model_id(request):
 
 
 @pytest.fixture(scope="session")
-def safetensors_path(tmp_path_factory):
-    """Path to a synthetic SafeTensors file for non-vLLM benchmarks."""
-    from benchmarks.fixtures import create_gpt2, write_safetensors
-
-    tmp = tmp_path_factory.mktemp("bench_synthetic")
-    tensors = create_gpt2(n_layers=2)
-    return str(write_safetensors(tensors, tmp / "model.safetensors"))
-
-
-@pytest.fixture(scope="session")
-def serverlessllm_dir(tmp_path_factory):
-    """Session-scoped path to a synthetic ServerlessLLM directory (GPT-2-like)."""
-    from benchmarks.fixtures import create_gpt2, write_serverlessllm_dir
-
-    tmp = tmp_path_factory.mktemp("bench_synthetic")
-    tensors = create_gpt2(n_layers=2)
-    return str(write_serverlessllm_dir(tensors, tmp / "model_sllm"))
+def fixtures_dir(tmp_path_factory, request):
+    """Base directory for model downloads and cached artifacts."""
+    user_dir = request.config.getoption("--fixtures-dir")
+    if user_dir:
+        return Path(user_dir)
+    return tmp_path_factory.mktemp("fixtures")
 
 
 @pytest.fixture(scope="session")
-def serverlessllm_dir_4partitions(tmp_path_factory):
-    """Session-scoped path to a synthetic ServerlessLLM directory with 4 partitions."""
-    from benchmarks.fixtures import create_gpt2, write_serverlessllm_dir
+def model_descriptor(model_id, fixtures_dir):
+    """Full metadata for the benchmark model."""
+    from benchmarks.fixtures import get_model_descriptor
 
-    tmp = tmp_path_factory.mktemp("bench_synthetic")
-    tensors = create_gpt2(n_layers=2)
-    return str(
-        write_serverlessllm_dir(tensors, tmp / "model_sllm_4p", num_partitions=4)
-    )
+    return get_model_descriptor(model_id, fixtures_dir)
 
 
 @pytest.fixture(scope="session")
-def serverlessllm_dir_8partitions(tmp_path_factory):
-    """Session-scoped path to a synthetic ServerlessLLM directory with 8 partitions."""
-    from benchmarks.fixtures import create_gpt2, write_serverlessllm_dir
+def safetensors_files(model_descriptor):
+    """List of all safetensors shard paths for the model."""
+    return model_descriptor.safetensors_files
 
-    tmp = tmp_path_factory.mktemp("bench_synthetic")
-    tensors = create_gpt2(n_layers=2)
-    return str(
-        write_serverlessllm_dir(tensors, tmp / "model_sllm_8p", num_partitions=8)
-    )
+
+@pytest.fixture(scope="session")
+def safetensors_path(model_descriptor):
+    """Path to the first (or only) safetensors file."""
+    return str(model_descriptor.safetensors_files[0])
+
+
+@pytest.fixture(scope="session")
+def serverlessllm_dir(model_id, fixtures_dir):
+    """Path to a ServerlessLLM artifact for the model.
+
+    Uses the size-based heuristic for partition count.
+    Only works for single-shard models. Skips for multi-shard models.
+    """
+    from benchmarks.fixtures import get_or_build_serverlessllm
+
+    try:
+        sllm_dir, _ = get_or_build_serverlessllm(model_id, fixtures_dir)
+        return str(sllm_dir)
+    except ValueError as e:
+        pytest.skip(str(e))

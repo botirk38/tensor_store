@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use tensor_store::formats::safetensors::TensorView as SafetensorTensorView;
 use tensor_store::formats::safetensors::{self, Dtype, MmapModel, Model};
 use tensor_store::serialize;
+use tensor_store::ReaderError;
 use tensor_store::TensorView;
 
 use crate::convert::{convert_tensor, extract_tensor_raw, TensorData};

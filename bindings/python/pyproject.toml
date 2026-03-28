@@ -35,15 +35,16 @@ asyncio_default_fixture_loop_scope = "function"
 [dependency-groups]
 dev = [
     "maturin>=1.5,<2.0",
-    "py-spy>=0.4.1",
     "pytest-asyncio>=0.23",
+    "pytest>=7.0",
+]
+bench = [
     "pytest-benchmark>=5.2.3",
     "safetensors>=0.7.0",
+    "huggingface_hub>=0.20.0",
+]
+bench-vllm = [
+    "vllm>=0.6.0",
     "torch>=2.1",
     "huggingface_hub>=0.20.0",
-    "vllm>=0.6.0",
 ]
-benchmark-torch = ["torch>=2.1"]
-benchmark-tensorflow = ["tensorflow>=2.11.0"]
-benchmark-all = ["torch>=2.1", "tensorflow>=2.11.0"]
-benchmark-vllm = ["vllm>=0.6.0", "torch>=2.1", "huggingface_hub>=0.20.0"]

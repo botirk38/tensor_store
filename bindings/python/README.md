@@ -4,18 +4,27 @@ PyTorch-first Python bindings for the [tensor_store](../README.md) Rust library.
 
 ## Installation
 
-Requires Rust 1.92+ (`rustup update`) and Python 3.9–3.12 (TensorFlow wheels do not support Python 3.13 yet; see `requires-python` in `pyproject.toml`).
+Requires Rust 1.92+ (`rustup update`) and Python 3.9–3.12.
 
-Runtime dependencies include **PyTorch**, **TensorFlow**, and **NumPy** (declared in `pyproject.toml`).
+### Core bindings
 
 ```bash
 cd bindings/python
 uv sync --group dev
+uv run maturin develop --release
 ```
 
-Build/install the extension (example with maturin):
+### Benchmark setup (non-vLLM)
 
 ```bash
+uv sync --group dev --group bench
+uv run maturin develop --release
+```
+
+### Benchmark setup (with vLLM)
+
+```bash
+uv sync --group dev --group bench-vllm
 uv run maturin develop --release
 ```
 
