@@ -20,7 +20,10 @@ pub use formats::safetensors::Writer as SafeTensorsWriter;
 pub use formats::safetensors::serialize;
 
 // ServerlessLLM types
-pub use formats::serverlessllm::{Index, MmapModel, Model, Tensor, TensorMmap};
+pub use formats::serverlessllm::{
+    Index, MmapModel, Model, RECOMMENDED_PARTITION_TARGET_BYTES, Tensor, TensorMmap,
+    recommended_partition_count,
+};
 
 // Conversion functions
 pub use converters::safetensors_to_serverlessllm::convert_safetensors_to_serverlessllm;

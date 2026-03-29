@@ -65,16 +65,13 @@ uv run python download_models.py Qwen/Qwen2-0.5B --partitions 16
 | `--partitions` | Number of partitions for conversion | Auto (based on size) |
 | `--verify` | Verify SafeTensors file integrity after download | False |
 
-#### Partition Count Heuristic
+#### Partition count heuristic
 
-Partitions are auto-calculated based on model size:
+When `--partitions` is omitted, the script uses the same default as the Rust library:
 
-| Model Size | Partitions | Reasoning |
-|------------|------------|-----------|
-| < 1 GB | 4 | Minimal overhead |
-| 1-10 GB | 8 | Balanced |
-| 10-50 GB | 16 | Good parallelism |
-| > 50 GB | 32 | Maximum parallelism |
+`max(1, ceil(model_bytes / 512 MiB))`
+
+There is no fixed upper cap (for example 16 or 32). Pass `--partitions` explicitly to override.
 
 #### Output Structure
 
@@ -84,7 +81,7 @@ After downloading a model, the script creates:
 fixtures/
 └── qwen-qwen2-0.5b/
     ├── README.md              # Model metadata and file info
-    ├── model.safetensors      # Main SafeTensors file
+    ├── *.safetensors           # All downloaded SafeTensors shards
     └── model_serverlessllm/   # (if --convert flag used)
         ├── metadata.json
         └── *.bin              # Partitioned tensor data
@@ -93,7 +90,7 @@ fixtures/
 #### Features
 
 - **Automatic retry**: Retries downloads up to 3 times on failure
-- **Sharded model support**: For multi-file models, uses the largest shard
+- **Sharded model support**: Keeps all downloaded shards and converts the full directory
 - **Integrity verification**: Optional SHA256 hash verification
 - **Model metadata**: Creates README with model info from HuggingFace API
 - **Format conversion**: Optional conversion to ServerlessLLM format
@@ -103,14 +100,14 @@ fixtures/
 ### Download a small model for testing
 
 ```bash
-# ~500MB model, good for quick tests (auto-converts to ServerlessLLM with 4 partitions)
+# ~500MiB-class models typically auto-convert to 1 ServerlessLLM partition (512 MiB target size)
 uv run python download_models.py Qwen/Qwen2-0.5B --verify
 ```
 
 ### Download a larger model
 
 ```bash
-# ~1.5GB model, will use 8 partitions automatically
+# Larger models pick higher partition counts automatically (see ceil(bytes / 512 MiB))
 uv run python download_models.py Qwen/Qwen2-1.5B --verify
 ```
 

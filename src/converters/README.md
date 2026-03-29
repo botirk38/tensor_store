@@ -33,9 +33,9 @@ converters/
 ```rust
 use tensor_store::converters::safetensors_to_serverlessllm;
 
-// Convert with partitioning
+// Convert a directory of SafeTensors shards with partitioning
 convert_safetensors_to_serverlessllm(
-    "model.safetensors",    // input path
+    "model_dir",           // input directory
     "output_dir/",          // output directory
     8,                      // partition count
 ).await?;
@@ -85,9 +85,9 @@ fn partition_tensors(tensor_count: usize, partition_count: usize) -> Vec<usize> 
 // 1. Choose appropriate converter for input→output format pair
 use tensor_store::converters::safetensors_to_serverlessllm;
 
-// 2. Call converter with input/output paths and parameters
+// 2. Call converter with input directory/output paths and parameters
 convert_safetensors_to_serverlessllm(
-    input_path,
+    input_dir,
     output_dir,
     partition_count,
 ).await?;

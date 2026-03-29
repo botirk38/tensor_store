@@ -60,13 +60,9 @@ def safetensors_path(model_descriptor):
 def serverlessllm_dir(model_id, fixtures_dir):
     """Path to a ServerlessLLM artifact for the model.
 
-    Uses the size-based heuristic for partition count.
-    Only works for single-shard models. Skips for multi-shard models.
+    Uses the shared size-based heuristic for partition count and supports multi-shard models.
     """
     from benchmarks.fixtures import get_or_build_serverlessllm
 
-    try:
-        sllm_dir, _ = get_or_build_serverlessllm(model_id, fixtures_dir)
-        return str(sllm_dir)
-    except ValueError as e:
-        pytest.skip(str(e))
+    sllm_dir, _ = get_or_build_serverlessllm(model_id, fixtures_dir)
+    return str(sllm_dir)

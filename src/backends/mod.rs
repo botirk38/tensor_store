@@ -30,7 +30,6 @@
 pub mod async_io;
 pub mod batch;
 pub mod buffer_slice;
-pub mod heuristic;
 #[cfg(target_os = "linux")]
 pub mod io_uring;
 pub mod mmap;

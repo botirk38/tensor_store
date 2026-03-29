@@ -5,6 +5,9 @@
 //! - Efficient parallel chunked reads for large files
 //! - Proper io_uring batching - all operations submitted together
 //! - Heuristic-based: chunking is automatic based on file size and queue saturation
+//!
+//! Chunking heuristics are **local to this file** (similar to `async_io`, but not factored into a
+//! shared module) so async queue-oriented tuning can evolve independently from sync thread-parallelism.
 
 use super::odirect::{
     BLOCK_SIZE, OwnedAlignedBuffer, align_to_block, alloc_aligned, can_use_direct_read,
@@ -210,10 +213,10 @@ pub async fn load(path: impl AsRef<Path> + Send) -> IoResult<Vec<u8>> {
     }
 
     let chunks = calculate_async_chunks(file_size);
-    load_chunked(path_buf, chunks).await
+    load_chunked(path_buf, file_size, chunks).await
 }
 
-async fn load_chunked(path: PathBuf, chunks: usize) -> IoResult<Vec<u8>> {
+async fn load_chunked(path: PathBuf, file_size: usize, chunks: usize) -> IoResult<Vec<u8>> {
     if chunks == 0 {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -222,8 +225,6 @@ async fn load_chunked(path: PathBuf, chunks: usize) -> IoResult<Vec<u8>> {
     }
 
     let path_ref = path.as_ref();
-    let stat = tokio_uring::fs::statx(path_ref).await?;
-    let file_size = statx_file_size(stat)?;
     if file_size == 0 {
         return Ok(Vec::new());
     }
@@ -755,7 +756,9 @@ mod tests {
                 tmpfile.write_all(&data).unwrap();
                 tmpfile.flush().unwrap();
 
-                let result = load_chunked(tmpfile.path().to_path_buf(), 1).await.unwrap();
+                let result = load_chunked(tmpfile.path().to_path_buf(), BLOCK_SIZE * 2, 1)
+                    .await
+                    .unwrap();
                 assert_eq!(result, data);
             })
         }
@@ -768,7 +771,9 @@ mod tests {
                 tmpfile.write_all(&data).unwrap();
                 tmpfile.flush().unwrap();
 
-                let result = load_chunked(tmpfile.path().to_path_buf(), 4).await.unwrap();
+                let result = load_chunked(tmpfile.path().to_path_buf(), BLOCK_SIZE * 10, 4)
+                    .await
+                    .unwrap();
                 assert_eq!(result, data);
             })
         }
@@ -777,7 +782,9 @@ mod tests {
         fn test_load_chunked_empty_file() {
             run_test(async {
                 let tmpfile = NamedTempFile::new().unwrap();
-                let result = load_chunked(tmpfile.path().to_path_buf(), 4).await.unwrap();
+                let result = load_chunked(tmpfile.path().to_path_buf(), 0, 4)
+                    .await
+                    .unwrap();
                 assert_eq!(result.len(), 0);
             })
         }

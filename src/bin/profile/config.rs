@@ -8,6 +8,8 @@ pub struct ProfileConfig {
     pub iterations: usize,
     /// Optional fixture name (matches entries under `fixtures/`).
     pub fixture: Option<String>,
+    /// Whether to attempt cold-cache profiling.
+    pub cold_cache: bool,
 }
 
 impl Default for ProfileConfig {
@@ -15,6 +17,7 @@ impl Default for ProfileConfig {
         Self {
             iterations: 1,
             fixture: None,
+            cold_cache: false,
         }
     }
 }

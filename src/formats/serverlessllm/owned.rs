@@ -149,23 +149,31 @@ async fn execute_load_plan_async(plan: &LoadPlan) -> ReaderResult<Tensors> {
 
     let index = &plan.index;
 
-    // Validate all partitions first
-    for read in &plan.partitions {
-        let metadata =
-            tokio::fs::metadata(&read.path)
-                .await
-                .map_err(|_| ReaderError::PartitionNotFound {
+    // Validate all partitions in parallel to avoid serial metadata round-trips.
+    let validations: Vec<_> = plan
+        .partitions
+        .iter()
+        .map(|read| async {
+            let metadata = tokio::fs::metadata(&read.path).await.map_err(|_| {
+                ReaderError::PartitionNotFound {
                     partition_id: read.partition_id,
                     path: read.path.to_string_lossy().to_string(),
-                })?;
-        if metadata.len() < read.size {
-            return Err(ReaderError::PartitionTooSmall {
-                path: read.path.to_string_lossy().to_string(),
-                actual: metadata.len(),
-                required: read.size,
-            });
-        }
-    }
+                }
+            })?;
+
+            if metadata.len() < read.size {
+                return Err(ReaderError::PartitionTooSmall {
+                    path: read.path.to_string_lossy().to_string(),
+                    actual: metadata.len(),
+                    required: read.size,
+                });
+            }
+
+            Ok(())
+        })
+        .collect();
+
+    futures::future::try_join_all(validations).await?;
 
     // Fast path: single partition - use direct load, avoid batch overhead
     if plan.partitions.len() == 1 {
@@ -197,9 +205,9 @@ async fn execute_load_plan_async(plan: &LoadPlan) -> ReaderResult<Tensors> {
     }
 
     // Multi-partition: parallel reads using load() per partition.
-    // Each load() internally chunks large files to saturate io_uring queue.
-    // load_range_batch() would only issue 4 concurrent reads (one per partition),
-    // which underutilizes the device compared to load()'s internal chunking (~16 per partition).
+    // Each load() internally chunks large files to saturate the async I/O queue.
+    // load_range_batch() would only issue one concurrent read per partition file,
+    // which underutilizes the device compared to load()'s backend-local internal chunking.
     let load_futures: Vec<_> = plan
         .partitions
         .iter()

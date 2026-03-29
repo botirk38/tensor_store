@@ -8,7 +8,7 @@ from collections.abc import Generator
 
 import torch
 
-from benchmarks.fixtures import partition_count
+from benchmarks.fixtures import recommended_partition_count
 
 
 def _cache_root() -> str:
@@ -52,14 +52,10 @@ def _ensure_serverlessllm_artifact(
     safetensors_files: list[str],
     revision: str | None,
 ) -> str:
-    if len(safetensors_files) != 1:
-        raise ValueError(
-            "benchmark ServerlessLLM loader currently requires a single safetensors shard"
-        )
-
     total_bytes = sum(os.path.getsize(path) for path in safetensors_files)
-    parts = partition_count(total_bytes)
-    key_input = f"{hf_folder}:{revision or 'main'}:{parts}:v1"
+    parts = recommended_partition_count(total_bytes)
+    shard_names = ":".join(sorted(os.path.basename(path) for path in safetensors_files))
+    key_input = f"{hf_folder}:{revision or 'main'}:{parts}:{shard_names}:v3"
     cache_key = hashlib.sha256(key_input.encode()).hexdigest()[:16]
     out_dir = os.path.join(_cache_root(), cache_key)
 
@@ -71,7 +67,7 @@ def _ensure_serverlessllm_artifact(
 
     from tensor_store_py._tensor_store_rust import convert_safetensors_to_serverlessllm
 
-    convert_safetensors_to_serverlessllm(safetensors_files[0], out_dir, parts)
+    convert_safetensors_to_serverlessllm(hf_folder, out_dir, parts)
     return out_dir
 
 

@@ -246,11 +246,11 @@ pub fn load_serverlessllm_sync(
     Ok(result.into())
 }
 
-/// Convert a safetensors file to ServerlessLLM format.
+/// Convert a safetensors directory to ServerlessLLM format.
 #[pyfunction]
-#[pyo3(signature = (input_path, output_dir, partition_count))]
+#[pyo3(signature = (input_dir, output_dir, partition_count))]
 pub fn convert_safetensors_to_serverlessllm(
-    input_path: &str,
+    input_dir: &str,
     output_dir: &str,
     partition_count: usize,
 ) -> PyResult<()> {
@@ -258,7 +258,7 @@ pub fn convert_safetensors_to_serverlessllm(
     #[cfg(target_os = "linux")]
     {
         tokio_uring::start(async {
-            convert_fn(input_path, output_dir, partition_count)
+            convert_fn(input_dir, output_dir, partition_count)
                 .await
                 .map_err(|e| {
                     pyo3::exceptions::PyRuntimeError::new_err(format!("conversion failed: {e}"))
@@ -273,7 +273,7 @@ pub fn convert_safetensors_to_serverlessllm(
             pyo3::exceptions::PyRuntimeError::new_err(format!("failed to create runtime: {e}"))
         })?;
         rt.block_on(async {
-            convert_fn(input_path, output_dir, partition_count)
+            convert_fn(input_dir, output_dir, partition_count)
                 .await
                 .map_err(|e| {
                     pyo3::exceptions::PyRuntimeError::new_err(format!("conversion failed: {e}"))

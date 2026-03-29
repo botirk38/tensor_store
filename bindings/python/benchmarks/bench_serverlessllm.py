@@ -1,7 +1,7 @@
 """ServerlessLLM benchmarks for real models.
 
 Benchmarks tensor_store ServerlessLLM loading with different backends (default, sync, mmap).
-Supports single-shard models only. Partition count uses size-based heuristic.
+Partition count uses the shared size-based heuristic.
 """
 
 from benchmarks.fixtures import drop_page_cache, touch_tensor

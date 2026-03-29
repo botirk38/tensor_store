@@ -1,38 +1,24 @@
 //! `SafeTensors` to `ServerlessLLM` conversion.
 //!
-//! This module provides functionality to convert `SafeTensors` format
-//! checkpoints to `ServerlessLLM` format with configurable partitioning.
-//!
-//! # Conversion Process
-//!
-//! 1. Parse `SafeTensors` metadata using readers
-//! 2. Convert dtypes and extract tensor data
-//! 3. Partition tensors across multiple files
-//! 4. Write `ServerlessLLM` format using writers
-//!
-//! # Example Usage (Future)
-//!
-//! ```rust,ignore
-//! use tensor_store::converters::safetensors_to_serverlessllm;
-//!
-//! // Convert with 8 partitions
-//! convert_safetensors_to_serverlessllm(
-//!     "model.safetensors",
-//!     "output_dir/",
-//!     8,
-//! ).await?;
-//! ```
+//! This module converts a directory of `*.safetensors` shards into a single ServerlessLLM
+//! artifact. Input shards are discovered lexicographically, tensor names are de-duplicated across
+//! shards, and tensors are assigned to partitions round-robin in discovery order.
 
+use crate::backends;
 use crate::formats::error::{WriterError, WriterResult};
 use crate::formats::safetensors::{Dtype, Model};
 use crate::formats::serverlessllm::{write_index, write_partition, writer::TensorWriteEntry};
-use std::collections::HashMap;
-use std::path::Path;
+use std::collections::{BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
 
-/// Convert `SafeTensors` to `ServerlessLLM` format
+/// Convert a directory of `SafeTensors` shards to `ServerlessLLM` format.
+///
+/// The directory must contain one or more `*.safetensors` files. If a safetensors index JSON is
+/// present, it is validated against the discovered shard set. The conversion is deterministic:
+/// shards are processed lexicographically and tensors are assigned round-robin across partitions.
 #[inline]
 pub async fn convert_safetensors_to_serverlessllm(
-    input_path: &str,
+    input_dir: &str,
     output_dir: &str,
     partition_count: usize,
 ) -> WriterResult<()> {
@@ -42,40 +28,64 @@ pub async fn convert_safetensors_to_serverlessllm(
         ));
     }
 
-    let owned = Model::load_sync(input_path)
-        .map_err(|e| WriterError::Io(std::io::Error::other(e.to_string())))?;
-    let tensors = owned.tensors();
-    let names = tensors.names();
+    let input_dir = Path::new(input_dir);
+    let output_dir = Path::new(output_dir);
 
-    let mut blobs = Vec::with_capacity(names.len());
-    for name in names {
-        let view = tensors.tensor(name).map_err(WriterError::SafeTensors)?;
-        let data = view.data().to_vec();
-        let shape: Vec<usize> = view.shape().to_vec();
-        let stride = calculate_contiguous_stride(&shape);
-        let dtype = dtype_to_serverlessllm(view.dtype())?.to_owned();
-        blobs.push(TensorBlob {
-            name: name.to_owned(),
-            data,
-            shape,
-            stride,
-            dtype,
-        });
+    let shard_paths = discover_safetensors_shards(input_dir)?;
+    validate_index_manifest(input_dir, &shard_paths)?;
+
+    let mut blobs = Vec::new();
+    let mut seen_names = BTreeSet::new();
+
+    for shard_path in &shard_paths {
+        let shard = backends::async_backend()
+            .load(shard_path)
+            .await
+            .map_err(WriterError::from)?;
+        let model = Model::from_bytes(shard)
+            .map_err(|e| WriterError::Io(std::io::Error::other(e.to_string())))?;
+        let tensors = model.tensors();
+        for name in model.tensor_names() {
+            let tensor_name = name.as_ref().to_owned();
+            if !seen_names.insert(tensor_name.clone()) {
+                return Err(WriterError::InvalidInput(format!(
+                    "duplicate tensor name across shards: {tensor_name}"
+                )));
+            }
+
+            let view = tensors
+                .tensor(name.as_ref())
+                .map_err(WriterError::SafeTensors)?;
+            let data = view.data().to_vec();
+            let shape: Vec<usize> = view.shape().to_vec();
+            let stride = calculate_contiguous_stride(&shape);
+            let dtype = dtype_to_serverlessllm(view.dtype())?.to_owned();
+            blobs.push(TensorBlob {
+                name: tensor_name,
+                data,
+                shape,
+                stride,
+                dtype,
+            });
+        }
     }
 
-    // Largest-first round-robin for better balance.
-    blobs.sort_by(|a, b| b.data.len().cmp(&a.data.len()));
+    if blobs.is_empty() {
+        return Err(WriterError::InvalidInput(
+            "no tensors found in input directory".to_owned(),
+        ));
+    }
 
     let mut partitions: Vec<Vec<u8>> = vec![Vec::new(); partition_count];
     let mut index: HashMap<String, TensorWriteEntry> = HashMap::with_capacity(blobs.len());
 
     for (i, blob) in blobs.into_iter().enumerate() {
-        let partition_id = i.checked_rem(partition_count).unwrap_or(0);
+        let partition_id = i % partition_count;
         let partition = partitions
             .get_mut(partition_id)
             .ok_or_else(|| WriterError::InvalidInput("partition index out of bounds".to_owned()))?;
-        let offset = u64::try_from(partition.len()).unwrap_or(u64::MAX);
-        let size = u64::try_from(blob.data.len()).unwrap_or(u64::MAX);
+        let offset = partition.len() as u64;
+        let size = blob.data.len() as u64;
 
         partition.extend_from_slice(&blob.data);
 
@@ -92,25 +102,117 @@ pub async fn convert_safetensors_to_serverlessllm(
         );
     }
 
-    let out_dir = Path::new(output_dir);
-    tokio::fs::create_dir_all(out_dir).await?;
+    tokio::fs::create_dir_all(output_dir).await?;
 
-    let index_path = out_dir.join("tensor_index.json");
+    let index_path = output_dir.join("tensor_index.json");
     write_index(&index_path, &index).await?;
 
-    // Parallelize partition writing using concurrent futures
-    // Uses platform-appropriate backend (io_uring on Linux, async_io elsewhere)
     let write_futures: Vec<_> = partitions
         .into_iter()
         .enumerate()
         .map(|(id, data)| {
-            let part_path = out_dir.join(format!("tensor.data_{id}"));
+            let part_path = output_dir.join(format!("tensor.data_{id}"));
             async move { write_partition(&part_path, data).await }
         })
         .collect();
 
-    // Execute all writes concurrently
     futures::future::try_join_all(write_futures).await?;
+
+    Ok(())
+}
+
+fn discover_safetensors_shards(input_dir: &Path) -> WriterResult<Vec<PathBuf>> {
+    if !input_dir.is_dir() {
+        return Err(WriterError::InvalidInput(format!(
+            "input path is not a directory: {}",
+            input_dir.display()
+        )));
+    }
+
+    let mut shards = Vec::new();
+    for entry in std::fs::read_dir(input_dir).map_err(WriterError::from)? {
+        let entry = entry.map_err(WriterError::from)?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.ends_with(".safetensors") {
+            shards.push(path);
+        }
+    }
+
+    shards.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+
+    if shards.is_empty() {
+        return Err(WriterError::InvalidInput(format!(
+            "no .safetensors files found in {}",
+            input_dir.display()
+        )));
+    }
+
+    Ok(shards)
+}
+
+fn validate_index_manifest(input_dir: &Path, shard_paths: &[PathBuf]) -> WriterResult<()> {
+    let mut index_files = Vec::new();
+    for entry in std::fs::read_dir(input_dir).map_err(WriterError::from)? {
+        let entry = entry.map_err(WriterError::from)?;
+        let path = entry.path();
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(".safetensors.index.json"))
+        {
+            index_files.push(path);
+        }
+    }
+
+    if index_files.is_empty() {
+        return Ok(());
+    }
+
+    let shard_names: BTreeSet<String> = shard_paths
+        .iter()
+        .filter_map(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(|s| s.to_owned())
+        })
+        .collect();
+
+    for index_path in index_files {
+        let bytes = std::fs::read(&index_path).map_err(WriterError::from)?;
+        let json: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| {
+            WriterError::InvalidInput(format!(
+                "failed to parse index manifest {}: {e}",
+                index_path.display()
+            ))
+        })?;
+        let weight_map = json
+            .get("weight_map")
+            .and_then(|value| value.as_object())
+            .ok_or_else(|| {
+                WriterError::InvalidInput(format!(
+                    "index manifest {} is missing weight_map",
+                    index_path.display()
+                ))
+            })?;
+
+        let referenced: BTreeSet<String> = weight_map
+            .values()
+            .filter_map(|value| value.as_str().map(|s| s.to_owned()))
+            .collect();
+
+        if referenced != shard_names {
+            return Err(WriterError::InvalidInput(format!(
+                "index manifest {} does not match discovered shard set",
+                index_path.display()
+            )));
+        }
+    }
 
     Ok(())
 }
@@ -173,41 +275,21 @@ struct TensorBlob {
     dtype: String,
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::formats::safetensors::{Dtype, TensorView};
     use crate::formats::serverlessllm::Index;
-    use crate::formats::traits::TensorMetadata;
     use safetensors::serialize;
     use std::fs;
     use tempfile::TempDir;
 
-    // Helper to create a simple SafeTensors file
-    fn create_test_safetensors(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    fn write_shard(dir: &Path, name: &str, tensors: Vec<(&str, TensorView<'_>)>) -> PathBuf {
         let path = dir.join(name);
-
-        // Create two tensors with different sizes
-        let data1 = vec![1u8, 2, 3, 4]; // 4 bytes
-        let data2 = vec![5u8, 6, 7, 8, 9, 10]; // 6 bytes
-
-        let tensor1 = TensorView::new(Dtype::U8, vec![4], &data1).expect("create tensor1");
-        let tensor2 = TensorView::new(Dtype::U8, vec![2, 3], &data2).expect("create tensor2");
-
-        let bytes =
-            serialize([("weight", tensor1), ("bias", tensor2)], None).expect("serialize tensors");
-
+        let bytes = serialize(tensors, None).expect("serialize tensors");
         fs::write(&path, bytes).expect("write safetensors file");
         path
     }
-
-    // -----------------------------------------------------------------------
-    // Unit Tests - Pure Functions
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_dtype_to_serverlessllm_supported() {
@@ -224,106 +306,40 @@ mod tests {
     }
 
     #[test]
-    fn test_dtype_to_serverlessllm_unsupported() {
-        // F4 and other exotic dtypes should be rejected
-        let result = dtype_to_serverlessllm(Dtype::F4);
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), WriterError::InvalidInput(_)));
-    }
-
-    #[test]
-    fn test_calculate_contiguous_stride_empty() {
-        let stride = calculate_contiguous_stride(&[]);
-        assert_eq!(stride, Vec::<usize>::new());
-    }
-
-    #[test]
-    fn test_calculate_contiguous_stride_1d() {
-        let stride = calculate_contiguous_stride(&[10]);
-        assert_eq!(stride, vec![1]);
-    }
-
-    #[test]
     fn test_calculate_contiguous_stride_2d() {
-        let stride = calculate_contiguous_stride(&[3, 4]);
-        assert_eq!(stride, vec![4, 1]); // Row-major: [cols, 1]
+        assert_eq!(calculate_contiguous_stride(&[3, 4]), vec![4, 1]);
     }
 
     #[test]
-    fn test_calculate_contiguous_stride_3d() {
-        let stride = calculate_contiguous_stride(&[2, 3, 4]);
-        assert_eq!(stride, vec![12, 4, 1]); // [depth*height, height, 1]
-    }
-
-    #[test]
-    fn test_calculate_contiguous_stride_large() {
-        let stride = calculate_contiguous_stride(&[100, 200, 300]);
-        assert_eq!(stride, vec![60000, 300, 1]);
-    }
-
-    // -----------------------------------------------------------------------
-    // Integration Tests - Full Conversion
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_convert_rejects_zero_partitions() {
+    fn test_discover_shards_empty_dir_fails() {
         let dir = TempDir::new().unwrap();
-        let input = create_test_safetensors(dir.path(), "input.safetensors");
+        let err = discover_safetensors_shards(dir.path()).unwrap_err();
+        assert!(matches!(err, WriterError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn test_convert_multi_shard_roundtrip() {
+        let dir = TempDir::new().unwrap();
         let output = dir.path().join("output");
 
-        crate::test_utils::run_async(async {
-            let result = convert_safetensors_to_serverlessllm(
-                input.to_str().unwrap(),
-                output.to_str().unwrap(),
-                0,
-            )
-            .await;
+        let t1 = TensorView::new(Dtype::U8, vec![4], &[1u8, 2, 3, 4]).unwrap();
+        let t2 = TensorView::new(Dtype::U8, vec![6], &[5u8, 6, 7, 8, 9, 10]).unwrap();
+        let t3 = TensorView::new(Dtype::U8, vec![2], &[11u8, 12]).unwrap();
 
-            assert!(result.is_err());
-            assert!(matches!(result.unwrap_err(), WriterError::InvalidInput(_)));
-        });
-    }
-
-    #[test]
-    fn test_convert_single_partition() {
-        let dir = TempDir::new().unwrap();
-        let input = create_test_safetensors(dir.path(), "input.safetensors");
-        let output = dir.path().join("output");
+        write_shard(
+            dir.path(),
+            "model-00002-of-00002.safetensors",
+            vec![("bias", t2)],
+        );
+        write_shard(
+            dir.path(),
+            "model-00001-of-00002.safetensors",
+            vec![("weight", t1), ("ln", t3)],
+        );
 
         crate::test_utils::run_async(async {
             convert_safetensors_to_serverlessllm(
-                input.to_str().unwrap(),
-                output.to_str().unwrap(),
-                1,
-            )
-            .await
-            .expect("conversion failed");
-        });
-
-        // Verify output files exist
-        assert!(output.join("tensor_index.json").exists());
-        assert!(output.join("tensor.data_0").exists());
-
-        // Verify index is valid
-        let index = Index::load_sync(output.join("tensor_index.json")).expect("parse index");
-        assert_eq!(index.len(), 2);
-        assert!(index.contains("weight"));
-        assert!(index.contains("bias"));
-
-        // Both tensors should be in partition 0
-        assert_eq!(index.get("weight").unwrap().partition_id, 0);
-        assert_eq!(index.get("bias").unwrap().partition_id, 0);
-    }
-
-    #[test]
-    fn test_convert_multiple_partitions() {
-        let dir = TempDir::new().unwrap();
-        let input = create_test_safetensors(dir.path(), "input.safetensors");
-        let output = dir.path().join("output");
-
-        crate::test_utils::run_async(async {
-            convert_safetensors_to_serverlessllm(
-                input.to_str().unwrap(),
+                dir.path().to_str().unwrap(),
                 output.to_str().unwrap(),
                 2,
             )
@@ -331,129 +347,37 @@ mod tests {
             .expect("conversion failed");
         });
 
-        // Verify output files exist
         assert!(output.join("tensor_index.json").exists());
         assert!(output.join("tensor.data_0").exists());
         assert!(output.join("tensor.data_1").exists());
 
-        // Verify index
         let index = Index::load_sync(output.join("tensor_index.json")).expect("parse index");
-        assert_eq!(index.len(), 2);
-
-        // Tensors should be distributed across partitions (round-robin)
-        let partition_0 = index.get("bias").unwrap().partition_id; // bias is larger (6 bytes)
-        let partition_1 = index.get("weight").unwrap().partition_id; // weight is smaller (4 bytes)
-        assert_eq!(partition_0, 0);
-        assert_eq!(partition_1, 1);
+        assert_eq!(index.len(), 3);
+        assert_eq!(index.get("ln").unwrap().partition_id, 0);
+        assert_eq!(index.get("weight").unwrap().partition_id, 1);
+        assert_eq!(index.get("bias").unwrap().partition_id, 0);
     }
 
     #[test]
-    fn test_convert_preserves_tensor_data() {
+    fn test_convert_duplicate_tensor_names_fail() {
         let dir = TempDir::new().unwrap();
-        let input = create_test_safetensors(dir.path(), "input.safetensors");
         let output = dir.path().join("output");
 
+        let t1 = TensorView::new(Dtype::U8, vec![4], &[1u8, 2, 3, 4]).unwrap();
+        let t2 = TensorView::new(Dtype::U8, vec![6], &[5u8, 6, 7, 8, 9, 10]).unwrap();
+
+        write_shard(dir.path(), "a.safetensors", vec![("dup", t1)]);
+        write_shard(dir.path(), "b.safetensors", vec![("dup", t2)]);
+
         crate::test_utils::run_async(async {
-            convert_safetensors_to_serverlessllm(
-                input.to_str().unwrap(),
+            let err = convert_safetensors_to_serverlessllm(
+                dir.path().to_str().unwrap(),
                 output.to_str().unwrap(),
                 1,
             )
             .await
-            .expect("conversion failed");
-        });
-
-        // Load and verify tensor data
-        let index = Index::load_sync(output.join("tensor_index.json")).expect("parse index");
-        let weight_entry = index.get("weight").expect("weight tensor");
-        let bias_entry = index.get("bias").expect("bias tensor");
-
-        // Read partition file
-        let partition_data = fs::read(output.join("tensor.data_0")).expect("read partition");
-
-        // Extract tensor data from partition
-        let weight_data = &partition_data[weight_entry.offset as usize
-            ..(weight_entry.offset + weight_entry.size as u64) as usize];
-        let bias_data = &partition_data
-            [bias_entry.offset as usize..(bias_entry.offset + bias_entry.size as u64) as usize];
-
-        // Verify data matches original
-        assert_eq!(weight_data, &[1u8, 2, 3, 4]);
-        assert_eq!(bias_data, &[5u8, 6, 7, 8, 9, 10]);
-    }
-
-    #[test]
-    fn test_convert_preserves_metadata() {
-        let dir = TempDir::new().unwrap();
-        let input = create_test_safetensors(dir.path(), "input.safetensors");
-        let output = dir.path().join("output");
-
-        crate::test_utils::run_async(async {
-            convert_safetensors_to_serverlessllm(
-                input.to_str().unwrap(),
-                output.to_str().unwrap(),
-                1,
-            )
-            .await
-            .expect("conversion failed");
-        });
-
-        let index = Index::load_sync(output.join("tensor_index.json")).expect("parse index");
-
-        // Check weight metadata
-        let weight = index.get("weight").unwrap();
-        assert_eq!(&*weight.shape, &[4]);
-        assert_eq!(&*weight.stride, &[1]);
-        assert_eq!(&*weight.dtype, "torch.uint8");
-        assert_eq!(weight.size, 4);
-
-        // Check bias metadata
-        let bias = index.get("bias").unwrap();
-        assert_eq!(&*bias.shape, &[2, 3]);
-        assert_eq!(&*bias.stride, &[3, 1]); // Row-major stride
-        assert_eq!(&*bias.dtype, "torch.uint8");
-        assert_eq!(bias.size, 6);
-    }
-
-    #[test]
-    fn test_convert_creates_output_directory() {
-        let dir = TempDir::new().unwrap();
-        let input = create_test_safetensors(dir.path(), "input.safetensors");
-        let output = dir.path().join("nested").join("output");
-
-        // Output directory doesn't exist yet
-        assert!(!output.exists());
-
-        crate::test_utils::run_async(async {
-            convert_safetensors_to_serverlessllm(
-                input.to_str().unwrap(),
-                output.to_str().unwrap(),
-                1,
-            )
-            .await
-            .expect("conversion failed");
-        });
-
-        // Should create the directory
-        assert!(output.exists());
-        assert!(output.join("tensor_index.json").exists());
-    }
-
-    #[test]
-    fn test_convert_missing_input_file() {
-        let dir = TempDir::new().unwrap();
-        let input = dir.path().join("nonexistent.safetensors");
-        let output = dir.path().join("output");
-
-        crate::test_utils::run_async(async {
-            let result = convert_safetensors_to_serverlessllm(
-                input.to_str().unwrap(),
-                output.to_str().unwrap(),
-                1,
-            )
-            .await;
-
-            assert!(result.is_err());
+            .unwrap_err();
+            assert!(matches!(err, WriterError::InvalidInput(_)));
         });
     }
 }

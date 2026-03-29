@@ -233,25 +233,21 @@ pub struct TensorEntry {
 
 ## Performance Considerations
 
-### Partition Count
+### Partition count
 
-Choosing the right number of partitions:
-
-| Partitions | Use Case | Pros | Cons |
-|------------|----------|------|------|
-| 1 | Small models (<1GB) | Simple | No parallelism |
-| 4-8 | Medium models (1-10GB) | Good balance | Multiple files |
-| 16-32 | Large models (>10GB) | Max parallelism | Many file handles |
-
-Guidelines:
-- Match partition count to available CPU cores
-- More partitions = more parallel I/O
-- Diminishing returns beyond 16 partitions
+For **automatic** tooling (scripts, `convert` without an explicit argument), the project uses a
+single shared helper:
 
 ```rust
-let cores = num_cpus::get();
-let writer = ServerlessLlmWriter::new(cores.min(16));
+use tensor_store::recommended_partition_count;
+
+let partitions = recommended_partition_count(total_bytes);
 ```
+
+That maps to `max(1, ceil(total_bytes / 512 MiB))` with **no artificial upper cap** (beyond `usize`).
+
+This is intentionally separate from **backend I/O chunking** (`sync_io` / `async_io` / `io_uring`),
+which stays backend-local and optimizes different goals (thread parallelism vs queue saturation).
 
 ### When to Use ServerlessLLM
 

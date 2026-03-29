@@ -10,7 +10,7 @@ cd bindings/python
 # SafeTensors benchmarks (supports multi-shard models)
 uv run pytest benchmarks/bench_safetensors.py -v --model-id gpt2
 
-# ServerlessLLM benchmarks (single-shard models only)
+# ServerlessLLM benchmarks (multi-shard supported)
 uv run pytest benchmarks/bench_serverlessllm.py -v --model-id gpt2
 
 # vLLM integration benchmarks
@@ -44,7 +44,7 @@ uv run pytest benchmarks/bench_vllm.py -v --model-id gpt2
 
 ## ServerlessLLM Benchmarks
 
-Uses size-based heuristic for partition count. Only works with single-shard models.
+Uses the shared size-based heuristic for partition count: `max(1, ceil(total_bytes / 512 MiB))`.
 
 **Backends:**
 - `sync`
@@ -67,18 +67,14 @@ Uses size-based heuristic for partition count. Only works with single-shard mode
 - `ttft` - time to first token
 - `steady_state_decode` - average decode time after warmup
 
-## Partition Heuristic
+## Partition heuristic
 
-| Model Size | Partitions |
-|------------|------------|
-| < 512 MiB  | 1          |
-| < 2 GiB    | 2          |
-| < 8 GiB    | 4          |
-| < 24 GiB   | 8          |
-| < 64 GiB   | 16         |
-| >= 64 GiB  | 32         |
+Default ServerlessLLM partition counts follow the Rust helper:
 
-Capped at `min(32, cpu_count * 2)`.
+`max(1, ceil(total_bytes / 512 MiB))`
+
+There is no artificial upper cap (beyond practical `usize` limits). Override with explicit conversion
+arguments if you need a different layout.
 
 ## Recommended Models
 

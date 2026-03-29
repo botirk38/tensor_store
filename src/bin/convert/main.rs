@@ -1,20 +1,54 @@
 use std::env;
 use std::process;
 
+fn default_partition_count(input_dir: &str) -> usize {
+    let mut total = 0u64;
+    let entries = std::fs::read_dir(input_dir).unwrap_or_else(|e| {
+        eprintln!("Error reading directory {input_dir}: {e}");
+        process::exit(1);
+    });
+    for entry in entries {
+        let path = entry
+            .unwrap_or_else(|e| {
+                eprintln!("Error reading directory entry in {input_dir}: {e}");
+                process::exit(1);
+            })
+            .path();
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(".safetensors"))
+        {
+            total += path
+                .metadata()
+                .unwrap_or_else(|e| {
+                    eprintln!("Error reading metadata for {}: {e}", path.display());
+                    process::exit(1);
+                })
+                .len();
+        }
+    }
+    if total == 0 {
+        eprintln!("Error: no .safetensors files found in {input_dir}");
+        process::exit(1);
+    }
+    tensor_store::recommended_partition_count(total)
+}
+
 #[cfg(target_os = "linux")]
 fn main() {
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 3 || args.len() > 4 {
         eprintln!(
-            "Usage: {} <input.safetensors> <output_dir> [partition_count]",
+            "Usage: {} <input_dir> <output_dir> [partition_count]",
             args[0]
         );
-        eprintln!("  partition_count defaults to number of CPU cores");
+        eprintln!("  input_dir must contain one or more .safetensors shards");
         process::exit(1);
     }
 
-    let input_path = args.get(1).unwrap();
+    let input_dir = args.get(1).unwrap();
     let output_dir = args.get(2).unwrap();
     let partition_count = if args.len() == 4 {
         args.get(3).unwrap().parse::<usize>().unwrap_or_else(|_| {
@@ -22,7 +56,7 @@ fn main() {
             process::exit(1);
         })
     } else {
-        num_cpus::get()
+        default_partition_count(input_dir)
     };
 
     if partition_count == 0 {
@@ -31,13 +65,13 @@ fn main() {
     }
 
     println!("Converting SafeTensors to ServerlessLLM format:");
-    println!("  Input: {}", input_path);
+    println!("  Input: {}", input_dir);
     println!("  Output: {}", output_dir);
     println!("  Partitions: {}", partition_count);
 
     tokio_uring::start(async {
         match tensor_store::convert_safetensors_to_serverlessllm(
-            input_path,
+            input_dir,
             output_dir,
             partition_count,
         )
@@ -67,14 +101,14 @@ fn main() {
 
     if args.len() < 3 || args.len() > 4 {
         eprintln!(
-            "Usage: {} <input.safetensors> <output_dir> [partition_count]",
+            "Usage: {} <input_dir> <output_dir> [partition_count]",
             args[0]
         );
-        eprintln!("  partition_count defaults to number of CPU cores");
+        eprintln!("  input_dir must contain one or more .safetensors shards");
         process::exit(1);
     }
 
-    let input_path = args.get(1).unwrap();
+    let input_dir = args.get(1).unwrap();
     let output_dir = args.get(2).unwrap();
     let partition_count = if args.len() == 4 {
         args.get(3).unwrap().parse::<usize>().unwrap_or_else(|_| {
@@ -82,7 +116,7 @@ fn main() {
             process::exit(1);
         })
     } else {
-        num_cpus::get()
+        default_partition_count(input_dir)
     };
 
     if partition_count == 0 {
@@ -91,14 +125,14 @@ fn main() {
     }
 
     println!("Converting SafeTensors to ServerlessLLM format:");
-    println!("  Input: {}", input_path);
+    println!("  Input: {}", input_dir);
     println!("  Output: {}", output_dir);
     println!("  Partitions: {}", partition_count);
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         match tensor_store::convert_safetensors_to_serverlessllm(
-            input_path,
+            input_dir,
             output_dir,
             partition_count,
         )

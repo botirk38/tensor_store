@@ -20,6 +20,18 @@ backends/
 └── buffer_slice.rs  # Zero-copy buffer abstractions
 ```
 
+### Load heuristics
+
+Internal `load()` chunking is **intentionally per-backend** (not a shared module):
+
+- `sync_io` targets thread-level parallelism and scales its parallel chunk budget with
+  `std::thread::available_parallelism()`.
+- `async_io` and `io_uring` target queue saturation for large files; their formulas are kept
+  similar-but-local on purpose.
+
+**Note:** ServerlessLLM **partition layout** defaults live under `formats::serverlessllm` (for example
+`recommended_partition_count`), separate from backend read chunking.
+
 ## Backend Comparison
 
 | Backend | Platform | Use Case | Key Features |
@@ -283,7 +295,7 @@ cargo test mmap
 ## Performance Tips
 
 1. **Use parallel loading for large files** (>100MB)
-2. **Match chunk count to CPU cores** for optimal parallelism
+2. **Let each backend apply its own chunking** (sync vs async have different goals)
 3. **Use buffer pool** for repeated allocations
 4. **Consider O_DIRECT** for very large models (Linux only)
 5. **Prefer mmap** for random access patterns

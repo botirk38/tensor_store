@@ -11,18 +11,27 @@ static RAYON_POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
 type IndexedLoadResult = (usize, Arc<[u8]>, usize, usize);
 
 const MAX_SINGLE_READ: usize = 512 * 1024 * 1024;
-const MAX_CHUNK_SIZE: usize = 64 * 1024 * 1024;
-const MIN_CHUNK_SIZE: usize = 16 * 1024 * 1024;
-const SYNC_QUEUE_DEPTH: usize = 8;
+/// Prefer fewer, larger reads on the sync path (thread-parallel, not queue-saturated async I/O).
+const MAX_CHUNK_SIZE: usize = 128 * 1024 * 1024;
+const MIN_CHUNK_SIZE: usize = 32 * 1024 * 1024;
+
+#[inline]
+fn sync_parallel_chunk_budget() -> usize {
+    std::thread::available_parallelism()
+        .map(|p| p.get())
+        .unwrap_or(4)
+        .max(1)
+}
 
 #[inline]
 fn calculate_sync_chunks(file_size: usize) -> usize {
     if file_size <= MAX_SINGLE_READ {
         return 1;
     }
+    let budget = sync_parallel_chunk_budget();
     let min_chunks = file_size.div_ceil(MAX_CHUNK_SIZE);
     let max_chunks = file_size.div_ceil(MIN_CHUNK_SIZE);
-    min_chunks.max(1).clamp(1, max_chunks.min(SYNC_QUEUE_DEPTH))
+    min_chunks.max(1).clamp(1, max_chunks.min(budget))
 }
 
 fn get_rayon_pool() -> &'static rayon::ThreadPool {

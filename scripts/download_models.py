@@ -120,25 +120,21 @@ def get_file_hash(filepath: str, algorithm: str = "sha256") -> str:
     return hash_func.hexdigest()
 
 
-def calculate_optimal_partitions(file_size_bytes: int) -> int:
-    """Calculate optimal partition count based on model size.
+_RECOMMENDED_PARTITION_TARGET_BYTES = 512 * 1024 * 1024
 
-    Heuristic based on recommended partition counts:
-    - < 1 GB: 4 partitions (minimal overhead)
-    - 1-10 GB: 8 partitions (balanced)
-    - 10-50 GB: 16 partitions (good parallelism)
-    - > 50 GB: 32 partitions (maximum parallelism)
+
+def recommended_partition_count(file_size_bytes: int) -> int:
+    """Default ServerlessLLM partition count: ``max(1, ceil(bytes / 512 MiB))`` (uncapped).
+
+    Matches ``tensor_store::formats::serverlessllm::recommended_partition_count`` in Rust.
     """
-    size_gb = file_size_bytes / (1024 ** 3)
-
-    if size_gb < 1:
-        return 4
-    elif size_gb < 10:
-        return 8
-    elif size_gb < 50:
-        return 16
-    else:
-        return 32
+    if file_size_bytes <= 0:
+        return 1
+    return max(
+        1,
+        (file_size_bytes + _RECOMMENDED_PARTITION_TARGET_BYTES - 1)
+        // _RECOMMENDED_PARTITION_TARGET_BYTES,
+    )
 
 
 def create_model_readme(
@@ -160,10 +156,10 @@ def create_model_readme(
 - **Files**: {len(safetensors_files)} SafeTensors file(s)
 
 ## HuggingFace Metadata
-- **Author**: {model_info.get('author', 'Unknown')}
-- **Downloads**: {model_info.get('downloads', 'Unknown')}
-- **Likes**: {model_info.get('likes', 'Unknown')}
-- **Created**: {model_info.get('created_at', 'Unknown')}
+- **Author**: {model_info.get("author", "Unknown")}
+- **Downloads**: {model_info.get("downloads", "Unknown")}
+- **Likes**: {model_info.get("likes", "Unknown")}
+- **Created**: {model_info.get("created_at", "Unknown")}
 
 ## Files
 """
@@ -175,7 +171,7 @@ def create_model_readme(
 
     content += "\n## Usage\n"
     content += "This fixture contains both SafeTensors and ServerlessLLM formats for benchmarking.\n"
-    content += "- `model.safetensors`: Original SafeTensors format\n"
+    content += "- `*.safetensors`: Downloaded SafeTensors shards\n"
     content += "- `model_serverlessllm/`: Converted ServerlessLLM format with partitioned data\n"
 
     with open(readme_path, "w") as f:
@@ -232,13 +228,18 @@ def main():
 
     # Download each model
     for config in models_to_download:
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"Processing {config.repo_id}")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
         output_dir = Path(args.output_dir) / repo_dir_name(config.repo_id)
-        temp_dir = output_dir / "tmp_download"
-        temp_dir.mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        stale_single = output_dir / "model.safetensors"
+        if stale_single.exists():
+            stale_single.unlink()
+        stale_artifact = output_dir / "model_serverlessllm"
+        if stale_artifact.exists():
+            shutil.rmtree(stale_artifact)
 
         try:
             # Get model info
@@ -246,7 +247,7 @@ def main():
 
             # Download SafeTensors files
             safetensors_files = download_safetensors_model(
-                config.repo_id, str(temp_dir), args.token
+                config.repo_id, str(output_dir), args.token
             )
 
             # Verify files if requested
@@ -258,19 +259,6 @@ def main():
 
             # Create README
             create_model_readme(str(output_dir), config, safetensors_files, model_info)
-
-            # Handle sharded models - use the largest file for fixtures
-            if len(safetensors_files) > 1:
-                # For sharded models, use the largest shard as the "main" model
-                main_file = max(safetensors_files, key=os.path.getsize)
-                print(f"Using largest shard for fixture: {Path(main_file).name}")
-            else:
-                main_file = safetensors_files[0]
-
-            # Copy to final location
-            final_safetensors = output_dir / "model.safetensors"
-            shutil.copy2(main_file, final_safetensors)
-            print(f"Copied to: {final_safetensors}")
 
             # Convert to ServerlessLLM by default (unless --no-convert specified)
             if not args.no_convert:
@@ -289,7 +277,9 @@ def main():
                     )
 
                     if build_result.returncode != 0:
-                        print(f"✗ Failed to build convert binary: {build_result.stderr}")
+                        print(
+                            f"✗ Failed to build convert binary: {build_result.stderr}"
+                        )
                         print("Skipping ServerlessLLM conversion")
                     else:
                         print("✓ Convert binary built successfully")
@@ -297,19 +287,27 @@ def main():
                 # Proceed with conversion if binary exists now
                 if convert_binary.exists():
                     serverlessllm_dir = output_dir / "model_serverlessllm"
+                    if serverlessllm_dir.exists():
+                        shutil.rmtree(serverlessllm_dir)
 
-                    # Calculate optimal partitions if not specified
-                    file_size = os.path.getsize(final_safetensors)
-                    partition_count = args.partitions if args.partitions else calculate_optimal_partitions(file_size)
+                    # Calculate default partitions if not specified
+                    file_size = sum(os.path.getsize(f) for f in safetensors_files)
+                    partition_count = (
+                        args.partitions
+                        if args.partitions is not None
+                        else recommended_partition_count(file_size)
+                    )
 
-                    print(f"Converting to ServerlessLLM format with {partition_count} partitions (model size: {file_size / (1024**3):.2f} GB)...")
+                    print(
+                        f"Converting to ServerlessLLM format with {partition_count} partitions (model size: {file_size / (1024**3):.2f} GB)..."
+                    )
 
                     import subprocess
 
                     result = subprocess.run(
                         [
                             str(convert_binary),
-                            str(final_safetensors),
+                            str(output_dir),
                             str(serverlessllm_dir),
                             str(partition_count),
                         ],
@@ -322,15 +320,10 @@ def main():
                     else:
                         print(f"✗ Conversion failed: {result.stderr}")
 
-            # Clean up temp directory
-            shutil.rmtree(temp_dir)
             print(f"✓ Completed fixture setup for {config.repo_id}")
 
         except Exception as e:
             print(f"✗ Failed to process {config.repo_id}: {e}")
-            # Clean up on failure
-            if temp_dir.exists():
-                shutil.rmtree(temp_dir)
             continue
 
 

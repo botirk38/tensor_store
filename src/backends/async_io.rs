@@ -3,6 +3,10 @@
 //! This backend provides cross-platform async I/O operations built on Tokio.
 //! It's used as a fallback on non-Linux platforms where `io_uring` isn't available.
 //! Chunking is heuristic-based and internal.
+//!
+//! This backend targets **queue saturation** for large files: enough concurrent reads to fill the
+//! submission queue without chopping work into unnecessarily small chunks. The heuristic is local
+//! to this module (and intentionally similar-but-not-shared with `io_uring`).
 
 use super::{AsyncBackend, AsyncBackendFuture, BatchRequest, IoResult};
 #[cfg(target_os = "linux")]

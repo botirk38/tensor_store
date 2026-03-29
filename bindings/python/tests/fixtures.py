@@ -47,7 +47,7 @@ def write_serverlessllm_dir(
     safetensors_path = out_dir / "_source.safetensors"
     save_file(tensors, safetensors_path)
     convert_safetensors_to_serverlessllm(
-        str(safetensors_path),
+        str(out_dir),
         str(out_dir),
         num_partitions,
     )

@@ -17,7 +17,7 @@ cargo run --bin profile -- <COMMAND> <CASE> [OPTIONS]
 ### SafeTensors Profiling
 
 ```bash
-cargo run --bin profile -- safetensors <CASE> [--fixture <NAME>] [--iterations <N>]
+cargo run --bin profile -- safetensors <CASE> [--fixture <NAME>] [--iterations <N>] [--cold-cache]
 ```
 
 **Available Cases:**
@@ -34,7 +34,7 @@ cargo run --bin profile -- safetensors <CASE> [--fixture <NAME>] [--iterations <
 ### ServerlessLLM Profiling
 
 ```bash
-cargo run --bin profile -- serverlessllm <CASE> [--fixture <NAME>] [--iterations <N>]
+cargo run --bin profile -- serverlessllm <CASE> [--fixture <NAME>] [--iterations <N>] [--cold-cache]
 ```
 
 **Available Cases:**
@@ -46,6 +46,12 @@ cargo run --bin profile -- serverlessllm <CASE> [--fixture <NAME>] [--iterations
 
 - `-f, --fixture <NAME>` - Specify a fixture name (e.g., qwen2-0.5b, mistral-7b)
 - `-i, --iterations <N>` - Number of iterations to run (default: 1)
+- `--cold-cache` - Attempt a cold-cache run on the first iteration using `posix_fadvise(DONTNEED)` on Unix
+
+### Notes
+
+- SafeTensors profiling discovers all `*.safetensors` files in each fixture directory.
+- If a fixture has shard files, they are profiled in lexicographic order and aggregated into one result.
 
 ## Examples
 
@@ -119,7 +125,6 @@ Std Dev: 0.225ms
 | Loader | Typical Speed | Notes |
 |--------|---------------|-------|
 | `io-uring-load` | 9-10 GB/s | Best on Linux NVMe |
-| `io-uring-parallel` | 10-12 GB/s | With 8+ cores |
 | `tokio-load` | 8-9 GB/s | Cross-platform |
 | `sync` | 7-8 GB/s | Baseline |
 | `mmap` | Variable | Depends on access pattern |

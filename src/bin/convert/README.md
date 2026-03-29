@@ -4,19 +4,19 @@ Converts SafeTensors model files to ServerlessLLM format with partitioned storag
 
 ## Overview
 
-This binary converts a SafeTensors model file into the ServerlessLLM format, which partitions tensor data across multiple files for efficient loading and parallel access.
+This binary converts a directory of SafeTensors shards into the ServerlessLLM format, which partitions tensor data across multiple files for efficient loading and parallel access.
 
 ## Usage
 
 ```bash
-cargo run --bin convert -- <input.safetensors> <output_dir> [partition_count]
+cargo run --bin convert -- <input_dir> <output_dir> [partition_count]
 ```
 
 ### Arguments
 
-- `<input.safetensors>` - Path to the input SafeTensors file
+- `<input_dir>` - Directory containing one or more `.safetensors` shards
 - `<output_dir>` - Directory where converted files will be written
-- `[partition_count]` - (Optional) Number of partitions to create. Defaults to the number of CPU cores
+- `[partition_count]` - (Optional) Number of partitions to create. Defaults to `tensor_store::recommended_partition_count` (`ceil(model_bytes / 512 MiB)`, minimum 1)
 
 ### Output
 
@@ -28,26 +28,23 @@ The conversion produces:
 
 Convert with automatic partition count:
 ```bash
-cargo run --bin convert -- model.safetensors ./output
+cargo run --bin convert -- ./model_dir ./output
 ```
 
 Convert with specific partition count:
 ```bash
-cargo run --bin convert -- model.safetensors ./output 8
+cargo run --bin convert -- ./model_dir ./output 8
 ```
 
 ## Performance Considerations
 
-### Partition Count Guidelines
+### Default partition count
 
-| Model Size | Recommended Partitions | Reasoning |
-|------------|----------------------|-----------|
-| < 1 GB | 4 | Minimal overhead, good parallelism |
-| 1-10 GB | 8 | Balanced file count and parallelism |
-| 10-50 GB | 16 | Maximum parallelism for large models |
-| > 50 GB | 32 | Consider storage bandwidth limits |
+Automatic conversion uses the shared ServerlessLLM helper:
 
-**Rule of thumb**: Match your CPU core count, capped at 16-32 partitions.
+`max(1, ceil(model_bytes / 512 MiB))`
+
+There is no fixed upper cap. For custom layouts, pass an explicit `[partition_count]`.
 
 ### Conversion Speed
 
@@ -62,11 +59,11 @@ Typical conversion speeds (on NVMe SSD):
 Ensure the parent directory exists and you have write permissions:
 ```bash
 mkdir -p output
-cargo run --bin convert -- model.safetensors ./output 8
+ cargo run --bin convert -- ./model_dir ./output 8
 ```
 
 ### "Out of memory"
-For very large models, ensure sufficient RAM. The converter loads tensors in chunks but needs memory for partition buffers.
+For very large models, ensure sufficient RAM. The converter loads shard data in chunks but still needs memory for partition buffers.
 
 ### "Partition files are uneven"
 This is normal - tensors are distributed round-robin to partitions. Some variation in partition sizes is expected.

@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 mod config;
 mod safetensors;
 mod serverlessllm;
+mod stats;
 
 use config::ProfileConfig;
 
@@ -29,6 +30,10 @@ enum Commands {
         /// Number of iterations to run (default: 1)
         #[arg(short, long, default_value_t = 1)]
         iterations: usize,
+
+        /// Attempt cold-cache profiling before the first iteration
+        #[arg(long, default_value_t = false)]
+        cold_cache: bool,
     },
     /// Profile ServerlessLLM loader
     Serverlessllm {
@@ -43,6 +48,10 @@ enum Commands {
         /// Number of iterations to run (default: 1)
         #[arg(short, long, default_value_t = 1)]
         iterations: usize,
+
+        /// Attempt cold-cache profiling before the first iteration
+        #[arg(long, default_value_t = false)]
+        cold_cache: bool,
     },
 }
 
@@ -106,10 +115,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             case,
             fixture,
             iterations,
+            cold_cache,
         } => {
             let config = ProfileConfig {
                 iterations,
                 fixture,
+                cold_cache,
             };
             safetensors::run(case.as_str(), &config)?;
         }
@@ -117,10 +128,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             case,
             fixture,
             iterations,
+            cold_cache,
         } => {
             let config = ProfileConfig {
                 iterations,
                 fixture,
+                cold_cache,
             };
             serverlessllm::run(case.as_str(), &config)?;
         }

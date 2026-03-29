@@ -9,36 +9,21 @@ import torch
 from tensor_store_py._tensor_store_rust import convert_safetensors_to_serverlessllm
 
 
-def partition_count(total_bytes: int) -> int:
-    """Choose partition count based on total model size.
+_RECOMMENDED_PARTITION_TARGET_BYTES = 512 * 1024 * 1024
 
-    This heuristic balances parallelism with overhead:
-    - < 512 MiB  -> 1 partition
-    - < 2 GiB    -> 2 partitions
-    - < 8 GiB    -> 4 partitions
-    - < 24 GiB   -> 8 partitions
-    - < 64 GiB   -> 16 partitions
-    - otherwise  -> 32 partitions
 
-    Capped at min(32, cpu_count * 2).
+def recommended_partition_count(total_bytes: int) -> int:
+    """Default ServerlessLLM partition count: ``max(1, ceil(total_bytes / 512 MiB))``.
+
+    This matches ``tensor_store::formats::serverlessllm::recommended_partition_count`` in Rust.
     """
-    cpu_count = os.cpu_count() or 4
-    max_parts = min(32, cpu_count * 2)
-
-    if total_bytes < 512 * 1024**2:
-        parts = 1
-    elif total_bytes < 2 * 1024**3:
-        parts = 2
-    elif total_bytes < 8 * 1024**3:
-        parts = 4
-    elif total_bytes < 24 * 1024**3:
-        parts = 8
-    elif total_bytes < 64 * 1024**3:
-        parts = 16
-    else:
-        parts = 32
-
-    return min(parts, max_parts)
+    if total_bytes <= 0:
+        return 1
+    return max(
+        1,
+        (total_bytes + _RECOMMENDED_PARTITION_TARGET_BYTES - 1)
+        // _RECOMMENDED_PARTITION_TARGET_BYTES,
+    )
 
 
 def _cache_root() -> Path:
@@ -53,6 +38,7 @@ def repo_dir_name(repo_id: str) -> str:
 @dataclass
 class ModelDescriptor:
     """Metadata about a real HuggingFace model for benchmarking."""
+
     model_id: str
     safetensors_files: list[Path]
     shard_count: int
@@ -74,6 +60,15 @@ def get_model_safetensors(model_name: str, fixtures_dir: Path) -> list[Path]:
 
     fixtures_dir = Path(fixtures_dir)
     model_dir = fixtures_dir / repo_dir_name(model_name)
+
+    stale_single = model_dir / "model.safetensors"
+    if stale_single.exists():
+        stale_single.unlink()
+    stale_artifact = model_dir / "model_serverlessllm"
+    if stale_artifact.exists():
+        import shutil
+
+        shutil.rmtree(stale_artifact)
 
     if not model_dir.exists():
         print(f"Downloading {model_name} to {model_dir}...")
@@ -114,7 +109,7 @@ def get_model_descriptor(model_name: str, fixtures_dir: Path) -> ModelDescriptor
     """
     files = get_model_safetensors(model_name, fixtures_dir)
     total_bytes = sum(f.stat().st_size for f in files)
-    parts = partition_count(total_bytes)
+    parts = recommended_partition_count(total_bytes)
 
     return ModelDescriptor(
         model_id=model_name,
@@ -151,19 +146,13 @@ def ensure_serverlessllm_artifact(
         fixtures_dir = Path(fixtures_dir) / "serverlessllm"
 
     total_bytes = sum(f.stat().st_size for f in safetensors_files)
-    partition_count_override = partition_count(total_bytes)
+    partition_count_override = recommended_partition_count(total_bytes)
 
-    if len(safetensors_files) != 1:
-        raise ValueError(
-            f"ServerlessLLM conversion requires a single safetensors shard, "
-            f"got {len(safetensors_files)} shards for {model_name}. "
-            f"Shard-aware ServerlessLLM conversion not yet supported."
-        )
-
-    source_path = safetensors_files[0]
+    source_dir = safetensors_files[0].parent
+    shard_names = ":".join(f.name for f in sorted(safetensors_files))
     revision_str = revision or "main"
 
-    key_input = f"{source_path}:{revision_str}:{partition_count_override}:v1"
+    key_input = f"{source_dir.resolve()}:{revision_str}:{partition_count_override}:{shard_names}:v3"
     cache_key = hashlib.sha256(key_input.encode()).hexdigest()[:16]
     out_dir = fixtures_dir / repo_dir_name(model_name) / cache_key
 
@@ -179,7 +168,7 @@ def ensure_serverlessllm_artifact(
     )
 
     convert_safetensors_to_serverlessllm(
-        str(source_path),
+        str(source_dir),
         str(out_dir),
         partition_count_override,
     )
@@ -197,13 +186,6 @@ def get_or_build_serverlessllm(
         Tuple of (serverlessllm_dir, model_descriptor)
     """
     desc = get_model_descriptor(model_name, fixtures_dir)
-
-    if desc.shard_count > 1:
-        raise ValueError(
-            f"Model {model_name} has {desc.shard_count} shards. "
-            f"ServerlessLLM requires single-shard models. "
-            f"Consider using bench_safetensors.py instead for multi-shard models."
-        )
 
     sllm_dir = ensure_serverlessllm_artifact(
         model_name,
