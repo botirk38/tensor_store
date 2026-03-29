@@ -19,9 +19,6 @@
 //! // Async operations (default, recommended)
 //! let backend = backends::async_backend();
 //! let data = backend.load(Path::new("model.safetensors")).await?;
-//! let data = backend
-//!     .load_parallel(Path::new("model.safetensors"), 4)
-//!     .await?;
 //! backend.write_all(Path::new("output.bin"), data).await?;
 //!
 //! // Sync operations (for blocking contexts)
@@ -33,6 +30,7 @@
 pub mod async_io;
 pub mod batch;
 pub mod buffer_slice;
+pub mod heuristic;
 #[cfg(target_os = "linux")]
 pub mod io_uring;
 pub mod mmap;
@@ -64,11 +62,6 @@ pub type AsyncBackendFuture<'a, T> = Pin<Box<dyn Future<Output = IoResult<T>> + 
 /// Safe interface for asynchronous backends.
 pub trait AsyncBackend: Send + Sync + 'static {
     fn load<'a>(&'a self, path: &'a Path) -> AsyncBackendFuture<'a, Vec<u8>>;
-    fn load_parallel<'a>(
-        &'a self,
-        path: &'a Path,
-        chunks: usize,
-    ) -> AsyncBackendFuture<'a, Vec<u8>>;
     fn load_range<'a>(
         &'a self,
         path: &'a Path,
@@ -85,7 +78,6 @@ pub trait AsyncBackend: Send + Sync + 'static {
 /// Safe interface for synchronous backends.
 pub trait SyncBackend: Send + Sync + 'static {
     fn load(&self, path: &Path) -> IoResult<Vec<u8>>;
-    fn load_parallel(&self, path: &Path, chunks: usize) -> IoResult<Vec<u8>>;
     fn load_range(&self, path: &Path, offset: u64, len: usize) -> IoResult<Vec<u8>>;
     fn load_range_batch(&self, requests: &[BatchRequest]) -> IoResult<Vec<batch::FlattenedResult>>;
     fn write_all(&self, path: &Path, data: Vec<u8>) -> IoResult<()>;

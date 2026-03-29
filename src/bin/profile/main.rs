@@ -50,14 +50,10 @@ enum Commands {
 enum SafeTensorsCase {
     /// io_uring async load (Linux only)
     IoUringLoad,
-    /// io_uring parallel load (Linux only)
-    IoUringParallel,
     /// io_uring prewarmed load (Linux only)
     IoUringPrewarmed,
     /// Tokio async load
     TokioLoad,
-    /// Tokio parallel load
-    TokioParallel,
     /// Tokio prewarmed load
     TokioPrewarmed,
     /// Synchronous load
@@ -82,10 +78,8 @@ impl SafeTensorsCase {
     fn as_str(&self) -> &'static str {
         match self {
             Self::IoUringLoad => "io-uring-load",
-            Self::IoUringParallel => "io-uring-parallel",
             Self::IoUringPrewarmed => "io-uring-prewarmed",
             Self::TokioLoad => "tokio-load",
-            Self::TokioParallel => "tokio-parallel",
             Self::TokioPrewarmed => "tokio-prewarmed",
             Self::Sync => "sync",
             Self::Mmap => "mmap",

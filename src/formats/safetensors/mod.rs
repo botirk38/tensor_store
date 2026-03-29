@@ -8,9 +8,7 @@ pub mod writer;
 pub use safetensors::serialize;
 
 // Re-export reader types
-pub use reader::{
-    Dtype, SafeTensorError, MmapModel, Model, Tensor,
-};
+pub use reader::{Dtype, MmapModel, Model, SafeTensorError, Tensor};
 
 // Re-export writer types
-pub use writer::{MetadataMap, Writer, TensorView, View};
+pub use writer::{MetadataMap, TensorView, View, Writer};

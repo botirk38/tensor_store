@@ -10,8 +10,6 @@ pub fn run(scenario: &str, config: &DemoConfig) -> DemoResult {
         "async" => demo_async(config),
         "sync" => demo_sync(config),
         "mmap" => demo_mmap(config),
-        "parallel-async" => demo_parallel_async(config),
-        "parallel-sync" => demo_parallel_sync(config),
         "metadata" => demo_metadata(config),
         "all" => {
             demo_async(config)?;
@@ -19,10 +17,6 @@ pub fn run(scenario: &str, config: &DemoConfig) -> DemoResult {
             demo_sync(config)?;
             println!();
             demo_mmap(config)?;
-            println!();
-            demo_parallel_async(config)?;
-            println!();
-            demo_parallel_sync(config)?;
             println!();
             demo_metadata(config)?;
             Ok(())
@@ -252,123 +246,6 @@ fn demo_mmap(config: &DemoConfig) -> DemoResult {
 
         let start = Instant::now();
         let model = serverlessllm::MmapModel::load(&dir)?;
-        let duration = start.elapsed();
-
-        println!("  Loaded in: {:.2}ms", duration.as_secs_f64() * 1000.0);
-
-        let tensor_count = model.len();
-        println!("  Tensors: {}", tensor_count);
-
-        let throughput = total_size_bytes as f64 / duration.as_secs_f64() / 1e9;
-        println!("  Throughput: {:.2} GB/s", throughput);
-
-        crate::io_metrics::display_io_metrics_delta(io_before, duration);
-        println!();
-    }
-
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn demo_parallel_async(config: &DemoConfig) -> DemoResult {
-    println!("=== ServerlessLLM Async Parallel Loading Demo (io_uring) ===\n");
-
-    let fixtures = fixtures(config)?;
-
-    tokio_uring::start(async {
-        for (name, dir) in fixtures {
-            println!("Fixture: {}", name);
-
-            let total_size_bytes = total_size(&dir)?;
-            let partition_count = count_partitions(&dir);
-
-            println!("  Directory: model_serverlessllm/");
-            println!("  Size: {}", format_bytes(total_size_bytes));
-            println!("  Partitions: {}", partition_count);
-
-            let io_before = crate::io_metrics::capture_disk_snapshot().ok();
-
-            let start = Instant::now();
-            let model = serverlessllm::Model::load(&dir).await?;
-            let duration = start.elapsed();
-
-            println!("  Loaded in: {:.2}ms", duration.as_secs_f64() * 1000.0);
-
-            let tensor_count = model.len();
-            println!("  Tensors: {}", tensor_count);
-
-            let throughput = total_size_bytes as f64 / duration.as_secs_f64() / 1e9;
-            println!("  Throughput: {:.2} GB/s", throughput);
-
-            crate::io_metrics::display_io_metrics_delta(io_before, duration);
-            println!();
-        }
-
-        Ok::<_, Box<dyn std::error::Error>>(())
-    })?;
-
-    Ok(())
-}
-
-#[cfg(not(target_os = "linux"))]
-fn demo_parallel_async(config: &DemoConfig) -> DemoResult {
-    println!("=== ServerlessLLM Async Parallel Loading Demo (tokio) ===\n");
-
-    let fixtures = fixtures(config)?;
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(num_cpus::get())
-        .enable_all()
-        .build()?;
-
-    rt.block_on(async {
-        for (name, dir) in fixtures {
-            println!("Fixture: {}", name);
-
-            let total_size_bytes = total_size(&dir)?;
-            let partition_count = count_partitions(&dir);
-
-            println!("  Directory: model_serverlessllm/");
-            println!("  Size: {}", format_bytes(total_size_bytes));
-            println!("  Partitions: {}", partition_count);
-
-            let start = Instant::now();
-            let model = serverlessllm::Model::load(&dir).await?;
-            let duration = start.elapsed();
-
-            println!("  Loaded in: {:.2}ms", duration.as_secs_f64() * 1000.0);
-
-            let tensor_count = model.len();
-            println!("  Tensors: {}", tensor_count);
-
-            let throughput = total_size_bytes as f64 / duration.as_secs_f64() / 1e9;
-            println!("  Throughput: {:.2} GB/s\n", throughput);
-        }
-
-        Ok::<_, Box<dyn std::error::Error>>(())
-    })?;
-
-    Ok(())
-}
-
-fn demo_parallel_sync(config: &DemoConfig) -> DemoResult {
-    println!("=== ServerlessLLM Sync Parallel Loading Demo ===\n");
-
-    let fixtures = fixtures(config)?;
-
-    for (name, dir) in fixtures {
-        println!("Fixture: {}", name);
-
-        let total_size_bytes = total_size(&dir)?;
-        let partition_count = count_partitions(&dir);
-
-        println!("  Directory: model_serverlessllm/");
-        println!("  Size: {}", format_bytes(total_size_bytes));
-        println!("  Partitions: {}", partition_count);
-
-        let io_before = crate::io_metrics::capture_disk_snapshot().ok();
-
-        let start = Instant::now();
-        let model = serverlessllm::Model::load_sync(&dir)?;
         let duration = start.elapsed();
 
         println!("  Loaded in: {:.2}ms", duration.as_secs_f64() * 1000.0);

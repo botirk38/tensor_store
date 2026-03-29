@@ -1,12 +1,29 @@
 //! Synchronous blocking I/O using std::fs
+//!
+//! Chunking is heuristic-based and internal.
 
-use super::{buffer_slice::BufferSlice, get_buffer_pool, IoResult, SyncBackend};
+use super::{IoResult, SyncBackend, buffer_slice::BufferSlice, get_buffer_pool};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 static RAYON_POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
 
 type IndexedLoadResult = (usize, Arc<[u8]>, usize, usize);
+
+const MAX_SINGLE_READ: usize = 512 * 1024 * 1024;
+const MAX_CHUNK_SIZE: usize = 64 * 1024 * 1024;
+const MIN_CHUNK_SIZE: usize = 16 * 1024 * 1024;
+const SYNC_QUEUE_DEPTH: usize = 8;
+
+#[inline]
+fn calculate_sync_chunks(file_size: usize) -> usize {
+    if file_size <= MAX_SINGLE_READ {
+        return 1;
+    }
+    let min_chunks = file_size.div_ceil(MAX_CHUNK_SIZE);
+    let max_chunks = file_size.div_ceil(MIN_CHUNK_SIZE);
+    min_chunks.max(1).clamp(1, max_chunks.min(SYNC_QUEUE_DEPTH))
+}
 
 fn get_rayon_pool() -> &'static rayon::ThreadPool {
     RAYON_POOL.get_or_init(|| {
@@ -35,10 +52,6 @@ impl SyncBackend for DefaultSyncBackend {
         load(path)
     }
 
-    fn load_parallel(&self, path: &Path, chunks: usize) -> IoResult<Vec<u8>> {
-        load_parallel(path, chunks)
-    }
-
     fn load_range(&self, path: &Path, offset: u64, len: usize) -> IoResult<Vec<u8>> {
         load_range(path, offset, len)
     }
@@ -63,8 +76,8 @@ impl SyncBackend for DefaultSyncBackend {
 mod linux {
 
     use super::super::odirect::{
-        alloc_aligned, can_use_direct_read, can_use_direct_write, is_block_aligned,
-        open_direct_read_sync, open_direct_write_sync, BLOCK_SIZE,
+        BLOCK_SIZE, alloc_aligned, can_use_direct_read, can_use_direct_write, is_block_aligned,
+        open_direct_read_sync, open_direct_write_sync,
     };
     use super::*;
     use rayon::prelude::*;
@@ -79,12 +92,15 @@ mod linux {
 
     /// Loads an entire file into memory using Direct I/O when possible.
     ///
+    /// Uses heuristic-based chunking for large files (>512MB) internally.
+    ///
     /// # Errors
     ///
     /// - File cannot be opened or read
     /// - File size exceeds `usize` limits
     pub fn load(path: impl AsRef<Path>) -> IoResult<Vec<u8>> {
-        let mut file = File::open(path.as_ref())?;
+        let path_ref = path.as_ref();
+        let mut file = File::open(path_ref)?;
         let len = usize::try_from(file.metadata()?.len())
             .map_err(|_foo| Error::new(ErrorKind::InvalidInput, "file too large"))?;
 
@@ -92,8 +108,13 @@ mod linux {
             return Ok(Vec::new());
         }
 
+        if len > MAX_SINGLE_READ {
+            let chunks = calculate_sync_chunks(len);
+            return load_chunked(path_ref, chunks);
+        }
+
         if can_use_direct_read(len, len) {
-            match open_direct_read_sync(path.as_ref()) {
+            match open_direct_read_sync(path_ref) {
                 Ok(mut direct_file) => {
                     let mut buf = alloc_aligned(len)?;
                     buf.resize(len, 0);
@@ -110,15 +131,7 @@ mod linux {
         Ok(buf.to_vec())
     }
 
-    /// Loads a file using parallel threads for improved throughput.
-    ///
-    /// # Errors
-    ///
-    /// - `chunks` is zero
-    /// - File cannot be opened or read
-    /// - File size exceeds `usize` limits
-    #[inline]
-    pub fn load_parallel<P: AsRef<Path>>(path: P, chunks: usize) -> IoResult<Vec<u8>> {
+    pub(super) fn load_chunked<P: AsRef<Path>>(path: P, chunks: usize) -> IoResult<Vec<u8>> {
         if chunks == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -316,12 +329,12 @@ mod linux {
         }
 
         let pool = get_rayon_pool();
-        let results: Vec<(usize, Vec<u8>, usize, usize)> = pool.install(|| {
+        let results: Vec<IndexedLoadResult> = pool.install(|| {
             requests
                 .par_iter()
                 .enumerate()
                 .map(|(idx, (path, offset, len))| {
-                    load_range(path, *offset, *len).map(|data| (idx, data, 0, *len))
+                    load_range(path, *offset, *len).map(|data| (idx, data.into(), 0, *len))
                 })
                 .collect::<Result<Vec<_>, _>>()
         })?;
@@ -394,104 +407,6 @@ mod non_linux {
         let mut buf = get_buffer_pool().get(len);
         file.read_exact(&mut buf[..])?;
         Ok(buf.to_vec())
-    }
-
-    #[inline]
-    pub fn load_parallel<P: AsRef<Path>>(path: P, chunks: usize) -> IoResult<Vec<u8>> {
-        if chunks == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "chunks must be greater than 0",
-            ));
-        }
-
-        let path_ref = path.as_ref();
-        let file = File::open(path_ref)?;
-        let metadata = file.metadata()?;
-        let file_size = usize::try_from(metadata.len()).map_err(|_e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidInput, "file too large")
-        })?;
-
-        let chunk_size = div_ceil(file_size, chunks);
-
-        let max_capacity = usize::try_from(isize::MAX)
-            .expect("isize::MAX should always fit in usize on the same platform");
-        if chunk_size > max_capacity {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!(
-                    "Chunk size ({} bytes) exceeds maximum Vec capacity ({} bytes). \
-                      Increase chunks to at least {} to proceed.",
-                    chunk_size,
-                    max_capacity,
-                    file_size.div_ceil(max_capacity)
-                ),
-            ));
-        }
-
-        let mut final_buf = get_buffer_pool().get(file_size);
-        let mut handles = Vec::with_capacity(chunks);
-
-        for i in 0..chunks {
-            let start = i.checked_mul(chunk_size).ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "chunk calculation overflow",
-                )
-            })?;
-            let end = std::cmp::min(
-                start.checked_add(chunk_size).ok_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "chunk calculation overflow",
-                    )
-                })?,
-                file_size,
-            );
-            let actual_chunk_size = end.checked_sub(start).ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "chunk calculation underflow",
-                )
-            })?;
-
-            if actual_chunk_size == 0 {
-                break;
-            }
-
-            let chunk_slice = final_buf
-                .as_mut_slice()
-                .get_mut(start..end)
-                .ok_or_else(|| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid chunk range")
-                })?;
-
-            let mut buffer_slice = unsafe { BufferSlice::from_slice(chunk_slice) };
-            // Open a fresh file handle for each thread to avoid shared seek position
-            let path_clone = path_ref.to_path_buf();
-
-            let handle = thread::spawn(move || {
-                let mut thread_file = File::open(&path_clone)?;
-                thread_file.seek(SeekFrom::Start(u64::try_from(start).map_err(|_e| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "seek offset too large")
-                })?))?;
-
-                let slice = unsafe { buffer_slice.as_mut_slice() };
-                thread_file.read_exact(slice)?;
-                IoResult::Ok(())
-            });
-
-            handles.push(handle);
-        }
-
-        for handle in handles {
-            handle
-                .join()
-                .map_err(|_e| std::io::Error::other("thread panicked"))??;
-        }
-
-        final_buf.truncate(file_size);
-        Ok(final_buf.into_inner())
     }
 
     pub fn load_range(path: impl AsRef<Path>, offset: u64, len: usize) -> IoResult<Vec<u8>> {
@@ -582,6 +497,16 @@ mod tests {
     use std::io::Write;
     use tempfile::NamedTempFile;
 
+    #[cfg(target_os = "linux")]
+    fn load_chunked_for_test(path: &Path, chunks: usize) -> IoResult<Vec<u8>> {
+        super::linux::load_chunked(path, chunks)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn load_chunked_for_test(path: &Path, _chunks: usize) -> IoResult<Vec<u8>> {
+        super::non_linux::load(path)
+    }
+
     // -----------------------------------------------------------------------
     // Unit Tests - Pure Functions
     // -----------------------------------------------------------------------
@@ -641,46 +566,37 @@ mod tests {
     }
 
     #[test]
-    fn test_load_parallel_basic() {
+    fn test_load_chunked_basic() {
         let mut tmpfile = NamedTempFile::new().unwrap();
         let data = vec![0xCD; 1024 * 100]; // 100KB
         tmpfile.write_all(&data).unwrap();
         tmpfile.as_file().sync_all().unwrap(); // Ensure data is written
         tmpfile.flush().unwrap();
 
-        let result = load_parallel(tmpfile.path(), 4).unwrap();
+        let result = load_chunked_for_test(tmpfile.path(), 4).unwrap();
         assert_eq!(result, data);
     }
 
     #[test]
-    fn test_load_parallel_single_chunk() {
+    fn test_load_chunked_single_chunk() {
         let mut tmpfile = NamedTempFile::new().unwrap();
         let data = vec![0xEF; 1024 * 5];
         tmpfile.write_all(&data).unwrap();
         tmpfile.flush().unwrap();
 
-        let result = load_parallel(tmpfile.path(), 1).unwrap();
+        let result = load_chunked_for_test(tmpfile.path(), 1).unwrap();
         assert_eq!(result, data);
     }
 
     #[test]
-    fn test_load_parallel_zero_chunks_error() {
+    fn test_load_chunked_empty_file() {
         let tmpfile = NamedTempFile::new().unwrap();
-        let result = load_parallel(tmpfile.path(), 0);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
-    }
-
-    #[test]
-    fn test_load_parallel_empty_file() {
-        let tmpfile = NamedTempFile::new().unwrap();
-        let result = load_parallel(tmpfile.path(), 4).unwrap();
+        let result = load_chunked_for_test(tmpfile.path(), 4).unwrap();
         assert_eq!(result.len(), 0);
     }
 
     #[test]
-    fn test_load_parallel_vs_sequential() {
+    fn test_load_chunked_vs_sequential() {
         let mut tmpfile = NamedTempFile::new().unwrap();
         let data = vec![0x42; 1024 * 500]; // 500KB
         tmpfile.write_all(&data).unwrap();
@@ -688,9 +604,9 @@ mod tests {
         tmpfile.flush().unwrap();
 
         let sequential = load(tmpfile.path()).unwrap();
-        let parallel = load_parallel(tmpfile.path(), 8).unwrap();
+        let chunked = load_chunked_for_test(tmpfile.path(), 8).unwrap();
 
-        assert_eq!(sequential, parallel);
+        assert_eq!(sequential, chunked);
         assert_eq!(sequential, data);
     }
 
@@ -834,7 +750,7 @@ mod tests {
             }
 
             #[test]
-            fn test_load_parallel_consistency(
+            fn test_load_chunked_consistency(
                 data_size in 128usize..4096,
                 chunk_count in 1usize..8
             ) {
@@ -852,12 +768,12 @@ mod tests {
                 // Sequential load
                 let sequential = load(tmpfile.path()).unwrap();
 
-                // Parallel load
-                let parallel = load_parallel(tmpfile.path(), chunk_count).unwrap();
+                // Chunked load
+                let chunked = load_chunked_for_test(tmpfile.path(), chunk_count).unwrap();
 
                 // Property: Results should be identical
-                prop_assert_eq!(&sequential, &parallel);
-                prop_assert_eq!(&parallel, &data);
+                prop_assert_eq!(&sequential, &chunked);
+                prop_assert_eq!(&chunked, &data);
             }
 
             #[test]
@@ -917,14 +833,14 @@ mod tests {
         }
 
         #[test]
-        fn test_load_parallel_direct_io() {
+        fn test_load_chunked_direct_io() {
             let mut tmpfile = NamedTempFile::new().unwrap();
             let data = vec![0x88; 4096 * 100]; // Block-aligned
             tmpfile.write_all(&data).unwrap();
             tmpfile.as_file().sync_all().unwrap(); // Ensure data is written
             tmpfile.flush().unwrap();
 
-            let result = load_parallel(tmpfile.path(), 4).unwrap();
+            let result = load_chunked_for_test(tmpfile.path(), 4).unwrap();
             assert_eq!(result, data);
         }
 

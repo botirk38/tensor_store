@@ -10,8 +10,6 @@ pub fn run(scenario: &str, config: &DemoConfig) -> DemoResult {
         "async" => demo_async(config),
         "sync" => demo_sync(config),
         "mmap" => demo_mmap(config),
-        "parallel-async" => demo_parallel_async(config),
-        "parallel-sync" => demo_parallel_sync(config),
         "metadata" => demo_metadata(config),
         "all" => {
             demo_async(config)?;
@@ -19,10 +17,6 @@ pub fn run(scenario: &str, config: &DemoConfig) -> DemoResult {
             demo_sync(config)?;
             println!();
             demo_mmap(config)?;
-            println!();
-            demo_parallel_async(config)?;
-            println!();
-            demo_parallel_sync(config)?;
             println!();
             demo_metadata(config)?;
             Ok(())
@@ -216,120 +210,6 @@ fn demo_mmap(config: &DemoConfig) -> DemoResult {
         println!("  Loaded in: {:.2}ms", duration.as_secs_f64() * 1000.0);
 
         let tensor_count = data.tensors().names().len();
-        println!("  Tensors: {}", tensor_count);
-
-        let throughput = file_size as f64 / duration.as_secs_f64() / 1e9;
-        println!("  Throughput: {:.2} GB/s", throughput);
-
-        crate::io_metrics::display_io_metrics_delta(io_before, duration);
-        println!();
-    }
-
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn demo_parallel_async(config: &DemoConfig) -> DemoResult {
-    println!("=== SafeTensors Async Parallel Loading Demo (io_uring) ===\n");
-
-    let fixtures = fixtures(config)?;
-    let chunks = num_cpus::get();
-
-    tokio_uring::start(async {
-        for (name, path) in fixtures {
-            println!("Fixture: {}", name);
-
-            let file_size = std::fs::metadata(&path)?.len();
-            println!("  File: {}", path.file_name().unwrap().to_str().unwrap());
-            println!("  Size: {}", format_bytes(file_size));
-            println!("  Chunks: {}", chunks);
-
-            let io_before = crate::io_metrics::capture_disk_snapshot().ok();
-
-            let start = Instant::now();
-            let data = safetensors::Model::load_parallel(&path, chunks).await?;
-            let duration = start.elapsed();
-
-            println!("  Loaded in: {:.2}ms", duration.as_secs_f64() * 1000.0);
-
-            let tensor_count = data.tensors().names().len();
-            println!("  Tensors: {}", tensor_count);
-
-            let throughput = file_size as f64 / duration.as_secs_f64() / 1e9;
-            println!("  Throughput: {:.2} GB/s", throughput);
-
-            crate::io_metrics::display_io_metrics_delta(io_before, duration);
-            println!();
-        }
-
-        Ok::<_, tensor_store::ReaderError>(())
-    })?;
-
-    Ok(())
-}
-
-#[cfg(not(target_os = "linux"))]
-fn demo_parallel_async(config: &DemoConfig) -> DemoResult {
-    println!("=== SafeTensors Async Parallel Loading Demo (tokio) ===\n");
-
-    let fixtures = fixtures(config)?;
-    let chunks = num_cpus::get();
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(num_cpus::get())
-        .enable_all()
-        .build()?;
-
-    rt.block_on(async {
-        for (name, path) in fixtures {
-            println!("Fixture: {}", name);
-
-            let file_size = std::fs::metadata(&path)?.len();
-            println!("  File: {}", path.file_name().unwrap().to_str().unwrap());
-            println!("  Size: {}", format_bytes(file_size));
-            println!("  Chunks: {}", chunks);
-
-            let start = Instant::now();
-            let data = safetensors::Model::load_parallel(&path, chunks).await?;
-            let duration = start.elapsed();
-
-            println!("  Loaded in: {:.2}ms", duration.as_secs_f64() * 1000.0);
-
-            let tensor_count = data.tensors().names().len();
-            println!("  Tensors: {}", tensor_count);
-
-            let throughput = file_size as f64 / duration.as_secs_f64() / 1e9;
-            println!("  Throughput: {:.2} GB/s\n", throughput);
-        }
-
-        Ok::<_, tensor_store::ReaderError>(())
-    })?;
-
-    Ok(())
-}
-
-fn demo_parallel_sync(config: &DemoConfig) -> DemoResult {
-    println!("=== SafeTensors Sync Parallel Loading Demo ===\n");
-
-    let fixtures = fixtures(config)?;
-    let chunks = num_cpus::get();
-
-    for (name, path) in fixtures {
-        println!("Fixture: {}", name);
-
-        let file_size = std::fs::metadata(&path)?.len();
-        println!("  File: {}", path.file_name().unwrap().to_str().unwrap());
-        println!("  Size: {}", format_bytes(file_size));
-        println!("  Chunks: {}", chunks);
-
-        let io_before = crate::io_metrics::capture_disk_snapshot().ok();
-
-        let start = Instant::now();
-        let data = safetensors::Model::load_parallel_sync(&path, chunks)?;
-        let duration = start.elapsed();
-
-        println!("  Loaded in: {:.2}ms", duration.as_secs_f64() * 1000.0);
-
-        let tensor_count = data.names().len();
         println!("  Tensors: {}", tensor_count);
 
         let throughput = file_size as f64 / duration.as_secs_f64() / 1e9;

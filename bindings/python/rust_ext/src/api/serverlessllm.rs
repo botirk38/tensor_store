@@ -21,42 +21,15 @@ fn validate_path_exists(path: &Path) -> PyResult<()> {
 }
 
 fn load_serverlessllm_with_io_uring(path: &Path) -> Result<Model, ReaderError> {
-    let index_path = path.join("tensor_index.json");
-    let index = serverlessllm::Index::load_sync(&index_path)?;
-    let num_partitions = index.partition_ids().len();
-
-    if num_partitions > 1 {
-        #[cfg(target_os = "linux")]
-        {
-            tokio_uring::start(async move {
-                serverlessllm::Model::load_parallel(path).await
-            })
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let rt = tokio::runtime::Runtime::new().map_err(|e| {
-                ReaderError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
-            })?;
-            rt.block_on(async {
-                serverlessllm::Model::load_parallel(path).await
-            })
-        }
-    } else {
-        #[cfg(target_os = "linux")]
-        {
-            tokio_uring::start(async move {
-                serverlessllm::Model::load(path).await
-            })
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let rt = tokio::runtime::Runtime::new().map_err(|e| {
-                ReaderError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
-            })?;
-            rt.block_on(async {
-                serverlessllm::Model::load(path).await
-            })
-        }
+    #[cfg(target_os = "linux")]
+    {
+        tokio_uring::start(async move { serverlessllm::Model::load(path).await })
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| ReaderError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        rt.block_on(async { serverlessllm::Model::load(path).await })
     }
 }
 
@@ -91,12 +64,16 @@ impl ServerlessLLMHandlePy {
 
     fn keys(&self) -> Vec<String> {
         match &self.inner {
-            ServerlessLLMHandleInner::Mmap(h) => {
-                h.tensor_names().into_iter().map(String::from).collect()
-            }
-            ServerlessLLMHandleInner::Owned(h) => {
-                h.tensor_names().into_iter().map(String::from).collect()
-            }
+            ServerlessLLMHandleInner::Mmap(h) => h
+                .tensor_names()
+                .iter()
+                .map(|name| name.as_ref().to_string())
+                .collect(),
+            ServerlessLLMHandleInner::Owned(h) => h
+                .tensor_names()
+                .iter()
+                .map(|name| name.as_ref().to_string())
+                .collect(),
         }
     }
 
@@ -147,10 +124,8 @@ impl ServerlessLLMHandlePy {
 pub fn open_serverlessllm(path: PathBuf) -> PyResult<PyObject> {
     validate_path_exists(&path)?;
     let owned = Python::with_gil(|py| {
-        py.allow_threads(|| {
-            load_serverlessllm_with_io_uring(&path)
-        })
-        .map_err(map_reader_error)
+        py.allow_threads(|| load_serverlessllm_with_io_uring(&path))
+            .map_err(map_reader_error)
     })?;
     Python::with_gil(|py| {
         let handle = ServerlessLLMHandlePy {
@@ -207,12 +182,15 @@ pub fn load_serverlessllm(
     let builtins = py.import("builtins")?;
     let result = builtins.getattr("dict")?.call0()?;
 
-    let owned: Model = py.allow_threads(|| {
-        load_serverlessllm_with_io_uring(&path)
-    }).map_err(map_reader_error)?;
+    let owned: Model = py
+        .allow_threads(|| load_serverlessllm_with_io_uring(&path))
+        .map_err(map_reader_error)?;
 
-    let tensor_names: Vec<String> =
-        owned.tensor_names().into_iter().map(String::from).collect();
+    let tensor_names: Vec<String> = owned
+        .tensor_names()
+        .iter()
+        .map(|name| name.as_ref().to_string())
+        .collect();
     for k in tensor_names {
         let tensor = owned.tensor(&k).ok_or_else(|| tensor_not_found(&k))?;
         let tensor = convert_tensor(
@@ -242,23 +220,14 @@ pub fn load_serverlessllm_sync(
     let builtins = py.import("builtins")?;
     let result = builtins.getattr("dict")?.call0()?;
 
-    // Check partition count to decide between parallel and sequential loading
-    let index_path = path.join("tensor_index.json");
-    let index = serverlessllm::Index::load_sync(&index_path).map_err(map_reader_error)?;
-    let num_partitions = index.partition_ids().len();
-
-    let handle: Model = if num_partitions > 1 {
-        py.allow_threads(|| serverlessllm::Model::load_parallel_sync(path.as_path()))
-            .map_err(map_reader_error)?
-    } else {
-        py.allow_threads(|| serverlessllm::Model::load_sync(path.as_path()))
-            .map_err(map_reader_error)?
-    };
+    let handle: Model = py
+        .allow_threads(|| serverlessllm::Model::load_sync(path.as_path()))
+        .map_err(map_reader_error)?;
 
     let tensor_names: Vec<String> = handle
         .tensor_names()
-        .into_iter()
-        .map(String::from)
+        .iter()
+        .map(|name| name.as_ref().to_string())
         .collect();
     for k in tensor_names {
         let tensor = handle.tensor(&k).ok_or_else(|| tensor_not_found(&k))?;
@@ -332,8 +301,8 @@ pub fn load_serverlessllm_mmap(
 
     let tensor_names: Vec<String> = handle
         .tensor_names()
-        .into_iter()
-        .map(String::from)
+        .iter()
+        .map(|name| name.as_ref().to_string())
         .collect();
     for k in tensor_names {
         let tensor = handle.tensor(&k).ok_or_else(|| tensor_not_found(&k))?;

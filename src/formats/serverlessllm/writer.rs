@@ -176,7 +176,7 @@ fn ensure_parent_dir_sync(path: &Path) -> WriterResult<()> {
     {
         std::fs::create_dir_all(parent)?;
     }
-     Ok(())
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -185,30 +185,32 @@ fn ensure_parent_dir_sync(path: &Path) -> WriterResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-    use crate::formats::error::WriterError;
-    use serde_json::Value;
-    use tempfile::TempDir;
-    use crate::formats::serverlessllm::writer::{serialize_index, write_index, write_partition, write_index_sync, write_partition_sync};
     use super::TensorWriteEntry;
+    use crate::formats::error::WriterError;
+    use crate::formats::serverlessllm::writer::{
+        serialize_index, write_index, write_index_sync, write_partition, write_partition_sync,
+    };
+    use serde_json::Value;
+    use std::collections::HashMap;
+    use tempfile::TempDir;
 
     fn sample_entries() -> HashMap<String, TensorWriteEntry> {
-         HashMap::from([(
-             "w".to_owned(),
-             TensorWriteEntry {
-                 offset: 0,
-                 size: 4,
-                 shape: vec![2, 2],
-                 stride: vec![2, 1],
-                 dtype: "f32".to_owned(),
-                 partition_id: 1,
-             },
-         )])
-     }
+        HashMap::from([(
+            "w".to_owned(),
+            TensorWriteEntry {
+                offset: 0,
+                size: 4,
+                shape: vec![2, 2],
+                stride: vec![2, 1],
+                dtype: "f32".to_owned(),
+                partition_id: 1,
+            },
+        )])
+    }
 
-     #[test]
-     fn serialize_index_rejects_empty() {
-         let map: HashMap<String, TensorWriteEntry> = HashMap::new();
+    #[test]
+    fn serialize_index_rejects_empty() {
+        let map: HashMap<String, TensorWriteEntry> = HashMap::new();
         let err = serialize_index(&map).unwrap_err();
         assert!(matches!(err, WriterError::InvalidInput(_)));
     }

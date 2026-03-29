@@ -24,10 +24,8 @@ fn drop_page_cache(_path: &std::path::Path) {
 pub fn run(case: &str, config: &ProfileConfig) -> ProfileResult {
     match case {
         "io-uring-load" => io_uring_load(config),
-        "io-uring-parallel" => io_uring_parallel(config),
         "io-uring-prewarmed" => io_uring_prewarmed(config),
         "tokio-load" => tokio_load(config),
-        "tokio-parallel" => tokio_parallel(config),
         "tokio-prewarmed" => tokio_prewarmed(config),
         "sync" => sync_load(config),
         "mmap" => mmap_load(config),
@@ -93,6 +91,7 @@ fn fixtures(config: &ProfileConfig) -> Result<Vec<(String, PathBuf)>, ProfileErr
 
 #[cfg(target_os = "linux")]
 fn io_uring_load(config: &ProfileConfig) -> ProfileResult {
+    use std::time::Instant;
     let fixtures = fixtures(config)?;
 
     for (fixture, path) in fixtures {
@@ -107,10 +106,21 @@ fn io_uring_load(config: &ProfileConfig) -> ProfileResult {
             fixture
         );
         tokio_uring::start(async {
-            for _ in 0..iterations {
+            for i in 0..iterations {
+                let start = Instant::now();
                 let data = safetensors::Model::load(&path_str).await?;
+                let elapsed = start.elapsed();
                 let tensor_count = data.names().len();
-                black_box((data, tensor_count));
+                let tensors = data.tensors();
+                let total_bytes = tensors.iter().map(|(_, t)| t.data().len()).sum::<usize>();
+                println!(
+                    "  iteration {}: {} tensors, {} bytes, {:.2}ms",
+                    i + 1,
+                    tensor_count,
+                    total_bytes,
+                    elapsed.as_secs_f64() * 1000.0
+                );
+                black_box((tensor_count, total_bytes));
             }
             Ok::<_, tensor_store::ReaderError>(())
         })?;
@@ -121,40 +131,6 @@ fn io_uring_load(config: &ProfileConfig) -> ProfileResult {
 
 #[cfg(not(target_os = "linux"))]
 fn io_uring_load(_config: &ProfileConfig) -> ProfileResult {
-    Err(ProfileError::new("io_uring safetensors cases are only available on Linux").into())
-}
-
-#[cfg(target_os = "linux")]
-fn io_uring_parallel(config: &ProfileConfig) -> ProfileResult {
-    let fixtures = fixtures(config)?;
-    let chunks = num_cpus::get();
-
-    for (fixture, path) in fixtures {
-        let iterations = config.normalized_iterations();
-        let path_str = path
-            .to_str()
-            .ok_or_else(|| ProfileError::new("Fixture path contains invalid UTF-8"))?
-            .to_owned();
-
-        println!(
-            "Running io_uring safetensors parallel load ({chunks} chunks) for '{}' ({iterations}x)",
-            fixture
-        );
-        tokio_uring::start(async {
-            for _ in 0..iterations {
-                let data = safetensors::Model::load_parallel(&path_str, chunks).await?;
-                let tensor_count = data.tensors().names().len();
-                black_box((data, tensor_count));
-            }
-            Ok::<_, tensor_store::ReaderError>(())
-        })?;
-    }
-
-    Ok(())
-}
-
-#[cfg(not(target_os = "linux"))]
-fn io_uring_parallel(_config: &ProfileConfig) -> ProfileResult {
     Err(ProfileError::new("io_uring safetensors cases are only available on Linux").into())
 }
 
@@ -240,43 +216,6 @@ fn tokio_load(config: &ProfileConfig) -> ProfileResult {
 
 #[cfg(target_os = "linux")]
 fn tokio_load(_config: &ProfileConfig) -> ProfileResult {
-    Err(ProfileError::new(
-        "tokio safetensors cases are only compiled on non-Linux targets in this harness",
-    )
-    .into())
-}
-
-#[cfg(not(target_os = "linux"))]
-fn tokio_parallel(config: &ProfileConfig) -> ProfileResult {
-    let fixtures = fixtures(config)?;
-    let rt = tokio::runtime::Runtime::new()?;
-
-    for (fixture, path) in fixtures {
-        let iterations = config.normalized_iterations();
-        let path_str = path
-            .to_str()
-            .ok_or_else(|| ProfileError::new("Fixture path contains invalid UTF-8"))?
-            .to_owned();
-
-        println!(
-            "Running tokio safetensors parallel load (4 chunks) for '{}' ({iterations}x)",
-            fixture
-        );
-        rt.block_on(async {
-            for _ in 0..iterations {
-                let data = safetensors::Model::load_parallel(&path_str, 4).await?;
-                let tensor_count = data.tensors().names().len();
-                black_box((data, tensor_count));
-            }
-            Ok::<_, tensor_store::ReaderError>(())
-        })?;
-    }
-
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn tokio_parallel(_config: &ProfileConfig) -> ProfileResult {
     Err(ProfileError::new(
         "tokio safetensors cases are only compiled on non-Linux targets in this harness",
     )

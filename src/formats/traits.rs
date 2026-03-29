@@ -3,8 +3,6 @@
 use crate::formats::error::WriterResult;
 use std::path::Path;
 
-
-
 /// Trait for types that provide tensor metadata.
 pub trait TensorMetadata {
     /// Returns the number of tensors.
@@ -66,7 +64,6 @@ pub trait SyncWriter {
     /// Returns an error if the file cannot be written or if the data is invalid.
     fn write_sync(path: &Path, data: &Self::Input) -> WriterResult<()>;
 }
-
 
 // ============================================================================
 // Tensor View Trait

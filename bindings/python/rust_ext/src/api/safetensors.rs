@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use tensor_store::formats::safetensors::TensorView as SafetensorTensorView;
 use tensor_store::formats::safetensors::{self, Dtype, MmapModel, Model};
 use tensor_store::serialize;
+#[cfg(not(target_os = "linux"))]
 use tensor_store::ReaderError;
 use tensor_store::TensorView;
 
@@ -58,12 +59,16 @@ impl SafeTensorsHandlePy {
 
     fn keys(&self) -> Vec<String> {
         match &self.inner {
-            SafeTensorsHandleInner::Mmap(h) => {
-                h.tensor_names().into_iter().map(String::from).collect()
-            }
-            SafeTensorsHandleInner::Owned(h) => {
-                h.tensor_names().into_iter().map(String::from).collect()
-            }
+            SafeTensorsHandleInner::Mmap(h) => h
+                .tensor_names()
+                .iter()
+                .map(|name| name.as_ref().to_string())
+                .collect(),
+            SafeTensorsHandleInner::Owned(h) => h
+                .tensor_names()
+                .iter()
+                .map(|name| name.as_ref().to_string())
+                .collect(),
         }
     }
 
@@ -171,21 +176,27 @@ pub fn load_safetensors(
     let result = builtins.getattr("dict")?.call0()?;
 
     let path_ref = path.as_path();
-    let owned: Model = py.allow_threads(|| {
-        #[cfg(target_os = "linux")]
-        {
-            tokio_uring::start(async move { safetensors::Model::load(path_ref).await })
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let rt = tokio::runtime::Runtime::new().map_err(|e| {
-                ReaderError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
-            })?;
-            rt.block_on(safetensors::Model::load(path_ref))
-        }
-    }).map_err(map_reader_error)?;
+    let owned: Model = py
+        .allow_threads(|| {
+            #[cfg(target_os = "linux")]
+            {
+                tokio_uring::start(async move { safetensors::Model::load(path_ref).await })
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let rt = tokio::runtime::Runtime::new().map_err(|e| {
+                    ReaderError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
+                })?;
+                rt.block_on(safetensors::Model::load(path_ref))
+            }
+        })
+        .map_err(map_reader_error)?;
 
-    let keys: Vec<String> = owned.tensor_names().into_iter().map(String::from).collect();
+    let keys: Vec<String> = owned
+        .tensor_names()
+        .iter()
+        .map(|name| name.as_ref().to_string())
+        .collect();
     for k in keys {
         let view = owned.tensor(&k).map_err(map_reader_error)?;
         let tensor = convert_tensor(
@@ -219,8 +230,9 @@ pub fn load_safetensors_sync(
     let handle: Model = py
         .allow_threads(|| safetensors::Model::load_sync(path_ref))
         .map_err(map_reader_error)?;
-    for k in handle.tensor_names() {
-        let view = handle.tensor(k).map_err(map_reader_error)?;
+    for name in handle.tensor_names() {
+        let key = name.as_ref();
+        let view = handle.tensor(key).map_err(map_reader_error)?;
         let tensor = convert_tensor(
             py,
             framework,
@@ -231,7 +243,7 @@ pub fn load_safetensors_sync(
             },
             device,
         )?;
-        result.call_method1("__setitem__", (&k, tensor))?;
+        result.call_method1("__setitem__", (key, tensor))?;
     }
     Ok(result.into())
 }
@@ -252,8 +264,9 @@ pub fn load_safetensors_mmap(
     let handle: MmapModel = py
         .allow_threads(|| safetensors::MmapModel::load(path_ref))
         .map_err(map_reader_error)?;
-    for k in handle.tensor_names() {
-        let view = handle.tensor(k).map_err(map_reader_error)?;
+    for name in handle.tensor_names() {
+        let key = name.as_ref();
+        let view = handle.tensor(key).map_err(map_reader_error)?;
         let tensor = convert_tensor(
             py,
             framework,
@@ -264,7 +277,7 @@ pub fn load_safetensors_mmap(
             },
             device,
         )?;
-        result.call_method1("__setitem__", (&k, tensor))?;
+        result.call_method1("__setitem__", (key, tensor))?;
     }
     Ok(result.into())
 }

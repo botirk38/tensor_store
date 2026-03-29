@@ -14,15 +14,13 @@ pub use formats::error::{WriterError, WriterResult};
 pub use formats::traits::{AsyncWriter, SyncWriter, TensorMetadata, TensorView};
 
 // SafeTensors types (aliased to avoid conflict with ServerlessLLM)
-pub use formats::safetensors::Model as SafeTensorsModel;
 pub use formats::safetensors::MmapModel as SafeTensorsMmapModel;
+pub use formats::safetensors::Model as SafeTensorsModel;
 pub use formats::safetensors::Writer as SafeTensorsWriter;
 pub use formats::safetensors::serialize;
 
 // ServerlessLLM types
-pub use formats::serverlessllm::{
-    Index, Model, MmapModel, Tensor, TensorMmap,
-};
+pub use formats::serverlessllm::{Index, MmapModel, Model, Tensor, TensorMmap};
 
 // Conversion functions
 pub use converters::safetensors_to_serverlessllm::convert_safetensors_to_serverlessllm;
@@ -40,7 +38,9 @@ pub(crate) mod test_utils {
         }
         #[cfg(not(target_os = "linux"))]
         {
-            tokio::runtime::Runtime::new().expect("tokio runtime creation failed").block_on(f)
+            tokio::runtime::Runtime::new()
+                .expect("tokio runtime creation failed")
+                .block_on(f)
         }
     }
 }

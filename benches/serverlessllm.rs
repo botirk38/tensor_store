@@ -47,7 +47,7 @@ fn bench_sync(c: &mut Criterion) {
             b.iter(|| {
                 let model = serverlessllm::Model::load_sync(black_box(p)).unwrap();
                 let n = model.len();
-                let bytes: usize = model.iter().map(|(_, t)| t.data().len()).sum();
+                let bytes: usize = (&model).into_iter().map(|(_, t)| t.data().len()).sum();
                 black_box((n, bytes))
             });
         });
@@ -65,7 +65,7 @@ fn bench_mmap(c: &mut Criterion) {
                 let names = model.tensor_names();
                 let mut checksum = 0u8;
                 let mut bytes = 0;
-                for name in &names {
+                for name in names {
                     let tensor = model.tensor(name).unwrap();
                     let data = tensor.data();
                     bytes += data.len();
@@ -88,7 +88,7 @@ fn bench_async(c: &mut Criterion) {
                 tokio_uring::start(async {
                     let model = serverlessllm::Model::load(black_box(p)).await.unwrap();
                     let n = model.len();
-                    let bytes: usize = model.iter().map(|(_, t)| t.data().len()).sum();
+                    let bytes: usize = (&model).into_iter().map(|(_, t)| t.data().len()).sum();
                     black_box((n, bytes))
                 })
             });
@@ -107,7 +107,7 @@ fn bench_async(c: &mut Criterion) {
             b.to_async(&rt).iter(|| async {
                 let model = serverlessllm::Model::load(black_box(p)).await.unwrap();
                 let n = model.len();
-                let bytes: usize = model.iter().map(|(_, t)| t.data().len()).sum();
+                let bytes: usize = (&model).into_iter().map(|(_, t)| t.data().len()).sum();
                 black_box((n, bytes))
             });
         });

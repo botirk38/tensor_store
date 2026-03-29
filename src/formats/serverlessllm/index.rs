@@ -135,11 +135,12 @@ impl Index {
             let stride = parse_usize_vec(&arr[3])?;
             let dtype = parse_string(&arr[4])?;
             let partition_id = parse_usize(&arr[5])?;
-            let required = offset
-                .checked_add(size_u64)
-                .ok_or_else(|| ReaderError::OffsetOverflow {
-                    name: name.to_string(),
-                })?;
+            let required =
+                offset
+                    .checked_add(size_u64)
+                    .ok_or_else(|| ReaderError::OffsetOverflow {
+                        name: name.to_string(),
+                    })?;
 
             let max_for_partition = partition_max_sizes.entry(partition_id).or_insert(0);
             if required > *max_for_partition {
@@ -172,10 +173,8 @@ impl Index {
             .iter()
             .map(|&id| {
                 let max_size = partition_max_sizes.get(&id).copied().unwrap_or(0);
-                let tensor_names: Vec<Arc<str>> = partition_tensors
-                    .get(&id)
-                    .cloned()
-                    .unwrap_or_default();
+                let tensor_names: Vec<Arc<str>> =
+                    partition_tensors.get(&id).cloned().unwrap_or_default();
                 (
                     id,
                     PartitionPlan {
@@ -201,9 +200,7 @@ impl Index {
 
     /// Load index from file asynchronously.
     pub async fn load(path: impl AsRef<Path>) -> ReaderResult<Self> {
-        let data = backends::async_backend()
-            .load(path.as_ref())
-            .await?;
+        let data = backends::async_backend().load(path.as_ref()).await?;
         Self::from_bytes(&data)
     }
 
@@ -264,9 +261,11 @@ fn parse_usize_vec(value: &serde_json::Value) -> ReaderResult<Vec<usize>> {
         .ok_or_else(|| ReaderError::ServerlessLlm("expected array".into()))?;
     let mut out = Vec::with_capacity(arr.len());
     for v in arr {
-        out.push(v.as_u64().and_then(|v| usize::try_from(v).ok()).ok_or_else(|| {
-            ReaderError::ServerlessLlm("expected integer".into())
-        })?);
+        out.push(
+            v.as_u64()
+                .and_then(|v| usize::try_from(v).ok())
+                .ok_or_else(|| ReaderError::ServerlessLlm("expected integer".into()))?,
+        );
     }
     Ok(out)
 }

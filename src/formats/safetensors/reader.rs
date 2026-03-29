@@ -135,11 +135,16 @@ impl Model {
         let static_slice: &'static [u8] = unsafe { std::mem::transmute(slice) };
         let tensors = SafeTensors::deserialize(static_slice)?;
 
-        let mut names: Vec<std::sync::Arc<str>> = tensors.names().iter().map(|s| (*s).into()).collect();
+        let mut names: Vec<std::sync::Arc<str>> =
+            tensors.names().iter().map(|s| (*s).into()).collect();
         names.sort_unstable();
         let tensor_names: std::sync::Arc<[std::sync::Arc<str>]> = names.into();
 
-        Ok(Self { tensors, buffer, tensor_names })
+        Ok(Self {
+            tensors,
+            buffer,
+            tensor_names,
+        })
     }
 
     /// Borrow the underlying serialized bytes.
@@ -166,7 +171,8 @@ impl Model {
     /// Returns a tensor view by name using `ReaderError` for convenience.
     #[inline]
     pub fn tensor(&self, name: &str) -> ReaderResult<Tensor<'static>> {
-        self.tensors.tensor(name)
+        self.tensors
+            .tensor(name)
             .map(Tensor)
             .map_err(ReaderError::from)
     }
@@ -192,26 +198,7 @@ impl Model {
     /// - File cannot be read
     /// - Invalid SafeTensors format
     pub async fn load(path: impl AsRef<Path>) -> ReaderResult<Self> {
-        let bytes = backends::async_backend()
-            .load(path.as_ref())
-            .await?;
-        Self::from_bytes(bytes)
-    }
-
-    /// Load SafeTensors data asynchronously in parallel chunks.
-    ///
-    /// # Errors
-    ///
-    /// - File cannot be read
-    /// - Invalid SafeTensors format
-    pub async fn load_parallel(
-        path: impl AsRef<Path>,
-        chunks: usize,
-    ) -> ReaderResult<Self> {
-        let path_ref = path.as_ref();
-        let bytes = backends::async_backend()
-            .load_parallel(path_ref, chunks)
-            .await?;
+        let bytes = backends::async_backend().load(path.as_ref()).await?;
         Self::from_bytes(bytes)
     }
 
@@ -222,20 +209,7 @@ impl Model {
     /// - File cannot be read
     /// - Invalid SafeTensors format
     pub fn load_sync(path: impl AsRef<Path>) -> ReaderResult<Self> {
-        let bytes = backends::sync_backend()
-            .load(path.as_ref())?;
-        Self::from_bytes(bytes)
-    }
-
-    /// Load SafeTensors data synchronously in parallel chunks using multiple threads.
-    ///
-    /// # Errors
-    ///
-    /// - File cannot be read
-    /// - Invalid SafeTensors format
-    pub fn load_parallel_sync(path: impl AsRef<Path>, chunks: usize) -> ReaderResult<Self> {
-        let bytes = backends::sync_backend()
-            .load_parallel(path.as_ref(), chunks)?;
+        let bytes = backends::sync_backend().load(path.as_ref())?;
         Self::from_bytes(bytes)
     }
 
@@ -250,11 +224,7 @@ impl Model {
     /// - Range does not cover the full file
     /// - File cannot be read
     /// - Invalid SafeTensors format
-    pub fn load_range_sync(
-        path: impl AsRef<Path>,
-        offset: u64,
-        len: usize,
-    ) -> ReaderResult<Self> {
+    pub fn load_range_sync(path: impl AsRef<Path>, offset: u64, len: usize) -> ReaderResult<Self> {
         if offset != 0 {
             return Err(ReaderError::InvalidMetadata(
                 "SafeTensors requires the full file; offset must be 0".to_owned(),
@@ -267,8 +237,9 @@ impl Model {
             .map_err(ReaderError::from)?
             .len();
 
-        let expected_len = u64::try_from(len)
-            .map_err(|_| ReaderError::InvalidMetadata("requested length overflows u64".to_owned()))?;
+        let expected_len = u64::try_from(len).map_err(|_| {
+            ReaderError::InvalidMetadata("requested length overflows u64".to_owned())
+        })?;
 
         if file_len != expected_len {
             return Err(ReaderError::InvalidMetadata(format!(
@@ -276,8 +247,7 @@ impl Model {
             )));
         }
 
-        let bytes = backends::sync_backend()
-            .load_range(path_ref, offset, len)?;
+        let bytes = backends::sync_backend().load_range(path_ref, offset, len)?;
         Self::from_bytes(bytes)
     }
 }
@@ -334,11 +304,16 @@ impl MmapModel {
         let static_slice: &'static [u8] = unsafe { std::mem::transmute(slice) };
         let tensors = SafeTensors::deserialize(static_slice)?;
 
-        let mut names: Vec<std::sync::Arc<str>> = tensors.names().iter().map(|s| (*s).into()).collect();
+        let mut names: Vec<std::sync::Arc<str>> =
+            tensors.names().iter().map(|s| (*s).into()).collect();
         names.sort_unstable();
         let tensor_names: std::sync::Arc<[std::sync::Arc<str>]> = names.into();
 
-        Ok(Self { tensors, mmap, tensor_names })
+        Ok(Self {
+            tensors,
+            mmap,
+            tensor_names,
+        })
     }
 
     /// Access the parsed `SafeTensors` structure.
@@ -351,7 +326,8 @@ impl MmapModel {
     /// Returns a tensor view by name using `ReaderError` for convenience.
     #[inline]
     pub fn tensor(&self, name: &str) -> ReaderResult<Tensor<'static>> {
-        self.tensors.tensor(name)
+        self.tensors
+            .tensor(name)
             .map(Tensor)
             .map_err(ReaderError::from)
     }
@@ -508,8 +484,8 @@ mod tests {
             let owned = Model::load(&path).await.expect("load async");
             assert_eq!(owned.len(), 1);
 
-            let parallel = Model::load_parallel(&path, 2).await.expect("load parallel");
-            assert_eq!(parallel.len(), 1);
+            let sync = Model::load_sync(&path).expect("load sync");
+            assert_eq!(sync.len(), 1);
         });
     }
 

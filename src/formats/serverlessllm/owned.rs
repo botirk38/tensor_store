@@ -59,10 +59,11 @@ fn execute_load_plan_sync(plan: &LoadPlan) -> ReaderResult<Tensors> {
 
     // Validate all partitions first
     for read in &plan.partitions {
-        let metadata = std::fs::metadata(&read.path).map_err(|_| ReaderError::PartitionNotFound {
-            partition_id: read.partition_id,
-            path: read.path.to_string_lossy().to_string(),
-        })?;
+        let metadata =
+            std::fs::metadata(&read.path).map_err(|_| ReaderError::PartitionNotFound {
+                partition_id: read.partition_id,
+                path: read.path.to_string_lossy().to_string(),
+            })?;
         if metadata.len() < read.size {
             return Err(ReaderError::PartitionTooSmall {
                 path: read.path.to_string_lossy().to_string(),
@@ -78,7 +79,7 @@ fn execute_load_plan_sync(plan: &LoadPlan) -> ReaderResult<Tensors> {
         let data = backends::sync_backend()
             .load(&read.path)
             .map_err(ReaderError::from)?;
-        
+
         if data.len() < read.size as usize {
             return Err(ReaderError::PartitionTooSmall {
                 path: read.path.to_string_lossy().to_string(),
@@ -86,7 +87,7 @@ fn execute_load_plan_sync(plan: &LoadPlan) -> ReaderResult<Tensors> {
                 required: read.size,
             });
         }
-        
+
         let backing: Arc<[u8]> = data.into();
 
         let mut tensors = HashMap::with_capacity(index.len());
@@ -101,7 +102,8 @@ fn execute_load_plan_sync(plan: &LoadPlan) -> ReaderResult<Tensors> {
     }
 
     // Multi-partition: parallel batch reads
-    let requests: Vec<(PathBuf, u64, usize)> = plan.partitions
+    let requests: Vec<(PathBuf, u64, usize)> = plan
+        .partitions
         .iter()
         .map(|p| (p.path.clone(), 0, p.size as usize))
         .collect();
@@ -111,7 +113,8 @@ fn execute_load_plan_sync(plan: &LoadPlan) -> ReaderResult<Tensors> {
         .map_err(ReaderError::from)?;
 
     // Build partition buffers without extra copy
-    let mut partition_buffers: HashMap<usize, Arc<[u8]>> = HashMap::with_capacity(plan.partitions.len());
+    let mut partition_buffers: HashMap<usize, Arc<[u8]>> =
+        HashMap::with_capacity(plan.partitions.len());
     for (read, result) in plan.partitions.iter().zip(results) {
         let (buf, _, _) = result;
         if buf.len() < read.size as usize {
@@ -148,10 +151,13 @@ async fn execute_load_plan_async(plan: &LoadPlan) -> ReaderResult<Tensors> {
 
     // Validate all partitions first
     for read in &plan.partitions {
-        let metadata = tokio::fs::metadata(&read.path).await.map_err(|_| ReaderError::PartitionNotFound {
-            partition_id: read.partition_id,
-            path: read.path.to_string_lossy().to_string(),
-        })?;
+        let metadata =
+            tokio::fs::metadata(&read.path)
+                .await
+                .map_err(|_| ReaderError::PartitionNotFound {
+                    partition_id: read.partition_id,
+                    path: read.path.to_string_lossy().to_string(),
+                })?;
         if metadata.len() < read.size {
             return Err(ReaderError::PartitionTooSmall {
                 path: read.path.to_string_lossy().to_string(),
@@ -168,7 +174,7 @@ async fn execute_load_plan_async(plan: &LoadPlan) -> ReaderResult<Tensors> {
             .load(&read.path)
             .await
             .map_err(ReaderError::from)?;
-        
+
         if data.len() < read.size as usize {
             return Err(ReaderError::PartitionTooSmall {
                 path: read.path.to_string_lossy().to_string(),
@@ -176,7 +182,7 @@ async fn execute_load_plan_async(plan: &LoadPlan) -> ReaderResult<Tensors> {
                 required: read.size,
             });
         }
-        
+
         let backing: Arc<[u8]> = data.into();
 
         let mut tensors = HashMap::with_capacity(index.len());
@@ -190,30 +196,37 @@ async fn execute_load_plan_async(plan: &LoadPlan) -> ReaderResult<Tensors> {
         return Ok(tensors);
     }
 
-    // Multi-partition: parallel batch reads
-    let requests: Vec<(PathBuf, u64, usize)> = plan.partitions
+    // Multi-partition: parallel reads using join_all instead of batch
+    // This avoids batch overhead for whole-partition reads
+    let load_futures: Vec<_> = plan
+        .partitions
         .iter()
-        .map(|p| (p.path.clone(), 0, p.size as usize))
+        .map(|read| async {
+            let data = backends::async_backend()
+                .load(&read.path)
+                .await
+                .map_err(ReaderError::from)?;
+            if data.len() < read.size as usize {
+                return Err(ReaderError::PartitionTooSmall {
+                    path: read.path.to_string_lossy().to_string(),
+                    actual: data.len() as u64,
+                    required: read.size,
+                });
+            }
+            let owned: Arc<[u8]> = data.into();
+            Ok((read.partition_id, owned))
+        })
         .collect();
 
-    // Read all partitions in parallel via batch
-    let results = backends::async_backend()
-        .load_batch(&requests)
+    let results: Vec<(usize, Arc<[u8]>)> = futures::future::join_all(load_futures)
         .await
-        .map_err(ReaderError::from)?;
+        .into_iter()
+        .collect::<ReaderResult<Vec<_>>>()?;
 
-    // Build partition buffers without extra copy
-    let mut partition_buffers: HashMap<usize, Arc<[u8]>> = HashMap::with_capacity(plan.partitions.len());
-    for (read, result) in plan.partitions.iter().zip(results) {
-        let (buf, _, _) = result;
-        if buf.len() < read.size as usize {
-            return Err(ReaderError::PartitionTooSmall {
-                path: read.path.to_string_lossy().to_string(),
-                actual: buf.len() as u64,
-                required: read.size,
-            });
-        }
-        partition_buffers.insert(read.partition_id, buf);
+    // Build partition buffers
+    let mut partition_buffers: HashMap<usize, Arc<[u8]>> = HashMap::with_capacity(results.len());
+    for (partition_id, buf) in results {
+        partition_buffers.insert(partition_id, buf);
     }
 
     // Assemble tensors from shared partition buffers
@@ -245,7 +258,10 @@ impl Model {
         let plan = LoadPlan::compile(&index, &dir_path.join("tensor.data"));
         let tensors = execute_load_plan_async(&plan).await?;
         let tensor_names = index.tensor_names().to_vec().into();
-        Ok(Self { tensors, tensor_names })
+        Ok(Self {
+            tensors,
+            tensor_names,
+        })
     }
 
     /// Loads a ServerlessLLM model from directory synchronously with eager loading.
@@ -255,7 +271,10 @@ impl Model {
         let plan = LoadPlan::compile(&index, &dir_path.join("tensor.data"));
         let tensors = execute_load_plan_sync(&plan)?;
         let tensor_names = index.tensor_names().to_vec().into();
-        Ok(Self { tensors, tensor_names })
+        Ok(Self {
+            tensors,
+            tensor_names,
+        })
     }
 
     /// Returns a reference to the tensor with the given name.

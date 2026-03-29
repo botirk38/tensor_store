@@ -25,10 +25,11 @@ pub fn validate_partition_size(
         return Ok(cached_size);
     }
 
-    let metadata = std::fs::metadata(partition_path).map_err(|_| ReaderError::PartitionNotFound {
-        partition_id,
-        path: partition_path.display().to_string(),
-    })?;
+    let metadata =
+        std::fs::metadata(partition_path).map_err(|_| ReaderError::PartitionNotFound {
+            partition_id,
+            path: partition_path.display().to_string(),
+        })?;
 
     let actual_size = metadata.len();
 

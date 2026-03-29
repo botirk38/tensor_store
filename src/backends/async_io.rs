@@ -2,6 +2,7 @@
 //!
 //! This backend provides cross-platform async I/O operations built on Tokio.
 //! It's used as a fallback on non-Linux platforms where `io_uring` isn't available.
+//! Chunking is heuristic-based and internal.
 
 use super::{AsyncBackend, AsyncBackendFuture, BatchRequest, IoResult};
 #[cfg(target_os = "linux")]
@@ -12,6 +13,30 @@ use std::sync::Arc;
 #[cfg(target_os = "linux")]
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 
+#[cfg(target_os = "linux")]
+const MAX_SINGLE_READ: usize = 512 * 1024 * 1024;
+
+#[cfg(target_os = "linux")]
+const ASYNC_QUEUE_DEPTH: usize = 64;
+
+#[cfg(target_os = "linux")]
+const MIN_CHUNK_SIZE: usize = 16 * 1024 * 1024;
+
+#[cfg(target_os = "linux")]
+#[inline]
+fn calculate_async_chunks(file_size: usize) -> usize {
+    if file_size == 0 {
+        return 1;
+    }
+    let size_based = if file_size > MAX_SINGLE_READ {
+        file_size.div_ceil(64 * 1024 * 1024)
+    } else {
+        1
+    };
+    let queue_chunks = ASYNC_QUEUE_DEPTH.min(file_size.div_ceil(MIN_CHUNK_SIZE));
+    size_based.max(queue_chunks).clamp(1, ASYNC_QUEUE_DEPTH)
+}
+
 /// Tokio-based async backend (cross-platform fallback).
 #[derive(Clone, Copy, Debug)]
 pub struct TokioAsyncBackend;
@@ -19,14 +44,6 @@ pub struct TokioAsyncBackend;
 impl AsyncBackend for TokioAsyncBackend {
     fn load<'a>(&'a self, path: &'a Path) -> AsyncBackendFuture<'a, Vec<u8>> {
         Box::pin(async move { load(path).await })
-    }
-
-    fn load_parallel<'a>(
-        &'a self,
-        path: &'a Path,
-        chunks: usize,
-    ) -> AsyncBackendFuture<'a, Vec<u8>> {
-        Box::pin(async move { load_parallel(path, chunks).await })
     }
 
     fn load_range<'a>(
@@ -81,6 +98,8 @@ mod linux {
 
     /// Loads an entire file into memory using Direct I/O when possible.
     ///
+    /// Uses heuristic-based chunking internally for large files.
+    ///
     /// # Errors
     ///
     /// - File cannot be opened or read
@@ -96,6 +115,11 @@ mod linux {
 
         if file_size == 0 {
             return Ok(Vec::new());
+        }
+
+        if file_size > MAX_SINGLE_READ {
+            let chunks = calculate_async_chunks(file_size);
+            return load_chunked(path_ref, chunks).await;
         }
 
         if can_use_direct_read(file_size, file_size) {
@@ -154,15 +178,7 @@ mod linux {
         }
     }
 
-    /// Loads a file using parallel chunk reads for improved throughput.
-    ///
-    /// # Errors
-    ///
-    /// - `chunks` is zero
-    /// - File cannot be opened or read
-    /// - File size exceeds `usize` limits
-    #[inline]
-    pub async fn load_parallel<P: AsRef<Path>>(path: P, chunks: usize) -> IoResult<Vec<u8>> {
+    pub(super) async fn load_chunked<P: AsRef<Path>>(path: P, chunks: usize) -> IoResult<Vec<u8>> {
         if chunks == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -418,33 +434,6 @@ mod non_linux {
             .map_err(|_| std::io::Error::other("spawn_blocking panicked"))?
     }
 
-    /// Loads a file in parallel chunks using the sync backend.
-    ///
-    /// On non-Linux platforms, this delegates to the sync backend's
-    /// `load_parallel` (native threads + blocking I/O) via `spawn_blocking`,
-    /// matching sync parallel performance while preserving the async API.
-    ///
-    /// # Errors
-    ///
-    /// - `chunks` is zero
-    /// - File cannot be opened or read
-    /// - File size exceeds `usize` limits
-    #[inline]
-    pub async fn load_parallel<P: AsRef<Path>>(path: P, chunks: usize) -> IoResult<Vec<u8>> {
-        if chunks == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "chunks must be greater than 0",
-            ));
-        }
-        let path_buf = path.as_ref().to_path_buf();
-        tokio::task::spawn_blocking(move || {
-            super::super::sync_backend().load_parallel(path_buf.as_path(), chunks)
-        })
-        .await
-        .map_err(|_| std::io::Error::other("spawn_blocking panicked"))?
-    }
-
     #[inline]
     pub async fn load_range<P: AsRef<Path>>(path: P, offset: u64, len: usize) -> IoResult<Vec<u8>> {
         let path_buf = path.as_ref().to_path_buf();
@@ -470,24 +459,26 @@ mod non_linux {
             .map(|(path, indexed_reqs)| {
                 let path_buf = path.clone();
                 async move {
-                    tokio::task::spawn_blocking(move || -> Result<Vec<IndexedLoadResult>, std::io::Error> {
-                        use std::io::{Seek, SeekFrom, Read};
-                        let mut file = std::fs::File::open(&path_buf)?;
-                        let mut results = Vec::with_capacity(indexed_reqs.len());
-                        let mut sorted_reqs = indexed_reqs;
-                        sorted_reqs.sort_by_key(|r| r.offset);
+                    tokio::task::spawn_blocking(
+                        move || -> Result<Vec<IndexedLoadResult>, std::io::Error> {
+                            use std::io::{Read, Seek, SeekFrom};
+                            let mut file = std::fs::File::open(&path_buf)?;
+                            let mut results = Vec::with_capacity(indexed_reqs.len());
+                            let mut sorted_reqs = indexed_reqs;
+                            sorted_reqs.sort_by_key(|r| r.offset);
 
-                        for req in sorted_reqs {
-                            file.seek(SeekFrom::Start(req.offset))?;
-                            let mut buf = super::super::get_buffer_pool().get(req.len);
-                            file.read_exact(&mut buf[..])?;
-                            let owned: Arc<[u8]> = buf.into_inner().into();
-                            results.push((req.idx, owned, 0, req.len));
-                        }
+                            for req in sorted_reqs {
+                                file.seek(SeekFrom::Start(req.offset))?;
+                                let mut buf = super::super::get_buffer_pool().get(req.len);
+                                file.read_exact(&mut buf[..])?;
+                                let owned: Arc<[u8]> = buf.into_inner().into();
+                                results.push((req.idx, owned, 0, req.len));
+                            }
 
-                        results.sort_by_key(|(idx, _, _, _)| *idx);
-                        Ok(results)
-                    })
+                            results.sort_by_key(|(idx, _, _, _)| *idx);
+                            Ok(results)
+                        },
+                    )
                     .await
                     .map_err(|_| std::io::Error::other("spawn_blocking panicked"))?
                 }
@@ -558,6 +549,16 @@ mod tests {
     use std::io::Write;
     use tempfile::NamedTempFile;
 
+    #[cfg(target_os = "linux")]
+    async fn load_chunked_for_test(path: &Path, chunks: usize) -> IoResult<Vec<u8>> {
+        super::linux::load_chunked(path, chunks).await
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    async fn load_chunked_for_test(path: &Path, _chunks: usize) -> IoResult<Vec<u8>> {
+        super::non_linux::load(path).await
+    }
+
     // -----------------------------------------------------------------------
     // Unit Tests - Pure Functions
     // -----------------------------------------------------------------------
@@ -622,39 +623,28 @@ mod tests {
         assert_eq!(result, data);
     }
 
-    // Note: load_parallel with small files can be flaky on tmpfs
+    // Chunked reads with small files can be flaky on tmpfs
     // This is tested more reliably in sync_io.rs and io_uring.rs
-    // and in the test_load_parallel_vs_sequential test below
-
     #[tokio::test]
-    async fn test_load_parallel_single_chunk() {
+    async fn test_load_chunked_single_chunk() {
         let mut tmpfile = NamedTempFile::new().unwrap();
         let data = vec![0xEF; 1024 * 5];
         tmpfile.write_all(&data).unwrap();
         tmpfile.flush().unwrap();
 
-        let result = load_parallel(tmpfile.path(), 1).await.unwrap();
+        let result = load_chunked_for_test(tmpfile.path(), 1).await.unwrap();
         assert_eq!(result, data);
     }
 
     #[tokio::test]
-    async fn test_load_parallel_zero_chunks_error() {
+    async fn test_load_chunked_empty_file() {
         let tmpfile = NamedTempFile::new().unwrap();
-        let result = load_parallel(tmpfile.path(), 0).await;
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
-    }
-
-    #[tokio::test]
-    async fn test_load_parallel_empty_file() {
-        let tmpfile = NamedTempFile::new().unwrap();
-        let result = load_parallel(tmpfile.path(), 4).await.unwrap();
+        let result = load_chunked_for_test(tmpfile.path(), 4).await.unwrap();
         assert_eq!(result.len(), 0);
     }
 
     #[tokio::test]
-    async fn test_load_parallel_vs_sequential() {
+    async fn test_load_chunked_vs_sequential() {
         let mut tmpfile = NamedTempFile::new().unwrap();
         let data = vec![0x42; 1024 * 500]; // 500KB - large enough for parallel
         tmpfile.write_all(&data).unwrap();
@@ -662,9 +652,9 @@ mod tests {
         tmpfile.flush().unwrap();
 
         let sequential = load(tmpfile.path()).await.unwrap();
-        let parallel = load_parallel(tmpfile.path(), 8).await.unwrap();
+        let chunked = load_chunked_for_test(tmpfile.path(), 8).await.unwrap();
 
-        assert_eq!(sequential, parallel);
+        assert_eq!(sequential, chunked);
         assert_eq!(sequential, data);
     }
 
@@ -809,14 +799,14 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn test_load_parallel_direct_io() {
+        async fn test_load_chunked_direct_io() {
             let mut tmpfile = NamedTempFile::new().unwrap();
-            let data = vec![0x88; 4096 * 100]; // Block-aligned, large enough for parallel
+            let data = vec![0x88; 4096 * 100]; // Block-aligned, large enough for chunked
             tmpfile.write_all(&data).unwrap();
             tmpfile.as_file().sync_all().unwrap(); // Ensure data is written
             tmpfile.flush().unwrap();
 
-            let result = load_parallel(tmpfile.path(), 4).await.unwrap();
+            let result = load_chunked_for_test(tmpfile.path(), 4).await.unwrap();
             assert_eq!(result, data);
         }
 

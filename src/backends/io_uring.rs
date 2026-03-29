@@ -4,6 +4,7 @@
 //! - Uses buffer pools to minimize allocations
 //! - Efficient parallel chunked reads for large files
 //! - Proper io_uring batching - all operations submitted together
+//! - Heuristic-based: chunking is automatic based on file size and queue saturation
 
 use super::odirect::{
     BLOCK_SIZE, OwnedAlignedBuffer, align_to_block, alloc_aligned, can_use_direct_read,
@@ -11,33 +12,31 @@ use super::odirect::{
 };
 use super::{
     AsyncBackend, AsyncBackendFuture, BatchRequest, IoResult,
-    batch::{IndexedRequest, flatten_results, group_requests_by_file},
+    batch::{
+        BatchResult, FlattenedResult, IndexedRequest, flatten_results, group_requests_by_file,
+    },
     get_buffer_pool,
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tokio_uring::fs::File as UringFile;
 
-/// Maximum size for a single io_uring read operation.
-/// Files larger than this automatically use parallel chunked reading.
-const MAX_SINGLE_READ: usize = 512 * 1024 * 1024; // 512MB
-
-/// Target queue depth for parallel io_uring operations.
-/// This saturates NVMe devices without overwhelming the kernel.
-const DEFAULT_QUEUE_DEPTH: usize = 64;
-
-/// Minimum chunk size in bytes (16MB).
-/// Prevents oversplitting small files into tiny requests.
+const ASYNC_QUEUE_DEPTH: usize = 64;
 const MIN_CHUNK_SIZE: usize = 16 * 1024 * 1024;
-
-/// Maximum chunk size in bytes (64MB).
-/// Prevents undersplitting large files.
-const MAX_CHUNK_SIZE: usize = 64 * 1024 * 1024;
+const MAX_SINGLE_READ: usize = 512 * 1024 * 1024;
 
 #[inline]
-fn calculate_chunks(file_size: usize) -> usize {
-    let min_chunks = file_size.div_ceil(MAX_CHUNK_SIZE);
-    let max_chunks = file_size.div_ceil(MIN_CHUNK_SIZE);
-    min_chunks.max(1).clamp(1, max_chunks.min(DEFAULT_QUEUE_DEPTH))
+fn calculate_async_chunks(file_size: usize) -> usize {
+    if file_size == 0 {
+        return 1;
+    }
+    let size_based = if file_size > MAX_SINGLE_READ {
+        file_size.div_ceil(64 * 1024 * 1024)
+    } else {
+        1
+    };
+    let queue_chunks = ASYNC_QUEUE_DEPTH.min(file_size.div_ceil(MIN_CHUNK_SIZE));
+    size_based.max(queue_chunks).clamp(1, ASYNC_QUEUE_DEPTH)
 }
 
 /// Async backend powered by io_uring.
@@ -47,14 +46,6 @@ pub struct IoUringBackend;
 impl AsyncBackend for IoUringBackend {
     fn load<'a>(&'a self, path: &'a Path) -> AsyncBackendFuture<'a, Vec<u8>> {
         Box::pin(async move { load(path).await })
-    }
-
-    fn load_parallel<'a>(
-        &'a self,
-        path: &'a Path,
-        chunks: usize,
-    ) -> AsyncBackendFuture<'a, Vec<u8>> {
-        Box::pin(async move { load_parallel(path, chunks).await })
     }
 
     fn load_range<'a>(
@@ -200,6 +191,10 @@ fn build_chunk_requests(
 
 /// Load an entire file using `io_uring`.
 ///
+/// Uses heuristic-based chunking internally to saturate the io_uring queue
+/// and maximize throughput. Chunk count is determined automatically based on
+/// file size and target queue depth.
+///
 /// # Errors
 ///
 /// - File cannot be opened or read
@@ -214,52 +209,11 @@ pub async fn load(path: impl AsRef<Path> + Send) -> IoResult<Vec<u8>> {
         return Ok(Vec::new());
     }
 
-    if file_size > MAX_SINGLE_READ {
-        let chunks = calculate_chunks(file_size);
-        return load_parallel(path_buf, chunks).await;
-    }
-
-    let padded = align_to_block(file_size);
-
-    if can_use_direct_read(file_size, file_size) {
-        match open_direct_read_io_uring(&path_buf).await {
-            Ok(file) => {
-                let buffer = OwnedAlignedBuffer::new(padded)?;
-                let chunk = buffer.slice(0, padded)?;
-
-                let (res, returned_chunk) = file.read_at(chunk, 0).await;
-                let n = res?;
-
-                validate_read_count(n, file_size)?;
-                drop(returned_chunk);
-                file.close().await?;
-                return buffer.into_vec(file_size);
-            }
-            Err(err) if allow_direct_fallback(&err) => {}
-            Err(err) => return Err(err),
-        }
-    }
-
-    let file = UringFile::open(&path_buf).await?;
-    let pooled = get_buffer_pool().get(file_size);
-    let (res, mut buf) = file.read_at(pooled, 0).await;
-    let n = res?;
-
-    validate_read_count(n, file_size)?;
-    buf.truncate(file_size);
-    file.close().await?;
-    Ok(buf.to_vec())
+    let chunks = calculate_async_chunks(file_size);
+    load_chunked(path_buf, chunks).await
 }
 
-/// Load tensor data in parallel chunks using `io_uring` with batched operations.
-///
-/// # Errors
-///
-/// - `chunks` is zero
-/// - File cannot be opened or read
-/// - File size or chunk size exceeds platform limits
-#[inline]
-pub async fn load_parallel(path: impl AsRef<Path>, chunks: usize) -> IoResult<Vec<u8>> {
+async fn load_chunked(path: PathBuf, chunks: usize) -> IoResult<Vec<u8>> {
     if chunks == 0 {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -395,10 +349,7 @@ pub async fn load_range(path: impl AsRef<Path>, offset: u64, len: usize) -> IoRe
 }
 
 /// Helpers for batched range reads.
-async fn read_request_direct(
-    file: &UringFile,
-    req: &IndexedRequest,
-) -> IoResult<(usize, Vec<u8>, usize, usize)> {
+async fn read_request_direct(file: &UringFile, req: &IndexedRequest) -> IoResult<BatchResult> {
     let padded = align_to_block(req.len);
     let buffer = OwnedAlignedBuffer::new(padded)?;
     let chunk = buffer.slice(0, padded)?;
@@ -407,26 +358,24 @@ async fn read_request_direct(
     let n = res?;
     validate_read_count(n, req.len)?;
     drop(returned_chunk);
-    let full = buffer.into_vec(req.len)?;
-    Ok((req.idx, full, 0, req.len))
+    let data: Arc<[u8]> = buffer.into_vec(req.len)?.into();
+    Ok((req.idx, data, 0, req.len))
 }
 
-async fn read_request_buffered(
-    file: &UringFile,
-    req: &IndexedRequest,
-) -> IoResult<(usize, Vec<u8>, usize, usize)> {
+async fn read_request_buffered(file: &UringFile, req: &IndexedRequest) -> IoResult<BatchResult> {
     let pooled = get_buffer_pool().get(req.len);
     let (res, mut read_buf) = file.read_at(pooled, req.offset).await;
     let n = res?;
     validate_read_count(n, req.len)?;
     read_buf.truncate(req.len);
-    Ok((req.idx, read_buf.to_vec(), 0, req.len))
+    let data: Arc<[u8]> = read_buf.to_vec().into();
+    Ok((req.idx, data, 0, req.len))
 }
 
 async fn process_file_batch(
     path: &Path,
     requests: Vec<IndexedRequest>,
-) -> IoResult<Vec<(usize, Vec<u8>, usize, usize)>> {
+) -> IoResult<Vec<BatchResult>> {
     if requests.is_empty() {
         return Ok(Vec::new());
     }
@@ -447,7 +396,7 @@ async fn process_file_batch(
 
     let read_futures = requests.into_iter().map(|req| async move {
         if req.len == 0 {
-            return Ok((req.idx, Vec::new(), 0, 0));
+            return Ok((req.idx, Arc::<[u8]>::from(Vec::new()), 0, 0));
         }
 
         if use_direct {
@@ -470,14 +419,14 @@ async fn process_file_batch(
 #[inline]
 pub async fn load_batch(
     requests: &[(impl AsRef<Path>, u64, usize)],
-) -> IoResult<Vec<(Vec<u8>, usize, usize)>> {
+) -> IoResult<Vec<FlattenedResult>> {
     if requests.is_empty() {
         return Ok(Vec::new());
     }
 
     let file_requests = group_requests_by_file(requests);
 
-    let batch_results: Vec<Vec<super::batch::BatchResult>> = futures::future::join_all(
+    let batch_results: Vec<Vec<BatchResult>> = futures::future::join_all(
         file_requests
             .into_iter()
             .map(|(path, file_reqs)| async move { process_file_batch(&path, file_reqs).await }),
@@ -550,7 +499,7 @@ pub async fn write_all(path: impl AsRef<Path>, data: Vec<u8>) -> IoResult<()> {
 #[cfg(target_os = "linux")]
 mod tests {
     use super::{
-        build_chunk_requests, checked_arithmetic, load, load_parallel, load_range, statx_file_size,
+        build_chunk_requests, checked_arithmetic, load, load_range, statx_file_size,
         validate_chunk_size, validate_read_count, write_all,
     };
 
@@ -756,7 +705,8 @@ mod tests {
     // -----------------------------------------------------------------------
 
     mod integration {
-        use super::{load, load_parallel, load_range, run_test, write_all};
+        use super::super::load_chunked;
+        use super::{load, load_range, run_test, write_all};
         use crate::backends::io_uring::load_batch;
         use crate::backends::odirect::BLOCK_SIZE;
         use std::io::Write;
@@ -798,47 +748,36 @@ mod tests {
         }
 
         #[test]
-        fn test_load_parallel_single_chunk() {
+        fn test_load_chunked_single_chunk() {
             run_test(async {
                 let mut tmpfile = NamedTempFile::new().unwrap();
                 let data = vec![0xCD; BLOCK_SIZE * 2];
                 tmpfile.write_all(&data).unwrap();
                 tmpfile.flush().unwrap();
 
-                let result = load_parallel(tmpfile.path(), 1).await.unwrap();
+                let result = load_chunked(tmpfile.path().to_path_buf(), 1).await.unwrap();
                 assert_eq!(result, data);
             })
         }
 
         #[test]
-        fn test_load_parallel_multiple_chunks() {
+        fn test_load_chunked_multiple_chunks() {
             run_test(async {
                 let mut tmpfile = NamedTempFile::new().unwrap();
                 let data = vec![0xEF; BLOCK_SIZE * 10];
                 tmpfile.write_all(&data).unwrap();
                 tmpfile.flush().unwrap();
 
-                let result = load_parallel(tmpfile.path(), 4).await.unwrap();
+                let result = load_chunked(tmpfile.path().to_path_buf(), 4).await.unwrap();
                 assert_eq!(result, data);
             })
         }
 
         #[test]
-        fn test_load_parallel_zero_chunks_error() {
+        fn test_load_chunked_empty_file() {
             run_test(async {
                 let tmpfile = NamedTempFile::new().unwrap();
-                let result = load_parallel(tmpfile.path(), 0).await;
-                assert!(result.is_err());
-                let err = result.unwrap_err();
-                assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
-            })
-        }
-
-        #[test]
-        fn test_load_parallel_empty_file() {
-            run_test(async {
-                let tmpfile = NamedTempFile::new().unwrap();
-                let result = load_parallel(tmpfile.path(), 4).await.unwrap();
+                let result = load_chunked(tmpfile.path().to_path_buf(), 4).await.unwrap();
                 assert_eq!(result.len(), 0);
             })
         }

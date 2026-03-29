@@ -23,9 +23,9 @@
 //! ).await?;
 //! ```
 
+use crate::formats::error::{WriterError, WriterResult};
 use crate::formats::safetensors::{Dtype, Model};
 use crate::formats::serverlessllm::{write_index, write_partition, writer::TensorWriteEntry};
-use crate::formats::error::{WriterError, WriterResult};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -42,25 +42,7 @@ pub async fn convert_safetensors_to_serverlessllm(
         ));
     }
 
-    // Calculate optimal chunk count for parallel loading
-    // Use thread-per-core by default, but ensure chunks stay under 2GB (isize::MAX limitation)
-    const MAX_CHUNK_SIZE: usize = 2_000_000_000; // ~2GB, safely under isize::MAX (2,147,483,647)
-    let file_size =
-        usize::try_from(tokio::fs::metadata(input_path).await?.len()).map_err(|_e| {
-            WriterError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "file too large",
-            ))
-        })?;
-    let num_cpus = std::thread::available_parallelism()
-        .map(std::num::NonZeroUsize::get)
-        .unwrap_or(4);
-    let min_chunks_for_size = file_size.div_ceil(MAX_CHUNK_SIZE);
-    let chunks = num_cpus.max(min_chunks_for_size);
-
-    // Use parallel loading for better I/O performance
-    let owned = Model::load_parallel(input_path, chunks)
-        .await
+    let owned = Model::load_sync(input_path)
         .map_err(|e| WriterError::Io(std::io::Error::other(e.to_string())))?;
     let tensors = owned.tensors();
     let names = tensors.names();
@@ -197,13 +179,13 @@ struct TensorBlob {
 
 #[cfg(test)]
 mod tests {
-     use super::*;
-     use crate::formats::safetensors::{Dtype, TensorView};
-     use crate::formats::serverlessllm::Index;
-     use crate::formats::traits::TensorMetadata;
-     use safetensors::serialize;
-     use std::fs;
-     use tempfile::TempDir;
+    use super::*;
+    use crate::formats::safetensors::{Dtype, TensorView};
+    use crate::formats::serverlessllm::Index;
+    use crate::formats::traits::TensorMetadata;
+    use safetensors::serialize;
+    use std::fs;
+    use tempfile::TempDir;
 
     // Helper to create a simple SafeTensors file
     fn create_test_safetensors(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
@@ -320,11 +302,11 @@ mod tests {
 
         // Verify output files exist
         assert!(output.join("tensor_index.json").exists());
-         assert!(output.join("tensor.data_0").exists());
+        assert!(output.join("tensor.data_0").exists());
 
-         // Verify index is valid
-         let index = Index::load_sync(output.join("tensor_index.json")).expect("parse index");
-         assert_eq!(index.len(), 2);
+        // Verify index is valid
+        let index = Index::load_sync(output.join("tensor_index.json")).expect("parse index");
+        assert_eq!(index.len(), 2);
         assert!(index.contains("weight"));
         assert!(index.contains("bias"));
 
@@ -390,8 +372,8 @@ mod tests {
         let partition_data = fs::read(output.join("tensor.data_0")).expect("read partition");
 
         // Extract tensor data from partition
-        let weight_data = &partition_data
-            [weight_entry.offset as usize..(weight_entry.offset + weight_entry.size as u64) as usize];
+        let weight_data = &partition_data[weight_entry.offset as usize
+            ..(weight_entry.offset + weight_entry.size as u64) as usize];
         let bias_data = &partition_data
             [bias_entry.offset as usize..(bias_entry.offset + bias_entry.size as u64) as usize];
 

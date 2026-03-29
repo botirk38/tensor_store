@@ -15,7 +15,9 @@ fn drop_page_cache_for_dir(dir: &std::path::Path) {
                 && let Ok(file) = std::fs::File::open(entry.path())
             {
                 let fd = file.as_raw_fd();
-                unsafe { libc::posix_madvise(fd as *mut libc::c_void, 0, libc::POSIX_MADV_DONTNEED) };
+                unsafe {
+                    libc::posix_madvise(fd as *mut libc::c_void, 0, libc::POSIX_MADV_DONTNEED)
+                };
             }
         }
     }
@@ -92,6 +94,7 @@ fn fixtures(config: &ProfileConfig) -> Result<Vec<(String, PathBuf)>, ProfileErr
 
 #[cfg(target_os = "linux")]
 fn async_load(config: &ProfileConfig) -> ProfileResult {
+    use std::time::Instant;
     let fixtures = fixtures(config)?;
 
     for (fixture, dir) in fixtures {
@@ -110,12 +113,21 @@ fn async_load(config: &ProfileConfig) -> ProfileResult {
                 if i == 0 {
                     drop_page_cache_for_dir(std::path::Path::new(&dir_str));
                 }
+                let start = Instant::now();
                 let model = serverlessllm::Model::load(&dir_str).await?;
+                let elapsed = start.elapsed();
                 let tensor_count = model.len();
                 let mut total_bytes = 0;
                 for (_name, tensor) in &model {
                     total_bytes += tensor.data().len();
                 }
+                println!(
+                    "  iteration {}: {} tensors, {} bytes, {:.2}ms",
+                    i + 1,
+                    tensor_count,
+                    total_bytes,
+                    elapsed.as_secs_f64() * 1000.0
+                );
                 black_box((total_bytes, tensor_count));
             }
 

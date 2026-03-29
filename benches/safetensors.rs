@@ -90,30 +90,6 @@ fn bench_async(c: &mut Criterion) {
     group.finish();
 }
 
-#[cfg(target_os = "linux")]
-fn bench_async_parallel(c: &mut Criterion) {
-    let mut group = c.benchmark_group("safetensors_async_parallel");
-    let num_cores = num_cpus::get();
-    for (model_name, path) in discover_fixtures() {
-        let path_str = path.to_str().unwrap().to_string();
-        group.bench_with_input(
-            BenchmarkId::new("load", format!("{}_cores_{}", num_cores, model_name)),
-            &path_str,
-            |b, p| {
-                b.iter(|| {
-                    tokio_uring::start(async {
-                        let data = safetensors::Model::load_parallel(black_box(p), num_cores)
-                            .await
-                            .unwrap();
-                        black_box((data.tensors().names().len(), data))
-                    })
-                });
-            },
-        );
-    }
-    group.finish();
-}
-
 #[cfg(not(target_os = "linux"))]
 fn bench_async(c: &mut Criterion) {
     let mut group = c.benchmark_group("safetensors_async");
@@ -131,13 +107,7 @@ fn bench_async(c: &mut Criterion) {
 }
 
 #[cfg(target_os = "linux")]
-criterion_group!(
-    benches,
-    bench_sync,
-    bench_mmap,
-    bench_async,
-    bench_async_parallel
-);
+criterion_group!(benches, bench_sync, bench_mmap, bench_async);
 
 #[cfg(not(target_os = "linux"))]
 criterion_group!(benches, bench_sync, bench_mmap, bench_async);

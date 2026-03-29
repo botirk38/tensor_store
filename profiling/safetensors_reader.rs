@@ -30,8 +30,8 @@
 
 use std::hint::black_box;
 use std::time::Instant;
-use tensor_store::formats::safetensors;
 use tensor_store::TensorView;
+use tensor_store::formats::safetensors;
 
 #[derive(Debug)]
 enum ProfileMode {
@@ -92,7 +92,9 @@ async fn profile_async(test_file: &str) {
     // Profiling phase - single iteration to avoid memory accumulation
     println!("  Starting profiling...");
     let start = Instant::now();
-    let data = safetensors::Model::load(black_box(test_file)).await.unwrap();
+    let data = safetensors::Model::load(black_box(test_file))
+        .await
+        .unwrap();
     let load_time = start.elapsed();
 
     let tensor_count = data.names().len();

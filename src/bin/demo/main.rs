@@ -47,8 +47,6 @@ enum SafeTensorsScenario {
     Sync,
     /// Memory-mapped lazy loading
     Mmap,
-    /// Async parallel multi-core loading (io_uring on Linux, tokio elsewhere)
-    ParallelAsync,
     /// Sync parallel multi-core loading (blocking I/O, multiple threads)
     ParallelSync,
     /// Detailed tensor metadata exploration
@@ -65,8 +63,6 @@ enum ServerlessLLMScenario {
     Sync,
     /// Memory-mapped lazy loading
     Mmap,
-    /// Async parallel multi-core loading (io_uring on Linux, tokio elsewhere)
-    ParallelAsync,
     /// Sync parallel multi-core loading (blocking I/O, multiple threads)
     ParallelSync,
     /// Index structure and partition statistics
@@ -81,7 +77,6 @@ impl SafeTensorsScenario {
             Self::Async => "async",
             Self::Sync => "sync",
             Self::Mmap => "mmap",
-            Self::ParallelAsync => "parallel-async",
             Self::ParallelSync => "parallel-sync",
             Self::Metadata => "metadata",
             Self::All => "all",
@@ -95,7 +90,6 @@ impl ServerlessLLMScenario {
             Self::Async => "async",
             Self::Sync => "sync",
             Self::Mmap => "mmap",
-            Self::ParallelAsync => "parallel-async",
             Self::ParallelSync => "parallel-sync",
             Self::Metadata => "metadata",
             Self::All => "all",

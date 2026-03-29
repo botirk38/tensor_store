@@ -240,7 +240,7 @@ The module automatically selects the best backend:
 let data = backends::load("file.bin").await?;
 ```
 
-**Performance note**: Async is optimized for Linux (io_uring). On macOS and Windows, regular files do not support true async I/O, so the async backend uses the sync backend under the hood. For maximum throughput on non-Linux platforms, `load_sync` and `load_parallel_sync` are equivalent to their async counterparts.
+**Performance note**: Async is optimized for Linux (io_uring). On macOS and Windows, regular files do not support true async I/O, so the async backend uses the sync backend under the hood. For maximum throughput on non-Linux platforms, `load_sync` is equivalent to its async counterpart.
 
 Manual backend selection when needed:
 
