@@ -55,7 +55,7 @@ impl AsyncBackend for TokioAsyncBackend {
         Box::pin(async move { load_range(path, offset, len).await })
     }
 
-    fn load_batch<'a>(
+    fn load_range_batch<'a>(
         &'a self,
         requests: &'a [BatchRequest],
     ) -> AsyncBackendFuture<'a, Vec<super::batch::FlattenedResult>> {

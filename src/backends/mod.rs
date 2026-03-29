@@ -68,7 +68,7 @@ pub trait AsyncBackend: Send + Sync + 'static {
         offset: u64,
         len: usize,
     ) -> AsyncBackendFuture<'a, Vec<u8>>;
-    fn load_batch<'a>(
+    fn load_range_batch<'a>(
         &'a self,
         requests: &'a [BatchRequest],
     ) -> AsyncBackendFuture<'a, Vec<batch::FlattenedResult>>;

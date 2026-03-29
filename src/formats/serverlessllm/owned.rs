@@ -196,8 +196,10 @@ async fn execute_load_plan_async(plan: &LoadPlan) -> ReaderResult<Tensors> {
         return Ok(tensors);
     }
 
-    // Multi-partition: parallel reads using join_all instead of batch
-    // This avoids batch overhead for whole-partition reads
+    // Multi-partition: parallel reads using load() per partition.
+    // Each load() internally chunks large files to saturate io_uring queue.
+    // load_range_batch() would only issue 4 concurrent reads (one per partition),
+    // which underutilizes the device compared to load()'s internal chunking (~16 per partition).
     let load_futures: Vec<_> = plan
         .partitions
         .iter()

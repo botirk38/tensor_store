@@ -57,11 +57,11 @@ impl AsyncBackend for IoUringBackend {
         Box::pin(async move { load_range(path, offset, len).await })
     }
 
-    fn load_batch<'a>(
+    fn load_range_batch<'a>(
         &'a self,
         requests: &'a [BatchRequest],
     ) -> AsyncBackendFuture<'a, Vec<super::batch::FlattenedResult>> {
-        Box::pin(async move { load_batch(requests).await })
+        Box::pin(async move { load_range_batch(requests).await })
     }
 
     fn write_all<'a>(&'a self, path: &'a Path, data: Vec<u8>) -> AsyncBackendFuture<'a, ()> {
@@ -417,7 +417,7 @@ async fn process_file_batch(
 
 /// Load multiple file ranges in a single batched operation.
 #[inline]
-pub async fn load_batch(
+pub async fn load_range_batch(
     requests: &[(impl AsRef<Path>, u64, usize)],
 ) -> IoResult<Vec<FlattenedResult>> {
     if requests.is_empty() {
@@ -707,7 +707,7 @@ mod tests {
     mod integration {
         use super::super::load_chunked;
         use super::{load, load_range, run_test, write_all};
-        use crate::backends::io_uring::load_batch;
+        use crate::backends::io_uring::load_range_batch;
         use crate::backends::odirect::BLOCK_SIZE;
         use std::io::Write;
         use tempfile::NamedTempFile;
@@ -877,7 +877,7 @@ mod tests {
                     (tmpfile.path(), 20, 10),
                 ];
 
-                let results = load_batch(&requests).await.unwrap();
+                let results = load_range_batch(&requests).await.unwrap();
                 assert_eq!(results.len(), 3);
                 assert_eq!(results[0].0.as_ref(), &data[0..10]);
                 assert_eq!(results[1].0.as_ref(), &data[10..20]);
@@ -901,7 +901,7 @@ mod tests {
                     (tmpfile1.path(), 5, 4),
                 ];
 
-                let results = load_batch(&requests).await.unwrap();
+                let results = load_range_batch(&requests).await.unwrap();
                 assert_eq!(results.len(), 3);
                 assert_eq!(results[0].0.as_ref(), b"FILE1");
                 assert_eq!(results[1].0.as_ref(), b"FILE2");
@@ -913,7 +913,7 @@ mod tests {
         fn test_batch_load_empty_requests() {
             run_test(async {
                 let requests: Vec<(&str, u64, usize)> = vec![];
-                let results = load_batch(&requests).await.unwrap();
+                let results = load_range_batch(&requests).await.unwrap();
                 assert_eq!(results.len(), 0);
             })
         }
