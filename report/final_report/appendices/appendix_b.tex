@@ -1,0 +1,51 @@
+\chapter{Supplementary Results}
+\label{app:supplementary_results}
+
+\section{Additional Throughput Data}
+
+This appendix contains additional throughput measurements across different model sizes and checkpoint configurations. Results will be populated following the final experimental runs.
+
+\section{Latency Distributions}
+
+Figure~\ref{fig:latency_dist} shows the per-read latency distribution for the synchronous and io\_uring backends under the SafeTensors layout. The CDF is constructed from all individual read operations recorded during the cold-cache throughput experiments.
+
+\begin{figure}[h]
+\centering
+\fbox{\parbox{10cm}{\centering\vspace{2cm}
+\textbf{[Figure to be populated with latency CDF data from experiment runs]}\\[5pt]
+Synchronous vs io\_uring per-read latency CDF, SafeTensors layout, cold-cache\\
+\vspace{2cm}}}
+\caption{Cumulative distribution of per-read latency for synchronous and io\_uring backends.}
+\label{fig:latency_dist}
+\end{figure}
+
+\section{vLLM Integration Additional Data}
+
+Table~\ref{tab:vllm_extra} shows steady-state decode latency measurements across loader configurations and cache conditions.
+
+\begin{table}[h]
+\caption{Steady-state decode latency (ms per token) by loader and cache condition.}
+\label{tab:vllm_extra}
+\centering
+\begin{tabular}{lcc}
+\toprule
+Loader & Cache & Decode latency \\
+\midrule
+native & warm & TBD \\
+native & cold & TBD \\
+ts\_safetensors\_sync & warm & TBD \\
+ts\_safetensors\_sync & cold & TBD \\
+ts\_safetensors\_mmap & warm & TBD \\
+ts\_safetensors\_mmap & cold & TBD \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Outstanding Experiment Outputs}
+
+The following outputs are required to complete this appendix:
+
+\begin{itemize}
+\item Per-read latency CDF data for synchronous and io\_uring backends (Figure~\ref{fig:latency_dist})
+\item Steady-state decode latency for all six loader and cache configurations (Table~\ref{tab:vllm_extra})
+\end{itemize}

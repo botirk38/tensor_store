@@ -1,0 +1,147 @@
+\chapter{Design and Architecture}
+\label{chap:design}
+
+\section{Design Goals}
+
+TensorStore was designed around four primary requirements. First, the framework must support multiple I/O backends and checkpoint formats under a consistent interface, so that identical workloads can be executed across backends without altering the logical request structure. Second, the framework must expose a clean benchmarking path that is separate from the loader logic, so that measurement artefacts do not contaminate performance data. Third, the framework must clarify its threading model explicitly, so that the relationship between thread count, queue depth, and throughput is transparent. Fourth, the framework must be accessible from Python to enable integration testing with real serving workflows such as vLLM.
+
+These requirements led to a layered architecture that separates format parsing, I/O execution, and measurement.
+
+\section{System Architecture}
+
+TensorStore is structured into three layers: a format layer, a backend layer, and an evaluation harness.
+
+The format layer parses checkpoint metadata and produces a normalised set of read requests. Each request specifies a file path, a byte offset, and a byte length. The format layer does not issue I/O; it only describes what reads are needed. This separation means that the same set of requests can be executed by any backend without modification.
+
+The backend layer implements the I/O execution. Each backend receives the same request trace and executes it according to its own submission model. Backends must execute requests exactly as specified and are not permitted to merge, split, or reorder ranges. This constraint ensures that performance differences reflect submission behaviour rather than workload changes.
+
+The evaluation harness executes workloads and records performance metrics. It handles warm-up runs, repeated measurements, cache control, and metric collection. It is kept entirely separate from the loader logic.
+
+\section{Backend Interface}
+
+All backends implement the same request interface. A backend receives a sequence of read requests, each containing a file path, offset, and length. The backend must read the exact byte range specified and return the data. Backends may not alter request boundaries, reorder requests, or skip requests. This constraint is enforced to enable fair comparison.
+
+The interface operates at two levels of granularity. At the coarse level, a checkpoint load produces a complete model weight dictionary. At the fine level, each tensor read corresponds to a single file-offset-length request submitted to the backend. Reporting both levels is essential: per-read latency tells us how individual operations perform, while full model load time tells us the end-to-end time that matters for serving cold-start scenarios.
+
+\section{Threading Model}
+
+Each backend implements a distinct threading model.
+
+The synchronous POSIX backend uses a thread pool of fixed size. Each thread issues blocking \texttt{read()} calls and is blocked while its request is in flight. Threads are drawn from a pool to avoid the cost of creating a new thread per request. The number of concurrent in-flight requests is therefore equal to the thread pool size, and increasing the pool size directly increases the achievable queue depth.
+
+The memory-mapped backend uses no threads for I/O. Data is accessed by reading from a mapped memory region, and page faults are handled by the kernel's page fault handler in the calling thread. The kernel decides when to issue the underlying disk reads and in what order, based on its own read-ahead and eviction policies.
+
+The io\_uring backend submits requests from a single dedicated thread that polls the completion ring. This thread runs an event loop that submits a batch of requests, polls for completions, processes the completed data, and repeats. Because submission and completion are both handled by polling rather than signals or interrupts, the kernel is never required to wake a specific thread to deliver I/O results. The fixed-buffer mechanism eliminates per-request memory allocation in the kernel, allowing the submission thread to maintain a high queue depth without allocating memory for each outstanding request.
+
+Python bindings add a further consideration. The GIL is released during Rust I/O operations using \texttt{py.allow\_threads()}, which allows other Python threads to run while the Rust code is blocked on I/O. This prevents the loading process from monopolising the Python interpreter, though it does not affect the actual I/O submission characteristics.
+
+\section{Cache Control}
+
+Cache state is a significant confounding variable in storage benchmarks. The operating system maintains a page cache that stores recently accessed file pages in RAM. If a second run of the same benchmark finds all pages already in the page cache, it will observe artificially low latency that reflects RAM access rather than storage device performance.
+
+TensorStore addresses this in two ways. First, the evaluation harness provides an explicit cache eviction step before measurement runs. This is implemented by dropping in-memory page caches using \texttt{POSIX\_FADVISE\_DONTNEED} on each checkpoint file, forcing the kernel to evict previously cached pages. Second, the number of runs and the number of iterations per run are configured explicitly, and the harness reports the mean and standard deviation across runs so that cache-warm and cache-cold runs can be distinguished.
+
+It is worth noting that cache eviction does not guarantee that disk caches internal to the storage device (such as NAND flash translation layer caches) are cleared. These caches are hardware-managed and not directly controllable from software. The methodology in Chapter~\ref{chap:methodology} discusses this limitation further.
+
+\section{Backend Implementations}
+
+\subsection{Synchronous POSIX Backend}
+
+The synchronous backend issues blocking \texttt{read()} calls through the POSIX interface. For large reads, data is copied into a pre-allocated buffer and returned to the caller. Each read call blocks the issuing thread until the data is available in the buffer. The backend uses a thread pool sized to the number of backend threads configured at startup.
+
+This backend represents the baseline approach used by many existing checkpoint loaders. It is straightforward to implement and understand, and it provides predictable latency bounded by the storage device's sequential read throughput. Its limitation is that queue depth is bounded by the thread pool size, and adding threads increases context-switch overhead.
+
+\subsection{Memory-Mapped Backend}
+
+The memory-mapped backend opens checkpoint files with \texttt{mmap} and returns data by reading from the mapped region. The operating system loads pages from disk on demand as page faults occur. This approach avoids explicit per-read syscall overhead and allows the kernel to manage loading order based on access patterns.
+
+The backend uses pre-faulted buffers where alignment constraints are satisfied, and falls back to buffered I/O when alignment cannot be guaranteed. Pre-faulting ensures that access to a buffer does not trigger an unexpected page fault during a timed section, which would corrupt the measurement. The fallback to buffered I/O means that unaligned tensor ranges do not invalidate the comparison between backends.
+
+\subsection{io\_uring Backend}
+
+The io\_uring backend submits read requests through shared submission and completion rings. Requests are prepared as submission queue entries in memory and submitted with a single \texttt{io\_uring\_enter} system call. Completions are collected by polling the completion ring from a dedicated event-loop thread.
+
+The backend uses fixed buffers that are pre-registered with the kernel via \texttt{io\_uring\_register}. This eliminates per-request memory allocation and reduces the overhead of setting up each individual request. Fixed buffers also allow the kernel to perform direct DMA to the buffer, bypassing intermediate kernel buffers.
+
+Requests are submitted in batches. The application submits several requests, then polls for completions, then submits the next batch. This allows the submission path to keep the device queue populated while avoiding thread blocking. The batch size is configurable and represents a trade-off: larger batches increase the amount of data in flight (improving throughput under high load) but increase the minimum latency for the first request in a batch.
+
+\section{Checkpoint Format Support}
+
+TensorStore supports two checkpoint formats.
+
+SafeTensors stores all tensors in a single file with a header. The header lists each tensor's name, dtype, shape, and byte offset. The format produces a largely sequential access pattern once the header is parsed. Figure~\ref{fig:safetensors_layout} shows the layout.
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.75\textwidth]{\figdir/safetensors-layout.png}
+    \caption{SafeTensors file layout. The header describes each tensor and its byte offset within the file. Data is stored contiguously.}
+    \label{fig:safetensors_layout}
+\end{figure}
+
+The ServerlessLLM-style partitioned layout distributes tensors across multiple files called partitions~\cite{FU:2024,serverlessllm_repo}. A central index file maps each tensor to its partition file and offset. The layout increases the number of file operations and introduces per-file overhead. Figure~\ref{fig:serverlessllm_layout} shows the structure.
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.75\textwidth]{\figdir/serverlessllm-layout.png}
+    \caption{ServerlessLLM partitioned checkpoint structure. Tensors are distributed across multiple partition files, with a central index mapping tensor names to locations.}
+    \label{fig:serverlessllm_layout}
+\end{figure}
+
+\section{Python Bindings}
+
+TensorStore exposes its functionality through Python bindings to enable integration with serving workflows. The bindings are implemented using PyO3, which provides Rust-to-Python interoperability with minimal overhead.
+
+Three interfaces are provided. A synchronous loading interface calls the Rust backend directly from Python, blocking until loading completes. A memory-mapped loading interface opens checkpoint files as memory maps and provides lazy tensor access. An asynchronous loading interface exposes the async Rust loading path as an awaitable Python coroutine using \texttt{pyo3-async-runtimes} with the Tokio runtime.
+
+The async interface is appropriate for use in async Python code such as FastAPI applications. However, it is not used in the vLLM integration path because vLLM's model loader operates synchronously. Specifically, vLLM's \texttt{DefaultModelLoader} yields weights through a generator interface where each weight must be fully loaded and returned before the next weight is requested. There is no async variant of this interface, and introducing async behaviour inside the loader (for example, by running an async event loop from within the synchronous callback) would require the event loop to be manually driven, which is fragile and not representative of any real async workflow.
+
+\section{vLLM Integration}
+
+Integration with vLLM is implemented through a custom model loader registered via the \texttt{register\_model\_loader} interface. The loader subclasses \texttt{DefaultModelLoader} and intercepts weight loading requests, routing them through TensorStore backends.
+
+The loader is registered at vLLM startup time and is invoked for every weight load during model initialisation. Because vLLM's loader interface is synchronous, the TensorStore synchronous backend is used in this path. Memory-mapped loading is also available and may be preferred when the checkpoint file is on local NVMe storage, since the kernel's page fault handler can overlap the loading of non-contiguous tensors more effectively than a fixed thread pool.
+
+\section{Design Decisions}
+
+Table~\ref{tab:design_decisions} documents the primary architectural decisions, the alternatives considered, and the rationale for the chosen approach.
+
+\begin{sidewaystable}
+\small
+\caption{Primary design decisions and trade-offs}
+\label{tab:design_decisions}
+\centering
+\begin{tabular}{p{3cm}p{3.5cm}p{5cm}}
+\toprule
+\textbf{Decision} & \textbf{Alternative} & \textbf{Rationale} \\
+\midrule
+Rust core engine & Python or C++ & Rust provides memory safety without garbage collector overhead, direct access to io\_uring via tokio-uring, and PyO3 bindings with minimal overhead. Python's GIL limits true parallelism; C++ lacks memory safety guarantees. \\
+\midrule
+Normalised request interface & Backend-specific APIs & A common interface enables fair backend comparison. Without it, each backend would expose a different API and converting between them would introduce measurement artefacts. \\
+\midrule
+Separate evaluation harness & Inline measurement in loader & Inline measurement risks contaminating the measured workload with timing overhead. A separate harness with warm-up runs and statistical reporting is a standard practice. \\
+\midrule
+Thread pool (POSIX backend) & Asyncio or epoll & Asyncio in Python cannot submit kernel I/O asynchronously without wrapping it in a thread. epoll requires an event loop that adds complexity. A thread pool maps naturally to concurrent blocking I/O. \\
+\midrule
+Fixed buffers (io\_uring) & Per-request allocated buffers & Per-request allocation adds latency on every operation and increases allocator pressure. Fixed buffers eliminate this cost but require the application to manage buffer lifecycle explicitly. \\
+\midrule
+PyO3 bindings & CFFI or ctypes & PyO3 generates bindings with compile-time type checking and zero-copy object conversion where possible. CFFI and ctypes involve more marshalling overhead and lack compile-time safety. \\
+\midrule
+Memory-mapped backend as optional mode & Memory-mapped only & Some deployments use network filesystems where mmap has poor semantics. Making it optional means the synchronous backend can serve as the reliable fallback. \\
+\midrule
+Single-file and partitioned formats & Single format only & The SafeTensors format represents a simple single-file workload; ServerlessLLM's partitioned layout introduces per-file overhead. Supporting both enables evaluation across different checkpoint structures. \\
+\bottomrule
+\end{tabular}
+\normalsize
+\end{sidewaystable}
+
+\section{Rejected Alternatives}
+
+Several alternatives were considered and rejected.
+
+Implementing backends in Python asyncio was rejected because Python's asyncio event loop cannot submit kernel I/O operations asynchronously without running them in a thread. The Linux kernel's async I/O interfaces (io\_uring, aio) are accessible only through system calls that require kernel mode transitions; asyncio wraps these in threads for the Python programmer, which provides concurrency but not genuine asynchronous I/O at the kernel level. Using asyncio for I/O benchmarking would therefore measure thread-pool performance rather than async I/O performance.
+
+Implementing backends in C++ was rejected in favour of Rust. While C++ provides equivalent control over I/O submission and memory management, it does not provide the same memory safety guarantees. A Rust implementation that misuses memory (for example, returning a borrowed reference to a dropped buffer) is caught by the borrow checker at compile time. In C++, such an error would manifest as undefined behaviour at runtime, potentially corrupting benchmark results in subtle ways.
+
+Implementing the evaluation harness inside the loader was rejected because it would conflate measurement overhead with loader performance. Any timing code added to the hot path introduces overhead that is absent from the real serving path. A separate harness that measures end-to-end wall time (rather than instrumenting individual functions) avoids this problem.
+
+Implementing async loading in vLLM was considered but rejected because vLLM's model loader architecture does not support it. The loader uses a synchronous generator interface; adding async behaviour would require driving an event loop from within a synchronous callback, which is architecturally unsound and would not reflect any real deployment pattern. The async Python interface is retained for non-vLLM use cases, where it provides genuine utility in async Python applications.

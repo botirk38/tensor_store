@@ -1,0 +1,38 @@
+\chapter{Introduction}
+\label{chap:introduction}
+
+\section{Context and Motivation}
+
+Large language models are large. A model with seven billion parameters in float16 requires roughly fourteen gigabytes of storage and a similar amount of RAM or VRAM to hold the weights alone. In serverless and multi-tenant inference environments, GPU memory is a shared resource. When a model is not actively serving requests, keeping it resident wastes memory that could serve other tenants. Systems therefore evict idle models and reload them on demand.
+
+When a request arrives for an evicted model, the inference pipeline cannot begin until the checkpoint is fully loaded into memory. For large models this loading step takes time. In a production serving environment, this manifests as cold-start latency: the delay between a request arriving and the model being ready to generate the first token. For latency-sensitive applications this delay is directly visible to users.
+
+Modern NVMe storage devices offer aggregate bandwidth of several gigabytes per second. Despite this, checkpoint loading in practice often achieves a fraction of the advertised throughput. The gap between peak hardware capability and effective loading performance suggests that the bottleneck lies not in the storage medium but in how loading requests are submitted and managed through the software stack.
+
+This project investigates the checkpoint loading path as a systems problem. It examines how the choice of I/O submission mechanism affects effective throughput and latency when loading real LLM checkpoints, and whether asynchronous I/O through Linux io\_uring can meaningfully improve cold-start performance in inference serving environments.
+
+\section{Checkpoint Loading as an I/O Submission Problem}
+
+Checkpoint loading is fundamentally a read-intensive workload. A loader issues a set of read operations derived from checkpoint metadata. Each operation specifies a file path, a byte offset, and a length. Tensor boundaries and offsets must be respected, which constrains how freely a loader can reorder or merge requests.
+
+Storage hardware, particularly NVMe devices with internal queueing, performs best when given many outstanding requests to work with concurrently. The internal parallelism of the device can only be exploited if the submission path sustains a sufficient queue depth. Synchronous I/O, where each thread blocks waiting for its read to complete before issuing the next, tends to produce shallow effective queue depth. Asynchronous I/O, where requests are submitted in batches and completions are collected separately, can sustain deeper queues and more continuous device utilisation.
+
+The central question of this project is whether this theoretical advantage of asynchronous I/O translates into measurable and reproducible improvements for checkpoint loading in LLM serving contexts, and under what conditions the advantage is largest or smallest.
+
+\section{TensorStore}
+
+This project presents TensorStore, a checkpoint loading framework designed to evaluate I/O submission strategies under controlled and reproducible conditions. TensorStore parses checkpoint metadata and produces a normalised set of byte-range read requests that are then executed by a selectable I/O backend. By keeping the request trace identical across backends, the framework isolates the effect of submission strategy from checkpoint layout or parsing overhead.
+
+TensorStore supports two checkpoint formats. SafeTensors stores all tensor data contiguously in a single file with a metadata header. This layout produces a largely sequential access pattern once the header is parsed. The ServerlessLLM-style partitioned layout distributes tensor ranges across multiple files, increasing request count and file-switching overhead. This layout places greater stress on the submission path and better exposes the differences between I/O models.
+
+Three I/O backends are implemented. The synchronous backend issues blocking POSIX read calls. The memory-mapped backend uses mmap with lazy page faulting for on-demand data loading. The io\_uring backend submits read requests through Linux io\_uring rings, enabling batched submission and non-blocking completion handling.
+
+Python bindings are provided to enable integration testing within representative serving workflows. Integration with vLLM is used as a concrete case study.
+
+\section{Contributions}
+
+This project makes three concrete contributions. The first is a reproducible evaluation framework, TensorStore, that isolates I/O submission effects from checkpoint parsing and layout by generating identical request traces across backends. The second is a systematic experimental comparison of synchronous POSIX I/O, memory-mapped access, and Linux io\_uring across real LLM checkpoints and two checkpoint formats, quantifying the magnitude and limits of the async I/O advantage. The third is an analysis of how the backend choice interacts with checkpoint layout, model size, and serving engine integration, with practical guidance for engineers working on inference storage systems.
+
+\section{Report Structure}
+
+The report proceeds as follows. Chapter~\ref{chap:background} reviews related work in checkpoint formats, serverless inference systems, and Linux I/O mechanisms. Chapter~\ref{chap:system_context} defines the system context, describes the cold-start pipeline, and clarifies the experimental constraints. Chapter~\ref{chap:design} describes the TensorStore architecture and design decisions. Chapter~\ref{chap:implementation} covers the implementation and software engineering process. Chapter~\ref{chap:methodology} describes the experimental methodology. Chapter~\ref{chap:results} presents the results. Chapter~\ref{chap:discussion} discusses the findings. Chapter~\ref{chap:professional_issues} examines professional and ethical considerations. Chapter~\ref{chap:conclusion} concludes.

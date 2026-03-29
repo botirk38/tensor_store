@@ -1,0 +1,26 @@
+\chapter{System Context and Problem Definition}
+\label{chap:system_context}
+
+\section{The Cold-Start Pipeline in Serverless LLM Inference}
+
+When a serverless inference platform receives a request for a model that is not currently resident in memory, it must reload the model's checkpoint from persistent storage before inference can begin. This sequence of steps constitutes the cold-start pipeline.
+
+The pipeline begins when a request arrives for an absent model. The platform identifies the checkpoint location and initiates loading. The loader reads checkpoint metadata to determine the set of tensors and their storage locations. It then issues read requests to retrieve each tensor's data. As data arrives, it is copied into the target memory location. Once all tensors are loaded, the model initialises its runtime state. Inference then proceeds.
+
+Checkpoint loading occupies the longest segment of this pipeline for large models. The duration depends on the total checkpoint size, the storage device bandwidth, the number and size of individual read requests, and the efficiency of the submission path between the loader and the storage device.
+
+\section{Experimental Constraints}
+
+This project evaluates checkpoint loading in isolation, separate from the broader inference pipeline. This isolation is deliberate. By holding the checkpoint layout, request trace, and measurement path constant across backends, differences in loading performance can be attributed specifically to the I/O submission mechanism rather than to model initialisation, runtime setup, or scheduling effects.
+
+One design decision requires explicit explanation: the project does not permit loaders to merge, split, or reorder byte-range requests when comparing backends. This constraint is not a claim that real loaders cannot perform such optimisations. It is a deliberate experimental choice that ensures fair comparison. If loaders were permitted to restructure the workload, performance differences could reflect scheduling decisions at the application layer rather than the properties of the I/O submission mechanism. By fixing the request trace, the evaluation isolates the question of how efficiently each backend executes a given set of reads.
+
+In practice, checkpoint format designers and loader authors can make different trade-offs. The implications of different application-level scheduling policies are beyond the scope of this evaluation.
+
+\section{The Submission Bottleneck Hypothesis}
+
+The central hypothesis of this project is that checkpoint loading performance is often limited by the I/O submission path rather than by storage bandwidth. Under synchronous I/O, each read operation blocks the issuing thread until completion. Even when multiple threads are used, the coupling of submission and completion limits the number of outstanding requests. The NVMe device sees an intermittent stream of requests with idle gaps between them, preventing full exploitation of its internal queueing and parallelism.
+
+Under io\_uring, submission and completion are decoupled. An application can prepare many requests in advance and submit them in a batch with a single system call. The kernel processes them asynchronously and delivers completion events separately. This model allows the application to maintain a high queue depth without blocking threads, keeping the NVMe device's queues populated more continuously.
+
+The hypothesis predicts that io\_uring will achieve higher effective throughput and higher read IOPS than synchronous I/O, particularly for fragmented checkpoint layouts where the number of requests is high. Whether this advantage survives the complexity of a full serving pipeline, and whether it is large enough to matter in practice, are the empirical questions this project addresses.

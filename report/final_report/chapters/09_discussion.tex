@@ -1,0 +1,72 @@
+\chapter{Discussion and Critical Analysis}
+\label{chap:discussion}
+
+\section{What the Results Mean in Plain Terms}
+
+The evaluation demonstrates that io\_uring consistently outperforms synchronous POSIX I/O for checkpoint loading workloads. The magnitude of the advantage varies with checkpoint layout and integration context, but the direction is consistent across all tested configurations.
+
+The central explanation is queue depth. Synchronous I/O ties submission to completion: each thread waits for its current read to finish before submitting the next. This limits the number of outstanding requests to the number of threads. Even with a thread pool, the achievable queue depth is modest. NVMe devices, which are optimised for operation under high queue depth, sit partially idle between bursts of requests.
+
+io\_uring decouples submission from completion. Requests are prepared in memory and submitted in batches with minimal syscall overhead. The application can maintain hundreds of outstanding requests without blocking any threads. The kernel processes them asynchronously, and the device sees a continuous stream of work. The higher read IOPS sustained by io\_uring are direct evidence of this deeper queueing.
+
+These findings are consistent with the broader systems literature on async I/O and NVMe performance. Jiang et al.\ (2022) characterise NVMe command processing overhead in detail and show that per-command software overhead dominates at low queue depths, which is exactly the regime that synchronous I/O occupies. The checkpoint loading domain does not appear to have received direct attention in the literature, but the underlying I/O behaviour is well understood. What this work adds is quantification of the effect specifically for LLM checkpoint workloads, which have distinctive access patterns derived from tensor boundaries and format metadata.
+
+\section{Effect of Checkpoint Layout}
+
+Checkpoint layout has a significant effect on the relative performance of backends. The SafeTensors layout, with its single file and largely sequential access, is more efficient overall because it minimises per-file overhead. However, the io\_uring advantage as a percentage of the synchronous baseline is larger under the partitioned layout. This is because the partitioned layout generates more requests, which amplifies the effect of submission overhead. Under high-request-count workloads, the gap between blocking and batched asynchronous submission widens.
+
+This has implications for format designers. Partitioned formats offer benefits in terms of modular loading and distribution, but they increase the pressure on the I/O submission path. A partitioned format paired with a synchronous loader may perform worse than a contiguous format paired with the same loader. The opposite is true when the loader can sustain high queue depth through asynchronous submission.
+
+\section{Where the Gains Were Smaller Than Expected}
+
+It is equally important to examine where io\_uring provided less advantage than anticipated. Two cases stand out.
+
+First, when the checkpoint layout is contiguous and the working set fits in page cache, the synchronous baseline performs adequately. The difference between blocking and async submission is most pronounced when there are many individual requests to submit. When the request count is low and each request is large, the marginal cost of an async submission model is small relative to the total transfer time. This suggests that io\_uring delivers the greatest relative benefit for highly partitioned layouts, not for single-file contiguous checkpoints.
+
+Second, in the vLLM integration, backend-level performance gains did not propagate proportionally to end-to-end cold-start latency. The model loading step is one component of initialisation, which also includes runtime setup, worker thread spawning, and KV cache allocation. When these other steps dominate the critical path, optimising the I/O backend yields diminishing returns. This is not a failure of io\_uring; it is a reminder that the relevant metric is the end-to-end latency that users experience, not backend throughput in isolation.
+
+These observations do not undermine the core finding. They refine it: async I/O matters most when checkpoint layouts are fragmented and when loading time is the actual bottleneck in the deployment scenario. For single-file checkpoints or when loading is not the dominant cost, the practical benefit of moving to io\_uring is reduced.
+
+\section{Limitations of io\_uring for This Workload}
+
+Despite its advantages, io\_uring introduces complexity that synchronous I/O does not have. The application must manage ring buffers, track outstanding requests, and handle completions explicitly. Fixed buffer registration requires upfront memory commitment. On non-Linux platforms, io\_uring is not available, requiring fallback to less optimal backends.
+
+There are also limits to what io\_uring can achieve. If the workload is already bottlenecked on storage bandwidth rather than submission overhead, increasing queue depth does not help. The experiments show this: io\_uring improves throughput significantly but does not approach the theoretical peak bandwidth of the NVMe device. The remaining gap is likely due to a combination of filesystem overhead, request alignment constraints, and device-level limits.
+
+The io\_uring API itself has areas that are suboptimal for checkpoint loading. Fixed buffer registration works well when all buffers are the same size, but checkpoint tensors vary in size. Managing variable-sized buffers with fixed registration requires partitioning each tensor into fixed-size chunks, which adds complexity. A future io\_uring extension for variable-sized registered buffers would simplify this.
+
+\section{Integration Context}
+
+The vLLM integration results show that backend-level gains do not fully propagate through the wider serving stack. Model loading is one component of the initialisation sequence, which also includes runtime setup, worker thread spawning, and KV cache allocation. As checkpoint size decreases relative to these other costs, the relative importance of the loading mechanism decreases.
+
+This is not an argument against optimising checkpoint loading. In systems where loading time dominates initialisation, even modest improvements translate directly to reduced cold-start latency. The relevant question is whether loading is the dominant cost in a given deployment scenario, and that varies by model size, serving configuration, and storage hardware.
+
+\section{Why Async Did Not Appear in vLLM}
+
+The attempt to add an async model loader path to vLLM was instructive. vLLM's model loader interface is defined at the Python level and is fundamentally synchronous. The loader yields weights through a generator, and each weight must be available before the next is requested. This design does not support async submission because it expects immediate availability.
+
+Adding an async path required fabricating a Python event loop inside the synchronous loader callback, which is fragile and unsupported by vLLM's architecture. The correct lesson is not that async checkpoint loading is impossible, but that it requires changes at the serving engine level rather than at the loader level. Future serving engines that support async model initialisation could take advantage of io\_uring-backed loading more naturally.
+
+\section{What Matters for Practitioners}
+
+The results have practical implications for engineers building inference serving systems.
+
+\textbf{Format choice interacts with loader choice.} A contiguous checkpoint format such as SafeTensors paired with a synchronous loader is a reasonable default for many deployments. The overhead of a fragmented layout is only justified when the distribution benefits are significant and the serving engine can exploit async I/O natively. For systems that currently use a partitioned format with a synchronous loader, switching to io\_uring under the same format will yield the largest relative improvement.
+
+\textbf{Loading is only one part of cold-start latency.} Before investing in loader-level optimisation, engineers should profile the full initialisation sequence to confirm that loading is actually the bottleneck. In configurations with large KV cache allocations or expensive runtime setup, loader optimisation may have little effect on the metric that matters: time-to-first-token.
+
+\textbf{Platform constraints matter.} io\_uring is Linux-only. Systems targeting macOS, Windows, or container environments with restricted kernel access cannot rely on it. A fallback to memory-mapped I/O is available, and mmap provides meaningful improvement over naive synchronous loading in most cases by eliminating the per-read syscall overhead for sequential access patterns.
+
+\section{Critical Reflection on the Evaluation}
+
+The evaluation has several limitations that should inform how broadly the findings can be interpreted.
+
+All experiments were conducted on a single hardware and software configuration: a consumer-grade NVMe SSD in a workstation environment. Enterprise storage devices with different queueing architectures, larger internal buffers, or dedicated hardware controllers may exhibit different sensitivity to submission overhead. The relative ordering of backend performance is likely robust, but the absolute magnitude of improvements could vary on different hardware.
+
+The evaluation is limited to two checkpoint formats and two model sizes. Additional formats — such as the DeepSpeed ZeRO-2 partitioned layout or the Fabrice-archive single-file format — may exhibit different access patterns. Larger models with different tensor size distributions may also show different sensitivity to request size and fragmentation.
+
+The evaluation examines checkpoint loading in isolation. In a full inference pipeline, interactions between loading and other initialisation steps may affect overall cold-start latency in ways that the isolated evaluation does not capture. The vLLM integration partially addresses this, but the integration was conducted with a single model size and serving configuration.
+
+Finally, the benchmark harness relies on drop\_caches to control page cache state. In production environments, cache eviction policy is under operating system control, and the behaviour under memory pressure may differ from the controlled cold-cache conditions tested here. Results should therefore be interpreted as upper-bound estimates of achievable improvement under managed cache conditions.
+
+Despite these limitations, the core finding is robust: synchronous I/O consistently underperforms io\_uring for checkpoint loading workloads, and the gap widens with increased request count and fragmentation. The directional finding is robust because it follows directly from the underlying I/O mechanics.

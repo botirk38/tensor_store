@@ -1,0 +1,44 @@
+\chapter{Conclusion}
+\label{chap:conclusion}
+
+\section{Research Questions Answered}
+
+This section returns directly to each research question posed at the start of the project.
+
+\textbf{RQ1: How does io\_uring compare to synchronous POSIX I/O as an I/O submission mechanism for LLM checkpoint loading?}
+
+io\_uring consistently outperforms synchronous POSIX I/O for checkpoint loading workloads. The advantage is robust across checkpoint formats, model sizes, and cache conditions. The mechanism is straightforward: io\_uring sustains deeper request queues, NVMe devices perform better under deeper queues, and the resulting IOPS and throughput improvements directly reduce checkpoint loading time. The synchronous baseline does not approach device bandwidth limits because submission overhead limits the number of outstanding requests.
+
+\textbf{RQ2: How does checkpoint layout affect the relative performance of these I/O submission mechanisms?}
+
+Partitioned checkpoint layouts generate more individual read requests than contiguous layouts. Under synchronous I/O, each request is submitted and completed sequentially, which amplifies per-request submission overhead. Under io\_uring, requests are submitted in batches and processed concurrently, which amortises that overhead. The io\_uring advantage as a percentage of the synchronous baseline is therefore larger for partitioned layouts. For contiguous layouts, the gap narrows because per-request overhead is a smaller fraction of total transfer time.
+
+\textbf{RQ3: Under what integration conditions does the I/O backend choice have the largest practical effect on cold-start latency?}
+
+The backend choice matters most when two conditions hold simultaneously: the checkpoint layout is partitioned, and the loading step dominates the initialisation critical path. When the loading step competes with other expensive initialisation operations — KV cache allocation, runtime setup, worker thread spawning — the relative importance of I/O backend diminishes. In the vLLM integration, end-to-end cold-start latency showed smaller gains than the isolated loading benchmarks suggested, because loading was not the only significant cost in the initialisation sequence.
+
+\textbf{RQ4: What are the practical implications of these findings for inference serving systems?}
+
+For serving engineers, the results suggest several actionable conclusions. First, format choice and loader choice interact: a partitioned format paired with a synchronous loader is likely the worst combination for loading performance; a contiguous format paired with io\_uring is likely the best. Second, before investing in I/O optimisation, engineers should profile the full initialisation sequence to confirm that loading is the actual bottleneck. Third, memory-mapped I/O provides a meaningful intermediate option for platforms where io\_uring is unavailable, and is simpler to implement than a full io\_uring backend.
+
+The open-source TensorStore framework produced by this project provides a reproducible basis for further systems research in this space. The framework isolates I/O submission strategy from checkpoint format and parsing overhead, which allows direct comparison of backends under identical workloads.
+
+\section{Main Limitations}
+
+The evaluation was conducted on consumer-grade NVMe storage in a single hardware and software configuration. Enterprise storage hardware may exhibit different queueing characteristics, and the absolute magnitude of improvements could differ on different devices. The model set was limited to two sizes; additional model architectures and tensor size distributions may reveal different sensitivity patterns. The evaluation examined loading in isolation; a full inference pipeline introduces interactions between loading and other initialisation steps that were not captured here.
+
+The vLLM integration was limited to synchronous loaders, following the discovery that vLLM's architecture does not support async model loading at the loader level. Future serving engines designed with async model initialisation in mind could exploit io\_uring-backed loading more naturally.
+
+\section{Future Work}
+
+Several directions for future work are supported by these findings.
+
+\textbf{Hardware breadth.} Evaluating io\_uring checkpoint loading on enterprise NVMe devices, GPU-direct storage paths, and distributed storage systems would establish whether the submission-bound bottleneck observed here is consistent across storage hierarchies.
+
+\textbf{Format evaluation.} A systematic comparison of additional checkpoint formats — ZeRO-2 partitioned layouts, Fabrice archives, model parallelism checkpoints — under controlled backend conditions would give format designers more concrete guidance on the I/O implications of their layout choices.
+
+\textbf{Async-native serving engines.} The vLLM architecture does not support async model loading, which limits how io\_uring can be exploited in current vLLM deployments. Future serving engines that expose async model initialisation as a first-class interface could integrate io\_uring loading more naturally, potentially yielding end-to-end cold-start improvements that isolated benchmarks cannot capture.
+
+\textbf{Gradient descent on storage.} Beyond checkpoint loading, the broader class of large model I/O workloads — gradient checkpointing, speculative decoding cache management, KV cache eviction and reloading — share similar access patterns. Extending the TensorStore framework to cover these scenarios would broaden its utility as a systems research tool.
+
+These directions are speculative rather than promised. Each is defensible as future work arising from the findings, not a continuation of work that should have been completed here.
