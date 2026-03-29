@@ -57,42 +57,35 @@ enum Commands {
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 enum SafeTensorsCase {
-    /// io_uring async load (Linux only)
-    IoUringLoad,
-    /// io_uring prewarmed load (Linux only)
-    IoUringPrewarmed,
-    /// Tokio async load
-    TokioLoad,
-    /// Tokio prewarmed load
-    TokioPrewarmed,
+    /// Heuristic default load
+    Default,
     /// Synchronous load
     Sync,
-    /// Memory-mapped load
+    /// Asynchronous load
+    Async,
+    /// Memory-mapped open
     Mmap,
-    /// Original safetensors crate load
-    Original,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 enum ServerlessLLMCase {
-    /// Async load
-    Async,
+    /// Heuristic default load
+    Default,
     /// Synchronous load
     Sync,
-    /// Memory-mapped load
+    /// Asynchronous load
+    Async,
+    /// Memory-mapped open
     Mmap,
 }
 
 impl SafeTensorsCase {
     fn as_str(&self) -> &'static str {
         match self {
-            Self::IoUringLoad => "io-uring-load",
-            Self::IoUringPrewarmed => "io-uring-prewarmed",
-            Self::TokioLoad => "tokio-load",
-            Self::TokioPrewarmed => "tokio-prewarmed",
+            Self::Default => "default",
             Self::Sync => "sync",
+            Self::Async => "async",
             Self::Mmap => "mmap",
-            Self::Original => "original",
         }
     }
 }
@@ -100,9 +93,10 @@ impl SafeTensorsCase {
 impl ServerlessLLMCase {
     fn as_str(&self) -> &'static str {
         match self {
-            Self::Async => "async-load",
-            Self::Sync => "sync-load",
-            Self::Mmap => "mmap-load",
+            Self::Default => "default",
+            Self::Sync => "sync",
+            Self::Async => "async",
+            Self::Mmap => "mmap",
         }
     }
 }

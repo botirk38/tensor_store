@@ -15,6 +15,8 @@ uv run python download_models.py Qwen/Qwen2-0.5B
 cd ..
 ```
 
+For a broader benchmark ladder, also download `gpt2`, `TinyLlama/TinyLlama-1.1B-Chat-v1.0`, `Qwen/Qwen2-1.5B`, and `EleutherAI/pythia-2.8b-deduped`.
+
 Run demos:
 
 ```bash

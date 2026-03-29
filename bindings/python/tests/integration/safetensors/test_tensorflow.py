@@ -4,8 +4,10 @@ import pytest
 
 tf = pytest.importorskip("tensorflow")
 
-from tensor_store_py.tensorflow import load_file as tf_load_file
-from tensor_store_py.tensorflow import load_file_mmap as tf_load_file_mmap
+from tensor_store_py.tensorflow import load_safetensors as tf_load_safetensors
+from tensor_store_py.tensorflow import (
+    load_safetensors_async as tf_load_safetensors_async,
+)
 
 
 FIXED_SEED = 42
@@ -50,17 +52,17 @@ def _attention_computation(weights, layer_idx=0, hidden_dim=128):
 class TestTensorFlowLoad:
     """Test TensorFlow tensor loading from SafeTensors files."""
 
-    def test_load_file_sync_basic(self, safetensors_path):
+    def test_load_safetensors_sync_basic(self, safetensors_path):
         """Test basic sync loading with TensorFlow."""
-        weights = tf_load_file(safetensors_path)
+        weights = tf_load_safetensors(safetensors_path)
         assert isinstance(weights, dict)
         assert len(weights) > 0
         for name, tensor in weights.items():
             assert isinstance(tensor, tf.Tensor), f"{name} is not a tf.Tensor"
 
-    def test_load_file_mmap_basic(self, safetensors_path):
-        """Test basic mmap loading with TensorFlow."""
-        weights = tf_load_file_mmap(safetensors_path)
+    def test_load_safetensors_async_basic(self, safetensors_path):
+        """Test basic async loading with TensorFlow."""
+        weights = tf_load_safetensors_async(safetensors_path)
         assert isinstance(weights, dict)
         assert len(weights) > 0
         for name, tensor in weights.items():
@@ -68,23 +70,23 @@ class TestTensorFlowLoad:
 
     def test_tensor_shapes(self, safetensors_path, hidden_dim):
         """Test that tensor shapes match PyTorch loads for the same file."""
-        from tensor_store_py.torch import load_file as pytorch_load_file
+        from tensor_store_py.torch import load_safetensors as pytorch_load_safetensors
 
-        pt_weights = pytorch_load_file(safetensors_path)
-        tf_weights = tf_load_file(safetensors_path)
+        pt_weights = pytorch_load_safetensors(safetensors_path)
+        tf_weights = tf_load_safetensors(safetensors_path)
         for name, pt in pt_weights.items():
             assert name in tf_weights
             assert tuple(tf_weights[name].shape) == tuple(pt.shape)
 
     def test_attention_computation_sync(self, safetensors_path, hidden_dim):
         """Test attention computation with sync-loaded TensorFlow weights."""
-        tf_weights = tf_load_file(safetensors_path)
+        tf_weights = tf_load_safetensors(safetensors_path)
         output = _attention_computation(tf_weights, hidden_dim=hidden_dim)
         assert output.shape == (1, 10, hidden_dim)
 
-    def test_attention_computation_mmap(self, safetensors_path, hidden_dim):
-        """Test attention computation with mmap-loaded TensorFlow weights."""
-        tf_weights = tf_load_file_mmap(safetensors_path)
+    def test_attention_computation_async(self, safetensors_path, hidden_dim):
+        """Test attention computation with async-loaded TensorFlow weights."""
+        tf_weights = tf_load_safetensors_async(safetensors_path)
         output = _attention_computation(tf_weights, hidden_dim=hidden_dim)
         assert output.shape == (1, 10, hidden_dim)
 
@@ -94,19 +96,19 @@ class TestTensorFlowDtypes:
 
     def test_float32(self, safetensors_path_dtypes):
         """Test float32 tensor loading."""
-        weights = tf_load_file(safetensors_path_dtypes)
+        weights = tf_load_safetensors(safetensors_path_dtypes)
         if "f32" in weights:
             assert weights["f32"].dtype == tf.float32
 
     def test_int64(self, safetensors_path_dtypes):
         """Test int64 tensor loading."""
-        weights = tf_load_file(safetensors_path_dtypes)
+        weights = tf_load_safetensors(safetensors_path_dtypes)
         if "i64" in weights:
             assert weights["i64"].dtype == tf.int64
 
     def test_bool(self, safetensors_path_dtypes):
         """Test bool tensor loading."""
-        weights = tf_load_file(safetensors_path_dtypes)
+        weights = tf_load_safetensors(safetensors_path_dtypes)
         if "bool" in weights:
             assert weights["bool"].dtype == tf.bool
 
@@ -122,11 +124,11 @@ class TestTensorFlowRoundtrip:
         }
         path = tmp_path / "test.safetensors"
 
-        from tensor_store_py.tensorflow import save_file as tf_save_file
+        from tensor_store_py.tensorflow import save_safetensors as tf_save_safetensors
 
-        tf_save_file(tensors, path)
+        tf_save_safetensors(tensors, path)
 
-        loaded = tf_load_file(path)
+        loaded = tf_load_safetensors(path)
         assert set(loaded.keys()) == {"weight1", "weight2"}
         assert tf.reduce_all(tf.equal(loaded["weight1"], tensors["weight1"]))
         assert tf.reduce_all(tf.equal(loaded["weight2"], tensors["weight2"]))

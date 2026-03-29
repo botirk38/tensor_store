@@ -16,10 +16,9 @@ pyo3::create_exception!(
 );
 
 use api::{
-    convert_safetensors_to_serverlessllm, load_safetensors, load_safetensors_mmap,
-    load_safetensors_sync, load_serverlessllm, load_serverlessllm_mmap, load_serverlessllm_sync,
-    open_safetensors, open_safetensors_mmap, open_safetensors_sync, open_serverlessllm,
-    open_serverlessllm_mmap, open_serverlessllm_sync, save_safetensors, save_safetensors_bytes,
+    convert_safetensors_to_serverlessllm, load_safetensors, load_safetensors_async,
+    load_safetensors_sync, load_serverlessllm, load_serverlessllm_async, load_serverlessllm_sync,
+    open_safetensors, open_serverlessllm, save_safetensors, save_safetensors_bytes,
     SafeTensorsHandlePy, ServerlessLLMHandlePy,
 };
 
@@ -30,20 +29,16 @@ fn _tensor_store_rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SafeTensorsHandlePy>()?;
     m.add_class::<ServerlessLLMHandlePy>()?;
     m.add_function(wrap_pyfunction!(open_safetensors, m)?)?;
-    m.add_function(wrap_pyfunction!(open_safetensors_sync, m)?)?;
-    m.add_function(wrap_pyfunction!(open_safetensors_mmap, m)?)?;
     m.add_function(wrap_pyfunction!(open_serverlessllm, m)?)?;
-    m.add_function(wrap_pyfunction!(open_serverlessllm_sync, m)?)?;
-    m.add_function(wrap_pyfunction!(open_serverlessllm_mmap, m)?)?;
     m.add_function(wrap_pyfunction!(load_safetensors, m)?)?;
+    m.add_function(wrap_pyfunction!(load_safetensors_async, m)?)?;
     m.add_function(wrap_pyfunction!(load_safetensors_sync, m)?)?;
-    m.add_function(wrap_pyfunction!(load_safetensors_mmap, m)?)?;
     m.add_function(wrap_pyfunction!(load_serverlessllm, m)?)?;
+    m.add_function(wrap_pyfunction!(load_serverlessllm_async, m)?)?;
     m.add_function(wrap_pyfunction!(load_serverlessllm_sync, m)?)?;
-    m.add_function(wrap_pyfunction!(load_serverlessllm_mmap, m)?)?;
+    m.add_function(wrap_pyfunction!(convert_safetensors_to_serverlessllm, m)?)?;
     m.add_function(wrap_pyfunction!(save_safetensors, m)?)?;
     m.add_function(wrap_pyfunction!(save_safetensors_bytes, m)?)?;
-    m.add_function(wrap_pyfunction!(convert_safetensors_to_serverlessllm, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add("TensorStoreError", m.py().get_type::<TensorStoreError>())?;
     Ok(())

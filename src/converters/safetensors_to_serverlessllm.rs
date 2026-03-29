@@ -6,8 +6,11 @@
 
 use crate::backends;
 use crate::formats::error::{WriterError, WriterResult};
-use crate::formats::safetensors::{Dtype, Model};
-use crate::formats::serverlessllm::{write_index, write_partition, writer::TensorWriteEntry};
+use crate::formats::safetensors::Model;
+use crate::formats::serverlessllm::{
+    write_index, write_index_sync, write_partition, write_partition_sync, writer::TensorWriteEntry,
+};
+use crate::formats::traits::TensorView;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
@@ -42,34 +45,113 @@ pub async fn convert_safetensors_to_serverlessllm(
             .load(shard_path)
             .await
             .map_err(WriterError::from)?;
-        let model = Model::from_bytes(shard)
-            .map_err(|e| WriterError::Io(std::io::Error::other(e.to_string())))?;
-        let tensors = model.tensors();
-        for name in model.tensor_names() {
-            let tensor_name = name.as_ref().to_owned();
-            if !seen_names.insert(tensor_name.clone()) {
-                return Err(WriterError::InvalidInput(format!(
-                    "duplicate tensor name across shards: {tensor_name}"
-                )));
-            }
-
-            let view = tensors
-                .tensor(name.as_ref())
-                .map_err(WriterError::SafeTensors)?;
-            let data = view.data().to_vec();
-            let shape: Vec<usize> = view.shape().to_vec();
-            let stride = calculate_contiguous_stride(&shape);
-            let dtype = dtype_to_serverlessllm(view.dtype())?.to_owned();
-            blobs.push(TensorBlob {
-                name: tensor_name,
-                data,
-                shape,
-                stride,
-                dtype,
-            });
-        }
+        collect_blobs_from_shard(shard, &mut blobs, &mut seen_names)?;
     }
 
+    let plan = build_conversion_plan(blobs, partition_count)?;
+
+    tokio::fs::create_dir_all(output_dir).await?;
+
+    let index_path = output_dir.join("tensor_index.json");
+    write_index(&index_path, &plan.index).await?;
+
+    let write_futures: Vec<_> = plan
+        .partitions
+        .into_iter()
+        .enumerate()
+        .map(|(id, data)| {
+            let part_path = output_dir.join(format!("tensor.data_{id}"));
+            async move { write_partition(&part_path, data).await }
+        })
+        .collect();
+
+    futures::future::try_join_all(write_futures).await?;
+
+    Ok(())
+}
+
+/// Convert a directory of `SafeTensors` shards to `ServerlessLLM` format synchronously.
+#[inline]
+pub fn convert_safetensors_to_serverlessllm_sync(
+    input_dir: &str,
+    output_dir: &str,
+    partition_count: usize,
+) -> WriterResult<()> {
+    if partition_count == 0 {
+        return Err(WriterError::InvalidInput(
+            "partition_count must be greater than zero".to_owned(),
+        ));
+    }
+
+    let input_dir = Path::new(input_dir);
+    let output_dir = Path::new(output_dir);
+
+    let shard_paths = discover_safetensors_shards(input_dir)?;
+    validate_index_manifest(input_dir, &shard_paths)?;
+
+    let mut blobs = Vec::new();
+    let mut seen_names = BTreeSet::new();
+    for shard_path in &shard_paths {
+        let shard = backends::sync_backend()
+            .load(shard_path)
+            .map_err(WriterError::from)?;
+        collect_blobs_from_shard(shard, &mut blobs, &mut seen_names)?;
+    }
+
+    let plan = build_conversion_plan(blobs, partition_count)?;
+
+    std::fs::create_dir_all(output_dir).map_err(WriterError::from)?;
+
+    let index_path = output_dir.join("tensor_index.json");
+    write_index_sync(&index_path, &plan.index)?;
+
+    for (id, data) in plan.partitions.into_iter().enumerate() {
+        let part_path = output_dir.join(format!("tensor.data_{id}"));
+        write_partition_sync(&part_path, &data)?;
+    }
+
+    Ok(())
+}
+
+fn collect_blobs_from_shard(
+    shard: Vec<u8>,
+    blobs: &mut Vec<TensorBlob>,
+    seen_names: &mut BTreeSet<String>,
+) -> WriterResult<()> {
+    let model = Model::from_bytes(shard)
+        .map_err(|e| WriterError::Io(std::io::Error::other(e.to_string())))?;
+
+    for name in model.tensor_names() {
+        let tensor_name = name.as_ref().to_owned();
+        if !seen_names.insert(tensor_name.clone()) {
+            return Err(WriterError::InvalidInput(format!(
+                "duplicate tensor name across shards: {tensor_name}"
+            )));
+        }
+
+        let view = model
+            .tensor(name.as_ref())
+            .map_err(|e| WriterError::InvalidInput(e.to_string()))?;
+        let data = view.data().to_vec();
+        let shape: Vec<usize> = view.shape().to_vec();
+        let stride = calculate_contiguous_stride(&shape);
+        let dtype = dtype_str_to_serverlessllm(view.dtype())?.to_owned();
+        blobs.push(TensorBlob {
+            name: tensor_name,
+            data,
+            shape,
+            stride,
+            dtype,
+        });
+    }
+
+    Ok(())
+}
+
+fn build_conversion_plan(
+    blobs: Vec<TensorBlob>,
+    partition_count: usize,
+) -> WriterResult<ConversionPlan> {
     if blobs.is_empty() {
         return Err(WriterError::InvalidInput(
             "no tensors found in input directory".to_owned(),
@@ -102,23 +184,7 @@ pub async fn convert_safetensors_to_serverlessllm(
         );
     }
 
-    tokio::fs::create_dir_all(output_dir).await?;
-
-    let index_path = output_dir.join("tensor_index.json");
-    write_index(&index_path, &index).await?;
-
-    let write_futures: Vec<_> = partitions
-        .into_iter()
-        .enumerate()
-        .map(|(id, data)| {
-            let part_path = output_dir.join(format!("tensor.data_{id}"));
-            async move { write_partition(&part_path, data).await }
-        })
-        .collect();
-
-    futures::future::try_join_all(write_futures).await?;
-
-    Ok(())
+    Ok(ConversionPlan { partitions, index })
 }
 
 fn discover_safetensors_shards(input_dir: &Path) -> WriterResult<Vec<PathBuf>> {
@@ -217,31 +283,24 @@ fn validate_index_manifest(input_dir: &Path, shard_paths: &[PathBuf]) -> WriterR
     Ok(())
 }
 
-fn dtype_to_serverlessllm(dtype: Dtype) -> WriterResult<&'static str> {
+fn dtype_str_to_serverlessllm(dtype: &str) -> WriterResult<&'static str> {
     let mapped = match dtype {
-        Dtype::F32 => "torch.float32",
-        Dtype::F16 => "torch.float16",
-        Dtype::BF16 => "torch.bfloat16",
-        Dtype::F64 => "torch.float64",
-        Dtype::I32 => "torch.int32",
-        Dtype::I16 => "torch.int16",
-        Dtype::I8 => "torch.int8",
-        Dtype::I64 => "torch.int64",
-        Dtype::U32 => "torch.uint32",
-        Dtype::U16 => "torch.uint16",
-        Dtype::U8 => "torch.uint8",
-        Dtype::U64 => "torch.uint64",
-        Dtype::BOOL => "torch.bool",
-        Dtype::F4
-        | Dtype::F6_E2M3
-        | Dtype::F6_E3M2
-        | Dtype::F8_E5M2
-        | Dtype::F8_E4M3
-        | Dtype::F8_E8M0
-        | Dtype::C64
-        | _ => {
+        "F32" => "torch.float32",
+        "F16" => "torch.float16",
+        "BF16" => "torch.bfloat16",
+        "F64" => "torch.float64",
+        "I32" => "torch.int32",
+        "I16" => "torch.int16",
+        "I8" => "torch.int8",
+        "I64" => "torch.int64",
+        "U32" => "torch.uint32",
+        "U16" => "torch.uint16",
+        "U8" => "torch.uint8",
+        "U64" => "torch.uint64",
+        "BOOL" => "torch.bool",
+        _ => {
             return Err(WriterError::InvalidInput(format!(
-                "unsupported dtype: {dtype:?}",
+                "unsupported dtype: {dtype}",
             )));
         }
     };
@@ -275,6 +334,11 @@ struct TensorBlob {
     dtype: String,
 }
 
+struct ConversionPlan {
+    partitions: Vec<Vec<u8>>,
+    index: HashMap<String, TensorWriteEntry>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,16 +357,16 @@ mod tests {
 
     #[test]
     fn test_dtype_to_serverlessllm_supported() {
-        assert_eq!(dtype_to_serverlessllm(Dtype::F32).unwrap(), "torch.float32");
-        assert_eq!(dtype_to_serverlessllm(Dtype::F16).unwrap(), "torch.float16");
+        assert_eq!(dtype_str_to_serverlessllm("F32").unwrap(), "torch.float32");
+        assert_eq!(dtype_str_to_serverlessllm("F16").unwrap(), "torch.float16");
         assert_eq!(
-            dtype_to_serverlessllm(Dtype::BF16).unwrap(),
+            dtype_str_to_serverlessllm("BF16").unwrap(),
             "torch.bfloat16"
         );
-        assert_eq!(dtype_to_serverlessllm(Dtype::I32).unwrap(), "torch.int32");
-        assert_eq!(dtype_to_serverlessllm(Dtype::I8).unwrap(), "torch.int8");
-        assert_eq!(dtype_to_serverlessllm(Dtype::U8).unwrap(), "torch.uint8");
-        assert_eq!(dtype_to_serverlessllm(Dtype::BOOL).unwrap(), "torch.bool");
+        assert_eq!(dtype_str_to_serverlessllm("I32").unwrap(), "torch.int32");
+        assert_eq!(dtype_str_to_serverlessllm("I8").unwrap(), "torch.int8");
+        assert_eq!(dtype_str_to_serverlessllm("U8").unwrap(), "torch.uint8");
+        assert_eq!(dtype_str_to_serverlessllm("BOOL").unwrap(), "torch.bool");
     }
 
     #[test]

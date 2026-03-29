@@ -1,7 +1,7 @@
 //! Python exception mapping for tensor_store errors.
 
 use pyo3::prelude::*;
-use tensor_store::ReaderError;
+use tensor_store::{ReaderError, WriterError};
 
 pub fn map_reader_error(e: ReaderError) -> PyErr {
     let msg = format!("tensor_store error: {e}");
@@ -10,6 +10,11 @@ pub fn map_reader_error(e: ReaderError) -> PyErr {
 
 pub fn tensor_not_found(name: &str) -> PyErr {
     pyo3::exceptions::PyValueError::new_err(format!("tensor not found: {name}"))
+}
+
+pub fn map_writer_error(e: WriterError) -> PyErr {
+    let msg = format!("tensor_store error: {e}");
+    pyo3::exceptions::PyValueError::new_err(msg)
 }
 
 #[cfg(test)]

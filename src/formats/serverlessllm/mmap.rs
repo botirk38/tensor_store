@@ -19,8 +19,8 @@ pub struct MmapModel {
 }
 
 impl MmapModel {
-    /// Loads a ServerlessLLM model from directory with mmap-based lazy loading.
-    pub fn load(directory: impl AsRef<Path>) -> ReaderResult<Self> {
+    /// Opens a ServerlessLLM model from directory with mmap-based lazy loading.
+    pub fn open(directory: impl AsRef<Path>) -> ReaderResult<Self> {
         let dir_path = directory.as_ref();
         let index = Index::load_sync(dir_path.join("tensor_index.json"))?;
 

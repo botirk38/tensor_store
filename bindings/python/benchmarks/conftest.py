@@ -51,6 +51,12 @@ def safetensors_files(model_descriptor):
 
 
 @pytest.fixture(scope="session")
+def safetensors_dir(model_descriptor):
+    """Directory containing the model's SafeTensors shards."""
+    return str(model_descriptor.safetensors_files[0].parent)
+
+
+@pytest.fixture(scope="session")
 def safetensors_path(model_descriptor):
     """Path to the first (or only) safetensors file."""
     return str(model_descriptor.safetensors_files[0])

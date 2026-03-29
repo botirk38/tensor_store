@@ -31,8 +31,9 @@ impl LoadPlan {
         let base_path_str = base_path.to_string_lossy();
 
         let partitions: Vec<PartitionRead> = index
-            .partitions()
-            .values()
+            .partition_ids()
+            .iter()
+            .filter_map(|partition_id| index.partition(*partition_id))
             .map(|plan: &PartitionPlan| PartitionRead {
                 partition_id: plan.partition_id,
                 path: PathBuf::from(format!("{}_{}", base_path_str, plan.partition_id)),
@@ -45,6 +46,85 @@ impl LoadPlan {
             index: Arc::new(index.clone()),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LoadStats {
+    partition_count: usize,
+    tensor_count: usize,
+    total_bytes: u64,
+    max_partition_bytes: u64,
+}
+
+const SYNC_BASE_COST_NS: f64 = 220_000.0;
+const ASYNC_BASE_COST_NS: f64 = 700_000.0;
+const SYNC_PER_PARTITION_COST_NS: f64 = 45_000.0;
+const ASYNC_PER_PARTITION_COST_NS: f64 = 105_000.0;
+const SYNC_PER_TENSOR_COST_NS: f64 = 2_000.0;
+const ASYNC_PER_TENSOR_COST_NS: f64 = 3_500.0;
+const ASYNC_MAX_PARTITION_COST_NS_PER_BYTE: f64 = 0.4;
+const SYNC_THROUGHPUT_BPS: f64 = 7.5 * 1024.0 * 1024.0 * 1024.0;
+const ASYNC_THROUGHPUT_BPS: f64 = 5.75 * 1024.0 * 1024.0 * 1024.0;
+const PARALLELISM_TARGET_BYTES: f64 = 128.0 * 1024.0 * 1024.0;
+
+fn bytes_to_ns(bytes: u64, throughput_bps: f64) -> f64 {
+    (bytes as f64 / throughput_bps) * 1_000_000_000.0
+}
+
+fn load_stats(index: &Index) -> LoadStats {
+    let mut total_bytes = 0u64;
+    let mut max_partition_bytes = 0u64;
+
+    for plan in index.partitions().values() {
+        total_bytes = total_bytes.saturating_add(plan.max_required_size);
+        max_partition_bytes = max_partition_bytes.max(plan.max_required_size);
+    }
+
+    LoadStats {
+        partition_count: index.partition_ids().len(),
+        tensor_count: index.len(),
+        total_bytes,
+        max_partition_bytes,
+    }
+}
+
+fn effective_async_parallelism(stats: &LoadStats) -> f64 {
+    if stats.partition_count <= 1 {
+        return 1.0;
+    }
+
+    let avg_partition_bytes = stats.total_bytes.max(1) as f64 / stats.partition_count as f64;
+    let max_partition_bytes = stats.max_partition_bytes.max(1) as f64;
+    let count_factor = (stats.partition_count as f64).ln_1p();
+    let size_factor = (PARALLELISM_TARGET_BYTES / avg_partition_bytes)
+        .sqrt()
+        .clamp(0.5, 4.0);
+    let skew_factor = (max_partition_bytes / avg_partition_bytes)
+        .sqrt()
+        .clamp(1.0, 4.0);
+
+    (1.0 + count_factor * size_factor / skew_factor).clamp(1.0, stats.partition_count as f64)
+}
+
+fn estimate_sync_cost(stats: &LoadStats) -> f64 {
+    SYNC_BASE_COST_NS
+        + bytes_to_ns(stats.total_bytes, SYNC_THROUGHPUT_BPS)
+        + SYNC_PER_PARTITION_COST_NS * stats.partition_count as f64
+        + SYNC_PER_TENSOR_COST_NS * stats.tensor_count as f64
+}
+
+fn estimate_async_cost(stats: &LoadStats) -> f64 {
+    let parallelism = effective_async_parallelism(stats);
+
+    ASYNC_BASE_COST_NS
+        + bytes_to_ns(stats.total_bytes, ASYNC_THROUGHPUT_BPS) / parallelism
+        + ASYNC_PER_PARTITION_COST_NS * stats.partition_count as f64
+        + ASYNC_PER_TENSOR_COST_NS * stats.tensor_count as f64
+        + ASYNC_MAX_PARTITION_COST_NS_PER_BYTE * stats.max_partition_bytes as f64
+}
+
+fn choose_load_backend(stats: &LoadStats) -> bool {
+    estimate_async_cost(stats) < estimate_sync_cost(stats)
 }
 
 type Tensors = HashMap<Arc<str>, Tensor>;
@@ -112,9 +192,14 @@ fn execute_load_plan_sync(plan: &LoadPlan) -> ReaderResult<Tensors> {
         .load_range_batch(&requests)
         .map_err(ReaderError::from)?;
 
-    // Build partition buffers without extra copy
-    let mut partition_buffers: HashMap<usize, Arc<[u8]>> =
-        HashMap::with_capacity(plan.partitions.len());
+    // Build partition buffers in indexed slots to avoid hashing hot-path lookups.
+    let max_partition_id = plan
+        .partitions
+        .iter()
+        .map(|read| read.partition_id)
+        .max()
+        .unwrap_or(0);
+    let mut partition_buffers: Vec<Option<Arc<[u8]>>> = vec![None; max_partition_id + 1];
     for (read, result) in plan.partitions.iter().zip(results) {
         let (buf, _, _) = result;
         if buf.len() < read.size as usize {
@@ -124,14 +209,14 @@ fn execute_load_plan_sync(plan: &LoadPlan) -> ReaderResult<Tensors> {
                 required: read.size,
             });
         }
-        partition_buffers.insert(read.partition_id, buf);
+        partition_buffers[read.partition_id] = Some(buf);
     }
 
     // Assemble tensors from shared partition buffers
     let mut tensors = HashMap::with_capacity(index.len());
     for name in index.tensor_names().iter() {
         let desc = index.get(name.as_ref()).unwrap();
-        let backing = partition_buffers.get(&desc.partition_id).unwrap();
+        let backing = partition_buffers[desc.partition_id].as_ref().unwrap();
         tensors.insert(
             name.clone(),
             Tensor::from_shared(Arc::clone(backing), Arc::clone(desc)),
@@ -233,17 +318,23 @@ async fn execute_load_plan_async(plan: &LoadPlan) -> ReaderResult<Tensors> {
         .into_iter()
         .collect::<ReaderResult<Vec<_>>>()?;
 
-    // Build partition buffers
-    let mut partition_buffers: HashMap<usize, Arc<[u8]>> = HashMap::with_capacity(results.len());
+    // Build partition buffers in indexed slots to avoid hashing hot-path lookups.
+    let max_partition_id = plan
+        .partitions
+        .iter()
+        .map(|read| read.partition_id)
+        .max()
+        .unwrap_or(0);
+    let mut partition_buffers: Vec<Option<Arc<[u8]>>> = vec![None; max_partition_id + 1];
     for (partition_id, buf) in results {
-        partition_buffers.insert(partition_id, buf);
+        partition_buffers[partition_id] = Some(buf);
     }
 
     // Assemble tensors from shared partition buffers
     let mut tensors = HashMap::with_capacity(index.len());
     for name in index.tensor_names().iter() {
         let desc = index.get(name.as_ref()).unwrap();
-        let backing = partition_buffers.get(&desc.partition_id).unwrap();
+        let backing = partition_buffers[desc.partition_id].as_ref().unwrap();
         tensors.insert(
             name.clone(),
             Tensor::from_shared(Arc::clone(backing), Arc::clone(desc)),
@@ -261,8 +352,34 @@ pub struct Model {
 }
 
 impl Model {
-    /// Loads a ServerlessLLM model from directory asynchronously with eager loading.
+    fn compile_load_plan(directory: impl AsRef<Path>) -> ReaderResult<(Index, LoadPlan)> {
+        let dir_path = directory.as_ref();
+        let index = Index::load_sync(dir_path.join("tensor_index.json"))?;
+        let plan = LoadPlan::compile(&index, &dir_path.join("tensor.data"));
+        Ok((index, plan))
+    }
+
+    /// Loads a ServerlessLLM model from directory using the core heuristic.
     pub async fn load(directory: impl AsRef<Path>) -> ReaderResult<Self> {
+        let (index, plan) = Self::compile_load_plan(directory)?;
+        if choose_load_backend(&load_stats(&index)) {
+            let tensors = execute_load_plan_async(&plan).await?;
+            return Ok(Self {
+                tensors,
+                tensor_names: index.tensor_names().to_vec().into(),
+            });
+        }
+
+        let tensors = execute_load_plan_sync(&plan)?;
+        let tensor_names = index.tensor_names().to_vec().into();
+        Ok(Self {
+            tensors,
+            tensor_names,
+        })
+    }
+
+    /// Loads a ServerlessLLM model from directory asynchronously with eager loading.
+    pub async fn load_async(directory: impl AsRef<Path>) -> ReaderResult<Self> {
         let dir_path = directory.as_ref();
         let index = Index::load(dir_path.join("tensor_index.json")).await?;
         let plan = LoadPlan::compile(&index, &dir_path.join("tensor.data"));
@@ -276,9 +393,7 @@ impl Model {
 
     /// Loads a ServerlessLLM model from directory synchronously with eager loading.
     pub fn load_sync(directory: impl AsRef<Path>) -> ReaderResult<Self> {
-        let dir_path = directory.as_ref();
-        let index = Index::load_sync(dir_path.join("tensor_index.json"))?;
-        let plan = LoadPlan::compile(&index, &dir_path.join("tensor.data"));
+        let (index, plan) = Self::compile_load_plan(directory)?;
         let tensors = execute_load_plan_sync(&plan)?;
         let tensor_names = index.tensor_names().to_vec().into();
         Ok(Self {
@@ -355,5 +470,29 @@ mod tests {
         };
         assert!(model.is_empty());
         assert_eq!(model.len(), 0);
+    }
+
+    #[test]
+    fn choose_sync_for_single_large_partition() {
+        let stats = LoadStats {
+            partition_count: 1,
+            tensor_count: 1,
+            total_bytes: 2 * 1024 * 1024 * 1024,
+            max_partition_bytes: 2 * 1024 * 1024 * 1024,
+        };
+
+        assert!(!choose_load_backend(&stats));
+    }
+
+    #[test]
+    fn choose_async_for_many_small_partitions() {
+        let stats = LoadStats {
+            partition_count: 16,
+            tensor_count: 1024,
+            total_bytes: 256 * 1024 * 1024,
+            max_partition_bytes: 32 * 1024 * 1024,
+        };
+
+        assert!(choose_load_backend(&stats));
     }
 }

@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
+use tensor_store::TensorView;
 use tensor_store::formats::safetensors;
 
 use crate::config::{DemoConfig, DemoError, DemoResult, format_bytes};
@@ -38,10 +39,10 @@ fn discover_fixtures() -> Vec<(String, PathBuf)> {
                 continue;
             }
 
-            let model_path = entry.path().join("model.safetensors");
-            if model_path.exists() {
+            let model_dir = entry.path();
+            if model_dir.join("model.safetensors").exists() {
                 let model_name = entry.file_name().to_string_lossy().to_string();
-                fixtures.push((model_name, model_path));
+                fixtures.push((model_name, model_dir));
             }
         }
     }
@@ -90,8 +91,8 @@ fn demo_async(config: &DemoConfig) -> DemoResult {
         for (name, path) in fixtures {
             println!("Fixture: {}", name);
 
-            let file_size = std::fs::metadata(&path)?.len();
-            println!("  File: {}", path.file_name().unwrap().to_str().unwrap());
+            let file_size = std::fs::metadata(path.join("model.safetensors"))?.len();
+            println!("  Dir: {}", path.file_name().unwrap().to_str().unwrap());
             println!("  Size: {}", format_bytes(file_size));
 
             let io_before = crate::io_metrics::capture_disk_snapshot().ok();
@@ -102,7 +103,7 @@ fn demo_async(config: &DemoConfig) -> DemoResult {
 
             println!("  Loaded in: {:.2}ms", duration.as_secs_f64() * 1000.0);
 
-            let tensor_count = data.names().len();
+            let tensor_count = data.tensor_names().len();
             println!("  Tensors: {}", tensor_count);
 
             let throughput = file_size as f64 / duration.as_secs_f64() / 1e9;
@@ -132,8 +133,8 @@ fn demo_async(config: &DemoConfig) -> DemoResult {
         for (name, path) in fixtures {
             println!("Fixture: {}", name);
 
-            let file_size = std::fs::metadata(&path)?.len();
-            println!("  File: {}", path.file_name().unwrap().to_str().unwrap());
+            let file_size = std::fs::metadata(path.join("model.safetensors"))?.len();
+            println!("  Dir: {}", path.file_name().unwrap().to_str().unwrap());
             println!("  Size: {}", format_bytes(file_size));
 
             let start = Instant::now();
@@ -142,7 +143,7 @@ fn demo_async(config: &DemoConfig) -> DemoResult {
 
             println!("  Loaded in: {:.2}ms", duration.as_secs_f64() * 1000.0);
 
-            let tensor_count = data.names().len();
+            let tensor_count = data.tensor_names().len();
             println!("  Tensors: {}", tensor_count);
 
             let throughput = file_size as f64 / duration.as_secs_f64() / 1e9;
@@ -163,8 +164,8 @@ fn demo_sync(config: &DemoConfig) -> DemoResult {
     for (name, path) in fixtures {
         println!("Fixture: {}", name);
 
-        let file_size = std::fs::metadata(&path)?.len();
-        println!("  File: {}", path.file_name().unwrap().to_str().unwrap());
+        let file_size = std::fs::metadata(path.join("model.safetensors"))?.len();
+        println!("  Dir: {}", path.file_name().unwrap().to_str().unwrap());
         println!("  Size: {}", format_bytes(file_size));
 
         let io_before = crate::io_metrics::capture_disk_snapshot().ok();
@@ -175,7 +176,7 @@ fn demo_sync(config: &DemoConfig) -> DemoResult {
 
         println!("  Loaded in: {:.2}ms", duration.as_secs_f64() * 1000.0);
 
-        let tensor_count = data.names().len();
+        let tensor_count = data.tensor_names().len();
         println!("  Tensors: {}", tensor_count);
 
         let throughput = file_size as f64 / duration.as_secs_f64() / 1e9;
@@ -197,19 +198,19 @@ fn demo_mmap(config: &DemoConfig) -> DemoResult {
     for (name, path) in fixtures {
         println!("Fixture: {}", name);
 
-        let file_size = std::fs::metadata(&path)?.len();
-        println!("  File: {}", path.file_name().unwrap().to_str().unwrap());
+        let file_size = std::fs::metadata(path.join("model.safetensors"))?.len();
+        println!("  Dir: {}", path.file_name().unwrap().to_str().unwrap());
         println!("  Size: {}", format_bytes(file_size));
 
         let io_before = crate::io_metrics::capture_disk_snapshot().ok();
 
         let start = Instant::now();
-        let data = safetensors::MmapModel::load(&path)?;
+        let data = safetensors::MmapModel::open(&path)?;
         let duration = start.elapsed();
 
         println!("  Loaded in: {:.2}ms", duration.as_secs_f64() * 1000.0);
 
-        let tensor_count = data.tensors().names().len();
+        let tensor_count = data.tensor_names().len();
         println!("  Tensors: {}", tensor_count);
 
         let throughput = file_size as f64 / duration.as_secs_f64() / 1e9;
@@ -235,14 +236,13 @@ fn demo_metadata(config: &DemoConfig) -> DemoResult {
         println!("  Size: {}", format_bytes(file_size));
 
         let data = safetensors::Model::load_sync(&path)?;
-        let tensors = data.tensors();
-        let names = tensors.names();
+        let names = data.tensor_names();
 
         println!("  Tensors: {}\n", names.len());
 
         println!("  Sample tensors (first 10):");
         for name in names.iter().take(10) {
-            if let Ok(tensor) = tensors.tensor(name) {
+            if let Ok(tensor) = data.tensor(name) {
                 println!(
                     "    - {}: {:?} ({:?}) - {}",
                     name,

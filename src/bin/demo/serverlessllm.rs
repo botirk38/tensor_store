@@ -245,7 +245,7 @@ fn demo_mmap(config: &DemoConfig) -> DemoResult {
         let io_before = crate::io_metrics::capture_disk_snapshot().ok();
 
         let start = Instant::now();
-        let model = serverlessllm::MmapModel::load(&dir)?;
+        let model = serverlessllm::MmapModel::open(&dir)?;
         let duration = start.elapsed();
 
         println!("  Loaded in: {:.2}ms", duration.as_secs_f64() * 1000.0);

@@ -4,13 +4,20 @@ import pytest
 
 from tensor_store_py._tensor_store_rust import (
     load_safetensors,
-    load_safetensors_mmap,
+    load_safetensors_async,
     load_safetensors_sync,
     load_serverlessllm,
-    load_serverlessllm_mmap,
+    load_serverlessllm_async,
     load_serverlessllm_sync,
+    open_safetensors,
+    open_serverlessllm,
 )
-from tests.fixtures import create_gpt2, write_safetensors, write_serverlessllm_dir
+from tests.fixtures import (
+    create_gpt2,
+    write_safetensors,
+    write_safetensors_dir,
+    write_serverlessllm_dir,
+)
 
 
 def get_keys_sync(path, fmt):
@@ -21,11 +28,11 @@ def get_keys_sync(path, fmt):
     return set(d.keys())
 
 
-def get_keys_mmap(path, fmt):
+def get_keys_open(path, fmt):
     if fmt == "safetensors":
-        d = load_safetensors_mmap(path)
+        d = open_safetensors(path)
     else:
-        d = load_serverlessllm_mmap(path)
+        d = open_serverlessllm(path)
     return set(d.keys())
 
 
@@ -45,11 +52,11 @@ def get_shapes_sync(path, fmt):
     return {k: tuple(d[k].shape) for k in sorted(d.keys())}
 
 
-def get_shapes_mmap(path, fmt):
+def get_shapes_open(path, fmt):
     if fmt == "safetensors":
-        d = load_safetensors_mmap(path)
+        d = open_safetensors(path)
     else:
-        d = load_serverlessllm_mmap(path)
+        d = open_serverlessllm(path)
     return {k: tuple(d[k].shape) for k in sorted(d.keys())}
 
 
@@ -63,9 +70,9 @@ def get_shapes_default(path, fmt):
 
 @pytest.fixture
 def safetensors_path(tmp_path):
-    """GPT-2-like SafeTensors file (2 layers)."""
+    """GPT-2-like SafeTensors model directory (2 layers)."""
     tensors = create_gpt2(n_layers=2)
-    return str(write_safetensors(tensors, tmp_path / "model.safetensors"))
+    return str(write_safetensors_dir(tensors, tmp_path / "model_dir"))
 
 
 @pytest.fixture
@@ -110,11 +117,11 @@ def serverlessllm_dir_8partitions(tmp_path):
 
 @pytest.fixture
 def safetensors_path_small(tmp_path):
-    """Small SafeTensors file (single tensor)."""
+    """Small SafeTensors model directory (single tensor)."""
     import torch
 
     tensors = {"x": torch.randn(2, 3)}
-    return str(write_safetensors(tensors, tmp_path / "model.safetensors"))
+    return str(write_safetensors_dir(tensors, tmp_path / "model_dir"))
 
 
 @pytest.fixture
@@ -129,7 +136,7 @@ def serverlessllm_dir_small(tmp_path):
 
 @pytest.fixture
 def safetensors_path_dtypes(tmp_path):
-    """SafeTensors file with multiple dtypes for roundtrip checks."""
+    """SafeTensors model directory with multiple dtypes for roundtrip checks."""
     import torch
 
     tensors = {
@@ -139,14 +146,14 @@ def safetensors_path_dtypes(tmp_path):
         "scalar": torch.tensor(42.0, dtype=torch.float32),
         "empty": torch.zeros(0, 2),
     }
-    return str(write_safetensors(tensors, tmp_path / "dtypes.safetensors"))
+    return str(write_safetensors_dir(tensors, tmp_path / "dtypes_dir"))
 
 
 @pytest.fixture
 def safetensors_path_large(tmp_path):
-    """GPT-2-like SafeTensors file (12 layers) for heavier integration tests."""
+    """GPT-2-like SafeTensors model directory (12 layers) for heavier integration tests."""
     tensors = create_gpt2(n_layers=12)
-    return str(write_safetensors(tensors, tmp_path / "model_large.safetensors"))
+    return str(write_safetensors_dir(tensors, tmp_path / "model_large_dir"))
 
 
 @pytest.fixture

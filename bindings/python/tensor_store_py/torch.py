@@ -4,11 +4,12 @@ from typing import Dict, Optional, Union
 
 from tensor_store_py._tensor_store_rust import (
     SafeTensorsHandlePy,
-    load_safetensors,
-    load_safetensors_mmap,
-    load_safetensors_sync,
-    save_safetensors,
-    save_safetensors_bytes,
+    load_safetensors as _load_safetensors,
+    load_safetensors_async as _load_safetensors_async,
+    load_safetensors_sync as _load_safetensors_sync,
+    open_safetensors as _open_safetensors,
+    save_safetensors as _save_safetensors,
+    save_safetensors_bytes as _save_safetensors_bytes,
 )
 
 try:
@@ -19,49 +20,48 @@ except ImportError:
     )
 
 
-def load_file(
+def load_safetensors(
     path: Union[str, "os.PathLike"], device: str = "cpu"
 ) -> Dict[str, torch.Tensor]:
-    """Load a safetensors file into a dict of PyTorch tensors using io_uring.
+    """Load a safetensors model directory into a dict of PyTorch tensors.
 
     Args:
-        path: Path to the safetensors file.
+        path: Path to the safetensors model directory.
         device: Device to load tensors to (e.g., "cpu", "cuda:0").
 
     Returns:
         Dict mapping tensor names to torch.Tensor values.
     """
-    return load_safetensors(path, framework="torch", device=device)
+    return _load_safetensors(path, framework="torch", device=device)
 
 
-def load_file_mmap(
+def load_safetensors_async(
     path: Union[str, "os.PathLike"], device: str = "cpu"
 ) -> Dict[str, torch.Tensor]:
-    """Memory-map load a safetensors file into a dict of PyTorch tensors.
+    """Load a safetensors model directory asynchronously into PyTorch tensors."""
+    return _load_safetensors_async(path, framework="torch", device=device)
+
+
+def load_safetensors_sync(
+    path: Union[str, "os.PathLike"], device: str = "cpu"
+) -> Dict[str, torch.Tensor]:
+    """Load a safetensors model directory synchronously into PyTorch tensors."""
+    return _load_safetensors_sync(path, framework="torch", device=device)
+
+
+def open_safetensors(path: Union[str, "os.PathLike"]) -> SafeTensorsHandlePy:
+    """Open a safetensors model directory for lazy loading.
 
     Args:
-        path: Path to the safetensors file.
-        device: Device to load tensors to (e.g., "cpu", "cuda:0").
-
-    Returns:
-        Dict mapping tensor names to torch.Tensor values.
-    """
-    return load_safetensors_mmap(path, framework="torch", device=device)
-
-
-def open_file(path: Union[str, "os.PathLike"]) -> SafeTensorsHandlePy:
-    """Open a safetensors file for lazy loading.
-
-    Args:
-        path: Path to the safetensors file.
+        path: Path to the safetensors model directory.
 
     Returns:
         SafeTensorsHandlePy for lazy tensor access.
     """
-    return SafeTensorsHandlePy(path)
+    return _open_safetensors(path)
 
 
-def save_file(
+def save_safetensors(
     tensors: Dict[str, torch.Tensor],
     path: Union[str, "os.PathLike"],
     metadata: Optional[Dict[str, str]] = None,
@@ -73,10 +73,10 @@ def save_file(
         path: Path to save the safetensors file.
         metadata: Optional metadata to include in the file header.
     """
-    save_safetensors(tensors, path, framework="torch", metadata=metadata)
+    _save_safetensors(tensors, path, framework="torch", metadata=metadata)
 
 
-def save_file_bytes(
+def save_safetensors_bytes(
     tensors: Dict[str, torch.Tensor],
     metadata: Optional[Dict[str, str]] = None,
 ) -> bytes:
@@ -89,16 +89,17 @@ def save_file_bytes(
     Returns:
         bytes: The safetensors file content as bytes.
     """
-    result = save_safetensors_bytes(tensors, framework="torch", metadata=metadata)
+    result = _save_safetensors_bytes(tensors, framework="torch", metadata=metadata)
     if isinstance(result, bytes):
         return result
     raise TypeError("save_safetensors_bytes did not return bytes")
 
 
 __all__ = [
-    "load_file",
-    "load_file_mmap",
-    "open_file",
-    "save_file",
-    "save_file_bytes",
+    "load_safetensors",
+    "load_safetensors_async",
+    "load_safetensors_sync",
+    "open_safetensors",
+    "save_safetensors",
+    "save_safetensors_bytes",
 ]

@@ -27,6 +27,7 @@ pub use formats::serverlessllm::{
 
 // Conversion functions
 pub use converters::safetensors_to_serverlessllm::convert_safetensors_to_serverlessllm;
+pub use converters::safetensors_to_serverlessllm::convert_safetensors_to_serverlessllm_sync;
 
 #[cfg(test)]
 pub(crate) mod test_utils {

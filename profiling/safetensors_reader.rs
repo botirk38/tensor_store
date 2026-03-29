@@ -25,8 +25,8 @@
 //!
 //! ## Test Data
 //!
-//! Requires a `test_model.safetensors` file in the current directory.
-//! For realistic profiling, use a large model file (several GB).
+//! Requires a `test_model/` directory in the current directory.
+//! For realistic profiling, use a large model directory (several GB of shards).
 
 use std::hint::black_box;
 use std::time::Instant;
@@ -79,27 +79,25 @@ fn get_profile_mode() -> Result<ProfileMode, String> {
     )
 }
 
-async fn profile_async(test_file: &str) {
+async fn profile_async(test_dir: &str) {
     println!("🔥 Profiling async safetensors reader...");
 
     // Warmup phase - populate buffer pools and caches
     println!("  Warming up...");
     for i in 0..3 {
-        let _warmup = safetensors::Model::load(test_file).await.unwrap();
+        let _warmup = safetensors::Model::load(test_dir).await.unwrap();
         println!("    Warmup iteration {} complete", i + 1);
     }
 
     // Profiling phase - single iteration to avoid memory accumulation
     println!("  Starting profiling...");
     let start = Instant::now();
-    let data = safetensors::Model::load(black_box(test_file))
-        .await
-        .unwrap();
+    let data = safetensors::Model::load(black_box(test_dir)).await.unwrap();
     let load_time = start.elapsed();
 
-    let tensor_count = data.names().len();
+    let tensor_count = data.tensor_names().len();
     let mut bytes = 0;
-    for name in data.names() {
+    for name in data.tensor_names() {
         if let Ok(tensor) = data.tensor(name) {
             bytes += tensor.data().len();
         }
@@ -116,25 +114,25 @@ async fn profile_async(test_file: &str) {
     println!("  Total profiling time: {:.2}s", load_time.as_secs_f64());
 }
 
-fn profile_sync(test_file: &str) {
+fn profile_sync(test_dir: &str) {
     println!("🔥 Profiling sync safetensors reader...");
 
     // Warmup phase
     println!("  Warming up...");
     for i in 0..3 {
-        let _warmup = safetensors::Model::load_sync(test_file).unwrap();
+        let _warmup = safetensors::Model::load_sync(test_dir).unwrap();
         println!("    Warmup iteration {} complete", i + 1);
     }
 
     // Profiling phase
     println!("  Starting profiling...");
     let start = Instant::now();
-    let data = safetensors::Model::load_sync(black_box(test_file)).unwrap();
+    let data = safetensors::Model::load_sync(black_box(test_dir)).unwrap();
     let load_time = start.elapsed();
 
-    let tensor_count = data.names().len();
+    let tensor_count = data.tensor_names().len();
     let mut bytes = 0;
-    for name in data.names() {
+    for name in data.tensor_names() {
         if let Ok(tensor) = data.tensor(name) {
             bytes += tensor.data().len();
         }
@@ -166,11 +164,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     })?;
 
-    let test_file = format!("tests/fixtures/{}/tiny.safetensors", fixture);
+    let test_dir = format!("tests/fixtures/{}", fixture);
 
     // Check if test file exists
-    if !std::path::Path::new(&test_file).exists() {
-        eprintln!("❌ Test file '{}' not found", test_file);
+    if !std::path::Path::new(&test_dir).exists() {
+        eprintln!("❌ Test directory '{}' not found", test_dir);
         eprintln!("Please ensure the fixture exists");
         std::process::exit(1);
     }
@@ -178,15 +176,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🚀 Starting safetensors reader profiling");
     println!("  Mode: {:?}", mode);
     println!("  Fixture: {}", fixture);
-    println!("  Test file: {}", test_file);
+    println!("  Test directory: {}", test_dir);
     println!();
     match tokio_uring::start(async {
         match mode {
             ProfileMode::Async => {
-                profile_async(&test_file).await;
+                profile_async(&test_dir).await;
             }
             ProfileMode::Sync => {
-                profile_sync(&test_file);
+                profile_sync(&test_dir);
             }
         }
 
@@ -219,11 +217,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     })?;
 
-    let test_file = format!("tests/fixtures/{}/tiny.safetensors", fixture);
+    let test_dir = format!("tests/fixtures/{}", fixture);
 
     // Check if test file exists
-    if !std::path::Path::new(&test_file).exists() {
-        eprintln!("❌ Test file '{}' not found", test_file);
+    if !std::path::Path::new(&test_dir).exists() {
+        eprintln!("❌ Test directory '{}' not found", test_dir);
         eprintln!("Please ensure the fixture exists");
         std::process::exit(1);
     }
@@ -231,17 +229,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🚀 Starting safetensors reader profiling");
     println!("  Mode: {:?}", mode);
     println!("  Fixture: {}", fixture);
-    println!("  Test file: {}", test_file);
+    println!("  Test directory: {}", test_dir);
     println!();
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         match mode {
             ProfileMode::Async => {
-                profile_async(&test_file).await;
+                profile_async(&test_dir).await;
             }
             ProfileMode::Sync => {
-                profile_sync(&test_file);
+                profile_sync(&test_dir);
             }
         }
 

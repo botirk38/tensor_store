@@ -10,19 +10,15 @@ from tensor_store_py._tensor_store_rust import (
     SafeTensorsHandlePy,
     ServerlessLLMHandlePy,
     load_safetensors,
-    load_safetensors_mmap,
+    load_safetensors_async,
     load_safetensors_sync,
     load_serverlessllm,
-    load_serverlessllm_mmap,
+    load_serverlessllm_async,
     load_serverlessllm_sync,
     open_safetensors,
-    open_safetensors_mmap,
-    open_safetensors_sync,
     open_serverlessllm,
-    open_serverlessllm_mmap,
-    open_serverlessllm_sync,
 )
-from tests.fixtures import write_safetensors, write_serverlessllm_dir
+from tests.fixtures import write_safetensors_dir, write_serverlessllm_dir
 
 
 def test_version_is_string():
@@ -55,9 +51,7 @@ def test_tensor_store_error_is_exception():
 def test_default_functions_work(tmp_path):
     torch = pytest.importorskip("torch")
 
-    safetensors_path = write_safetensors(
-        {"x": torch.zeros(1)}, tmp_path / "t.safetensors"
-    )
+    safetensors_path = write_safetensors_dir({"x": torch.zeros(1)}, tmp_path / "t")
     serverless_path = write_serverlessllm_dir({"x": torch.zeros(1)}, tmp_path / "s")
 
     # Test open functions (default backend)
@@ -82,16 +76,12 @@ def test_default_functions_work(tmp_path):
 def test_all_backend_functions_are_callable():
     for fn in (
         open_safetensors,
-        open_safetensors_mmap,
-        open_safetensors_sync,
         open_serverlessllm,
-        open_serverlessllm_mmap,
-        open_serverlessllm_sync,
         load_safetensors,
-        load_safetensors_mmap,
+        load_safetensors_async,
         load_safetensors_sync,
         load_serverlessllm,
-        load_serverlessllm_mmap,
+        load_serverlessllm_async,
         load_serverlessllm_sync,
     ):
         assert callable(fn)

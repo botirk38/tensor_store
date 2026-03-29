@@ -1,8 +1,8 @@
 use std::fs;
 use std::hint::black_box;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
-use ::safetensors::SafeTensors;
 use tensor_store::formats::safetensors;
 
 use crate::config::{ProfileConfig, ProfileError, ProfileResult};
@@ -20,59 +20,22 @@ fn drop_page_cache(path: &Path) {
 }
 
 #[cfg(not(unix))]
-fn drop_page_cache(_path: &Path) {
-    // No-op on non-unix
-}
+fn drop_page_cache(_path: &Path) {}
 
-pub fn run(case: &str, config: &ProfileConfig) -> ProfileResult {
-    match case {
-        "io-uring-load" => io_uring_load(config),
-        "io-uring-prewarmed" => io_uring_prewarmed(config),
-        "tokio-load" => tokio_load(config),
-        "tokio-prewarmed" => tokio_prewarmed(config),
-        "sync" => sync_load(config),
-        "mmap" => mmap_load(config),
-        "original" => original_load(config),
-        other => Err(ProfileError::new(format!("Unknown safetensors case '{}'", other)).into()),
-    }
-}
-
-fn collect_safetensors_files(dir: &Path) -> Vec<PathBuf> {
-    let mut shard_files = Vec::new();
-    let mut single_file = None;
-
+fn drop_page_cache_for_dir(dir: &Path) {
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if !file_type.is_file() {
-                continue;
-            }
-
-            let path = entry.path();
-            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
-
-            if name == "model.safetensors" {
-                single_file = Some(path);
-            } else if name.ends_with(".safetensors") {
-                shard_files.push(path);
+            if let Ok(file_type) = entry.file_type()
+                && file_type.is_file()
+            {
+                drop_page_cache(&entry.path());
             }
         }
     }
-
-    if !shard_files.is_empty() {
-        shard_files.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
-        return shard_files;
-    }
-
-    single_file.into_iter().collect()
 }
 
-fn discover_fixtures() -> Vec<(String, Vec<PathBuf>)> {
-    let fixtures_dir = std::path::Path::new("fixtures");
+fn discover_fixtures() -> Vec<(String, PathBuf)> {
+    let fixtures_dir = Path::new("fixtures");
     let mut fixtures = Vec::new();
 
     if let Ok(entries) = std::fs::read_dir(fixtures_dir) {
@@ -84,10 +47,21 @@ fn discover_fixtures() -> Vec<(String, Vec<PathBuf>)> {
                 continue;
             }
 
-            let model_files = collect_safetensors_files(&entry.path());
-            if !model_files.is_empty() {
-                let model_name = entry.file_name().to_string_lossy().to_string();
-                fixtures.push((model_name, model_files));
+            let dir = entry.path();
+            let has_safetensors = std::fs::read_dir(&dir)
+                .ok()
+                .into_iter()
+                .flatten()
+                .flatten()
+                .any(|file| {
+                    file.path()
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.ends_with(".safetensors"))
+                });
+
+            if has_safetensors {
+                fixtures.push((entry.file_name().to_string_lossy().to_string(), dir));
             }
         }
     }
@@ -96,7 +70,7 @@ fn discover_fixtures() -> Vec<(String, Vec<PathBuf>)> {
     fixtures
 }
 
-fn fixtures(config: &ProfileConfig) -> Result<Vec<(String, Vec<PathBuf>)>, ProfileError> {
+fn fixtures(config: &ProfileConfig) -> Result<Vec<(String, PathBuf)>, ProfileError> {
     let fixtures = discover_fixtures();
     if fixtures.is_empty() {
         return Err(ProfileError::new(
@@ -126,298 +100,52 @@ fn fixtures(config: &ProfileConfig) -> Result<Vec<(String, Vec<PathBuf>)>, Profi
     }
 }
 
-fn total_file_bytes(files: &[PathBuf]) -> std::io::Result<u64> {
+fn total_file_bytes(dir: &Path) -> std::io::Result<u64> {
     let mut total = 0u64;
-    for path in files {
-        total += fs::metadata(path)?.len();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if name.ends_with(".safetensors") {
+            total += fs::metadata(path)?.len();
+        }
     }
     Ok(total)
 }
 
-fn drop_page_cache_for_files(files: &[PathBuf]) {
-    for path in files {
-        drop_page_cache(path);
-    }
-}
-
-fn path_to_string(path: &Path) -> std::io::Result<String> {
-    path.to_str().map(|s| s.to_owned()).ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "Fixture path contains invalid UTF-8",
-        )
-    })
-}
-
-#[cfg(target_os = "linux")]
-fn io_uring_load(config: &ProfileConfig) -> ProfileResult {
-    use std::time::Instant;
+fn profile_load_sync(config: &ProfileConfig) -> ProfileResult {
     let fixtures = fixtures(config)?;
-
-    for (fixture, files) in fixtures {
+    for (fixture, dir) in fixtures {
         let iterations = config.normalized_iterations();
         let cache_label = if config.cold_cache { "cold" } else { "warm" };
+        let total_bytes = total_file_bytes(&dir)?;
         let mut durations = Vec::with_capacity(iterations);
-        let total_bytes = total_file_bytes(&files)?;
 
-        println!(
-            "Running io_uring safetensors load for '{}' ({iterations}x {cache_label})",
-            fixture
-        );
-        tokio_uring::start(async {
-            for i in 0..iterations {
-                if config.cold_cache && i == 0 {
-                    drop_page_cache_for_files(&files);
-                }
-
-                let start = Instant::now();
-                let mut tensor_count = 0usize;
-                for path in &files {
-                    let path_str = path_to_string(path)?;
-                    let data = safetensors::Model::load(&path_str).await?;
-                    tensor_count += data.names().len();
-                }
-                let elapsed = start.elapsed();
-                durations.push(elapsed);
-                println!(
-                    "  iteration {}: {} tensors, {} bytes, {:.2}ms",
-                    i + 1,
-                    tensor_count,
-                    total_bytes,
-                    elapsed.as_secs_f64() * 1000.0
-                );
-                black_box((tensor_count, total_bytes));
-            }
-
-            if let Some(summary) = summarize(&durations) {
-                println!(
-                    "  summary: mean {:.2}ms | min {:.2}ms | max {:.2}ms",
-                    summary.mean_ms, summary.min_ms, summary.max_ms
-                );
-            }
-            Ok::<_, tensor_store::ReaderError>(())
-        })?;
-    }
-
-    Ok(())
-}
-
-#[cfg(not(target_os = "linux"))]
-fn io_uring_load(_config: &ProfileConfig) -> ProfileResult {
-    Err(ProfileError::new("io_uring safetensors cases are only available on Linux").into())
-}
-
-#[cfg(target_os = "linux")]
-fn io_uring_prewarmed(config: &ProfileConfig) -> ProfileResult {
-    let fixtures = fixtures(config)?;
-
-    for (fixture, files) in fixtures {
-        let iterations = config.normalized_iterations();
-        let cache_label = if config.cold_cache { "cold" } else { "warm" };
-        let mut durations = Vec::with_capacity(iterations);
-        let total_bytes = total_file_bytes(&files)?;
-
-        println!(
-            "Running io_uring safetensors prewarmed load for '{}' ({iterations}x {cache_label})",
-            fixture
-        );
-        tokio_uring::start(async {
-            for _ in 0..2 {
-                for path in &files {
-                    let path_str = path_to_string(path)?;
-                    let _ = safetensors::Model::load(&path_str).await?;
-                }
-            }
-
-            for i in 0..iterations {
-                if config.cold_cache && i == 0 {
-                    drop_page_cache_for_files(&files);
-                }
-
-                let start = std::time::Instant::now();
-                let mut tensor_count = 0usize;
-                for path in &files {
-                    let path_str = path_to_string(path)?;
-                    let data = safetensors::Model::load(&path_str).await?;
-                    tensor_count += data.names().len();
-                }
-                let elapsed = start.elapsed();
-                durations.push(elapsed);
-                black_box((total_bytes, tensor_count));
-            }
-
-            if let Some(summary) = summarize(&durations) {
-                println!(
-                    "  summary: mean {:.2}ms | min {:.2}ms | max {:.2}ms",
-                    summary.mean_ms, summary.min_ms, summary.max_ms
-                );
-            }
-            Ok::<_, tensor_store::ReaderError>(())
-        })?;
-    }
-
-    Ok(())
-}
-
-#[cfg(not(target_os = "linux"))]
-fn io_uring_prewarmed(_config: &ProfileConfig) -> ProfileResult {
-    Err(ProfileError::new("io_uring safetensors cases are only available on Linux").into())
-}
-
-#[cfg(not(target_os = "linux"))]
-fn tokio_load(config: &ProfileConfig) -> ProfileResult {
-    use std::time::Instant;
-    let fixtures = fixtures(config)?;
-    let rt = tokio::runtime::Runtime::new()?;
-
-    for (fixture, files) in fixtures {
-        let iterations = config.normalized_iterations();
-        let cache_label = if config.cold_cache { "cold" } else { "warm" };
-        let mut durations = Vec::with_capacity(iterations);
-        let total_bytes = total_file_bytes(&files)?;
-
-        println!(
-            "Running tokio safetensors load for '{}' ({iterations}x {cache_label})",
-            fixture
-        );
-        rt.block_on(async {
-            for i in 0..iterations {
-                if config.cold_cache && i == 0 {
-                    drop_page_cache_for_files(&files);
-                }
-                let start = Instant::now();
-                let mut tensor_count = 0usize;
-                for path in &files {
-                    let path_str = path_to_string(path)?;
-                    let data = safetensors::Model::load(&path_str).await?;
-                    tensor_count += data.names().len();
-                }
-                let elapsed = start.elapsed();
-                durations.push(elapsed);
-                println!(
-                    "  iteration {}: {} tensors, {} bytes, {:.2}ms",
-                    i + 1,
-                    tensor_count,
-                    bytes,
-                    elapsed.as_secs_f64() * 1000.0
-                );
-                black_box((total_bytes, tensor_count));
-            }
-
-            if let Some(summary) = summarize(&durations) {
-                println!(
-                    "  summary: mean {:.2}ms | min {:.2}ms | max {:.2}ms",
-                    summary.mean_ms, summary.min_ms, summary.max_ms
-                );
-            }
-            Ok::<_, tensor_store::ReaderError>(())
-        })?;
-    }
-
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn tokio_load(_config: &ProfileConfig) -> ProfileResult {
-    Err(ProfileError::new(
-        "tokio safetensors cases are only compiled on non-Linux targets in this harness",
-    )
-    .into())
-}
-
-#[cfg(not(target_os = "linux"))]
-fn tokio_prewarmed(config: &ProfileConfig) -> ProfileResult {
-    let fixtures = fixtures(config)?;
-    let rt = tokio::runtime::Runtime::new()?;
-
-    for (fixture, files) in fixtures {
-        let iterations = config.normalized_iterations();
-        let cache_label = if config.cold_cache { "cold" } else { "warm" };
-        let mut durations = Vec::with_capacity(iterations);
-        let total_bytes = total_file_bytes(&files)?;
-
-        println!(
-            "Running tokio safetensors prewarmed load for '{}' ({iterations}x {cache_label})",
-            fixture
-        );
-        rt.block_on(async {
-            for _ in 0..2 {
-                for path in &files {
-                    let path_str = path_to_string(path)?;
-                    let _ = safetensors::Model::load(&path_str).await?;
-                }
-            }
-
-            for i in 0..iterations {
-                if config.cold_cache && i == 0 {
-                    drop_page_cache_for_files(&files);
-                }
-                let start = std::time::Instant::now();
-                let mut tensor_count = 0usize;
-                for path in &files {
-                    let path_str = path_to_string(path)?;
-                    let data = safetensors::Model::load(&path_str).await?;
-                    tensor_count += data.names().len();
-                }
-                let elapsed = start.elapsed();
-                durations.push(elapsed);
-                black_box((total_bytes, tensor_count));
-            }
-
-            if let Some(summary) = summarize(&durations) {
-                println!(
-                    "  summary: mean {:.2}ms | min {:.2}ms | max {:.2}ms",
-                    summary.mean_ms, summary.min_ms, summary.max_ms
-                );
-            }
-            Ok::<_, tensor_store::ReaderError>(())
-        })?;
-    }
-
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn tokio_prewarmed(_config: &ProfileConfig) -> ProfileResult {
-    Err(ProfileError::new(
-        "tokio safetensors cases are only compiled on non-Linux targets in this harness",
-    )
-    .into())
-}
-
-fn sync_load(config: &ProfileConfig) -> ProfileResult {
-    use std::time::Instant;
-    let fixtures = fixtures(config)?;
-
-    for (fixture, files) in fixtures {
-        let iterations = config.normalized_iterations();
-        let cache_label = if config.cold_cache { "cold" } else { "warm" };
-        let mut durations = Vec::with_capacity(iterations);
-        let total_bytes = total_file_bytes(&files)?;
         println!(
             "Running sync safetensors load for '{}' ({iterations}x {cache_label})",
             fixture
         );
         for i in 0..iterations {
             if config.cold_cache && i == 0 {
-                drop_page_cache_for_files(&files);
+                drop_page_cache_for_dir(&dir);
             }
             let start = Instant::now();
-            let mut tensor_count = 0usize;
-            for path in &files {
-                let data = safetensors::Model::load_sync(path)?;
-                tensor_count += data.names().len();
-            }
+            let data = safetensors::Model::load_sync(&dir)?;
             let elapsed = start.elapsed();
             durations.push(elapsed);
             println!(
                 "  iteration {}: {} tensors, {} bytes, {:.2}ms",
                 i + 1,
-                tensor_count,
+                data.len(),
                 total_bytes,
                 elapsed.as_secs_f64() * 1000.0
             );
-            black_box((total_bytes, tensor_count));
+            black_box((data.len(), total_bytes));
         }
 
         if let Some(summary) = summarize(&durations) {
@@ -427,43 +155,37 @@ fn sync_load(config: &ProfileConfig) -> ProfileResult {
             );
         }
     }
-
     Ok(())
 }
 
-fn mmap_load(config: &ProfileConfig) -> ProfileResult {
-    use std::time::Instant;
+fn profile_load_mmap(config: &ProfileConfig) -> ProfileResult {
     let fixtures = fixtures(config)?;
-
-    for (fixture, files) in fixtures {
+    for (fixture, dir) in fixtures {
         let iterations = config.normalized_iterations();
         let cache_label = if config.cold_cache { "cold" } else { "warm" };
+        let total_bytes = total_file_bytes(&dir)?;
         let mut durations = Vec::with_capacity(iterations);
-        let total_bytes = total_file_bytes(&files)?;
+
         println!(
             "Running mmap safetensors load for '{}' ({iterations}x {cache_label})",
             fixture
         );
         for i in 0..iterations {
             if config.cold_cache && i == 0 {
-                drop_page_cache_for_files(&files);
+                drop_page_cache_for_dir(&dir);
             }
             let start = Instant::now();
-            let mut tensor_count = 0usize;
-            for path in &files {
-                let data = safetensors::MmapModel::load(path)?;
-                tensor_count += data.tensors().names().len();
-            }
+            let data = safetensors::MmapModel::open(&dir)?;
             let elapsed = start.elapsed();
             durations.push(elapsed);
             println!(
                 "  iteration {}: {} tensors, {} bytes, {:.2}ms",
                 i + 1,
-                tensor_count,
+                data.len(),
                 total_bytes,
                 elapsed.as_secs_f64() * 1000.0
             );
-            black_box((total_bytes, tensor_count));
+            black_box((data.len(), total_bytes));
         }
 
         if let Some(summary) = summarize(&durations) {
@@ -473,53 +195,114 @@ fn mmap_load(config: &ProfileConfig) -> ProfileResult {
             );
         }
     }
-
     Ok(())
 }
 
-fn original_load(config: &ProfileConfig) -> ProfileResult {
-    use std::time::Instant;
+#[cfg(target_os = "linux")]
+fn profile_load_async(config: &ProfileConfig, default: bool) -> ProfileResult {
     let fixtures = fixtures(config)?;
-
-    for (fixture, files) in fixtures {
+    for (fixture, dir) in fixtures {
         let iterations = config.normalized_iterations();
         let cache_label = if config.cold_cache { "cold" } else { "warm" };
+        let total_bytes = total_file_bytes(&dir)?;
         let mut durations = Vec::with_capacity(iterations);
-        let total_bytes = total_file_bytes(&files)?;
+        let label = if default { "default" } else { "async" };
+
         println!(
-            "Running original safetensors load for '{}' ({iterations}x {cache_label})",
+            "Running {label} safetensors load for '{}' ({iterations}x {cache_label})",
             fixture
         );
-        for i in 0..iterations {
-            if config.cold_cache && i == 0 {
-                drop_page_cache_for_files(&files);
+        tokio_uring::start(async {
+            for i in 0..iterations {
+                if config.cold_cache && i == 0 {
+                    drop_page_cache_for_dir(&dir);
+                }
+                let start = Instant::now();
+                let data = if default {
+                    safetensors::Model::load(&dir).await?
+                } else {
+                    safetensors::Model::load_async(&dir).await?
+                };
+                let elapsed = start.elapsed();
+                durations.push(elapsed);
+                println!(
+                    "  iteration {}: {} tensors, {} bytes, {:.2}ms",
+                    i + 1,
+                    data.len(),
+                    total_bytes,
+                    elapsed.as_secs_f64() * 1000.0
+                );
+                black_box((data.len(), total_bytes));
             }
-            let start = Instant::now();
-            let mut tensor_count = 0usize;
-            for path in &files {
-                let shard_bytes = fs::read(path)?;
-                let data = SafeTensors::deserialize(&shard_bytes)?;
-                tensor_count += data.names().len();
-            }
-            let elapsed = start.elapsed();
-            durations.push(elapsed);
-            println!(
-                "  iteration {}: {} tensors, {} bytes, {:.2}ms",
-                i + 1,
-                tensor_count,
-                total_bytes,
-                elapsed.as_secs_f64() * 1000.0
-            );
-            black_box((tensor_count, total_bytes));
-        }
 
-        if let Some(summary) = summarize(&durations) {
-            println!(
-                "  summary: mean {:.2}ms | min {:.2}ms | max {:.2}ms",
-                summary.mean_ms, summary.min_ms, summary.max_ms
-            );
-        }
+            if let Some(summary) = summarize(&durations) {
+                println!(
+                    "  summary: mean {:.2}ms | min {:.2}ms | max {:.2}ms",
+                    summary.mean_ms, summary.min_ms, summary.max_ms
+                );
+            }
+            Ok::<_, tensor_store::ReaderError>(())
+        })?;
     }
-
     Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn profile_load_async(config: &ProfileConfig, default: bool) -> ProfileResult {
+    let fixtures = fixtures(config)?;
+    let rt = tokio::runtime::Runtime::new()?;
+    for (fixture, dir) in fixtures {
+        let iterations = config.normalized_iterations();
+        let cache_label = if config.cold_cache { "cold" } else { "warm" };
+        let total_bytes = total_file_bytes(&dir)?;
+        let mut durations = Vec::with_capacity(iterations);
+        let label = if default { "default" } else { "async" };
+
+        println!(
+            "Running {label} safetensors load for '{}' ({iterations}x {cache_label})",
+            fixture
+        );
+        rt.block_on(async {
+            for i in 0..iterations {
+                if config.cold_cache && i == 0 {
+                    drop_page_cache_for_dir(&dir);
+                }
+                let start = Instant::now();
+                let data = if default {
+                    safetensors::Model::load(&dir).await?
+                } else {
+                    safetensors::Model::load_async(&dir).await?
+                };
+                let elapsed = start.elapsed();
+                durations.push(elapsed);
+                println!(
+                    "  iteration {}: {} tensors, {} bytes, {:.2}ms",
+                    i + 1,
+                    data.len(),
+                    total_bytes,
+                    elapsed.as_secs_f64() * 1000.0
+                );
+                black_box((data.len(), total_bytes));
+            }
+
+            if let Some(summary) = summarize(&durations) {
+                println!(
+                    "  summary: mean {:.2}ms | min {:.2}ms | max {:.2}ms",
+                    summary.mean_ms, summary.min_ms, summary.max_ms
+                );
+            }
+            Ok::<_, tensor_store::ReaderError>(())
+        })?;
+    }
+    Ok(())
+}
+
+pub fn run(case: &str, config: &ProfileConfig) -> ProfileResult {
+    match case {
+        "default" => profile_load_async(config, true),
+        "sync" => profile_load_sync(config),
+        "async" => profile_load_async(config, false),
+        "mmap" => profile_load_mmap(config),
+        other => Err(ProfileError::new(format!("Unknown safetensors case '{}'", other)).into()),
+    }
 }

@@ -122,7 +122,7 @@ uv run python download_models.py Qwen/Qwen2-0.5B --no-convert
 
 ```bash
 # Download multiple models
-for model in "Qwen/Qwen2-0.5B" "google/gemma-2b" "TinyLlama/TinyLlama-1.1B-Chat-v1.0"; do
+for model in "gpt2" "Qwen/Qwen2-0.5B" "TinyLlama/TinyLlama-1.1B-Chat-v1.0" "Qwen/Qwen2-1.5B" "EleutherAI/pythia-2.8b-deduped"; do
     uv run python download_models.py "$model" --verify
 done
 ```

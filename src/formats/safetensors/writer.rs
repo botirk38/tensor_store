@@ -133,7 +133,11 @@ impl Writer {
         P: AsRef<Path>,
     {
         let path_ref = path.as_ref();
-        ensure_parent_dir(path_ref)?;
+        if let Some(parent) = path_ref.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
         safetensors::serialize_to_file(tensors, metadata, path_ref).map_err(Into::into)
     }
 
@@ -164,22 +168,17 @@ impl Writer {
         P: AsRef<Path>,
     {
         let path_ref = path.as_ref();
-        ensure_parent_dir(path_ref)?;
+        if let Some(parent) = path_ref.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
         let buffer = safetensors::serialize(tensors, metadata)?;
         backends::async_backend()
             .write_all(path_ref, buffer)
             .await
             .map_err(Into::into)
     }
-}
-
-fn ensure_parent_dir(path: &Path) -> WriterResult<()> {
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)?;
-    }
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------

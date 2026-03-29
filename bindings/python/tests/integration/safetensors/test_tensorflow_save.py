@@ -4,8 +4,8 @@ import pytest
 
 tf = pytest.importorskip("tensorflow")
 
-from tensor_store_py.tensorflow import load_file as tf_load_file
-from tensor_store_py.tensorflow import save_file as tf_save_file
+from tensor_store_py.tensorflow import load_safetensors as tf_load_safetensors
+from tensor_store_py.tensorflow import save_safetensors as tf_save_safetensors
 
 
 class TestTensorFlowSave:
@@ -16,10 +16,10 @@ class TestTensorFlowSave:
         tensors = {"weight": tf.constant([[1.0, 2.0], [3.0, 4.0]])}
         path = tmp_path / "single.safetensors"
 
-        tf_save_file(tensors, path)
+        tf_save_safetensors(tensors, path)
         assert path.exists()
 
-        loaded = tf_load_file(path)
+        loaded = tf_load_safetensors(path)
         assert "weight" in loaded
         assert tf.reduce_all(tf.equal(loaded["weight"], tensors["weight"]))
 
@@ -33,9 +33,9 @@ class TestTensorFlowSave:
         }
         path = tmp_path / "multiple.safetensors"
 
-        tf_save_file(tensors, path)
+        tf_save_safetensors(tensors, path)
 
-        loaded = tf_load_file(path)
+        loaded = tf_load_safetensors(path)
         assert set(loaded.keys()) == set(tensors.keys())
         for name, tensor in tensors.items():
             assert tf.reduce_all(tf.equal(loaded[name], tensor))
@@ -46,7 +46,7 @@ class TestTensorFlowSave:
         metadata = {"model_name": "test", "version": "1.0"}
         path = tmp_path / "meta.safetensors"
 
-        tf_save_file(tensors, path, metadata=metadata)
+        tf_save_safetensors(tensors, path, metadata=metadata)
 
         from safetensors import safe_open
 
@@ -58,9 +58,9 @@ class TestTensorFlowSave:
         tensors = {"empty": tf.zeros((0,))}
         path = tmp_path / "empty.safetensors"
 
-        tf_save_file(tensors, path)
+        tf_save_safetensors(tensors, path)
 
-        loaded = tf_load_file(path)
+        loaded = tf_load_safetensors(path)
         assert "empty" in loaded
         assert loaded["empty"].shape == (0,)
 
@@ -69,9 +69,9 @@ class TestTensorFlowSave:
         tensors = {"scalar": tf.constant(42.0)}
         path = tmp_path / "scalar.safetensors"
 
-        tf_save_file(tensors, path)
+        tf_save_safetensors(tensors, path)
 
-        loaded = tf_load_file(path)
+        loaded = tf_load_safetensors(path)
         assert tf.reduce_all(tf.equal(loaded["scalar"], tensors["scalar"]))
 
     def test_save_various_dtypes(self, tmp_path):
@@ -85,9 +85,9 @@ class TestTensorFlowSave:
         }
         path = tmp_path / "dtypes.safetensors"
 
-        tf_save_file(tensors, path)
+        tf_save_safetensors(tensors, path)
 
-        loaded = tf_load_file(path)
+        loaded = tf_load_safetensors(path)
         for name, tensor in tensors.items():
             assert loaded[name].dtype == tensor.dtype
             assert tf.reduce_all(tf.equal(loaded[name], tensor))
@@ -104,8 +104,8 @@ class TestTensorFlowRoundtrip:
         }
         path = tmp_path / "roundtrip.safetensors"
 
-        tf_save_file(tensors, path)
-        loaded = tf_load_file(path)
+        tf_save_safetensors(tensors, path)
+        loaded = tf_load_safetensors(path)
 
         assert set(loaded.keys()) == {"weight1", "weight2"}
         assert tf.reduce_all(tf.equal(loaded["weight1"], tensors["weight1"]))
@@ -118,8 +118,8 @@ class TestTensorFlowRoundtrip:
         }
         path = tmp_path / "large.safetensors"
 
-        tf_save_file(tensors, path)
-        loaded = tf_load_file(path)
+        tf_save_safetensors(tensors, path)
+        loaded = tf_load_safetensors(path)
 
         assert loaded["large"].shape == tensors["large"].shape
         assert tf.reduce_all(tf.abs(loaded["large"] - tensors["large"]) < 1e-5)
@@ -137,9 +137,9 @@ class TestTensorFlowGPUTensors:
         tensors = {"weight": tf.constant([[1.0, 2.0], [3.0, 4.0]])}
         path = tmp_path / "gpu.safetensors"
 
-        tf_save_file(tensors, path)
+        tf_save_safetensors(tensors, path)
 
-        loaded = tf_load_file(path)
+        loaded = tf_load_safetensors(path)
         assert "weight" in loaded
         assert tf.reduce_all(tf.equal(loaded["weight"], tensors["weight"]))
 
@@ -154,7 +154,7 @@ class TestTensorFlowComplex:
         tensors = {"complex": tf.complex(real, imag)}
         path = tmp_path / "complex.safetensors"
 
-        tf_save_file(tensors, path)
+        tf_save_safetensors(tensors, path)
 
-        loaded = tf_load_file(path)
+        loaded = tf_load_safetensors(path)
         assert "complex" in loaded

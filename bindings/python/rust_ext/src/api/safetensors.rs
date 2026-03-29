@@ -1,16 +1,14 @@
 //! SafeTensors format: handles and functions.
 
-use pyo3::exceptions::PyFileNotFoundError;
+use pyo3::exceptions::{PyFileNotFoundError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use tensor_store::formats::safetensors::TensorView as SafetensorTensorView;
-use tensor_store::formats::safetensors::{self, Dtype, MmapModel, Model};
+use tensor_store::formats::safetensors::{Dtype, MmapModel, Model};
 use tensor_store::serialize;
-#[cfg(not(target_os = "linux"))]
-use tensor_store::ReaderError;
 use tensor_store::TensorView;
 
 use crate::convert::{convert_tensor, extract_tensor_raw, TensorData};
@@ -18,28 +16,42 @@ use crate::errors::map_reader_error;
 
 type TensorTuple = (String, Vec<usize>, Dtype, Vec<u8>);
 
-fn validate_path_exists(path: &Path) -> PyResult<()> {
+fn run_async<T>(
+    future: impl std::future::Future<Output = tensor_store::ReaderResult<T>>,
+) -> tensor_store::ReaderResult<T> {
+    #[cfg(target_os = "linux")]
+    {
+        tokio_uring::start(future)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        tokio::runtime::Runtime::new()
+            .map_err(|e| {
+                tensor_store::ReaderError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
+            })?
+            .block_on(future)
+    }
+}
+
+fn validate_directory(path: &Path) -> PyResult<()> {
     if !path.exists() {
         return Err(PyFileNotFoundError::new_err(format!(
             "path not found: {}",
             path.display()
         )));
     }
+    if !path.is_dir() {
+        return Err(PyValueError::new_err(format!(
+            "expected a directory of .safetensors shards: {}",
+            path.display()
+        )));
+    }
     Ok(())
 }
 
-// --- SafeTensors Handle ---
-
-/// Python-exposed handle for SafeTensors files.
-/// Supports both mmap-backed (file-backed) and owned (memory-backed) variants.
 #[pyclass]
 pub struct SafeTensorsHandlePy {
-    inner: SafeTensorsHandleInner,
-}
-
-enum SafeTensorsHandleInner {
-    Mmap(MmapModel),
-    Owned(Model),
+    inner: MmapModel,
 }
 
 #[pymethods]
@@ -47,29 +59,18 @@ impl SafeTensorsHandlePy {
     #[new]
     #[pyo3(signature = (path,))]
     fn new(path: PathBuf) -> PyResult<Self> {
-        validate_path_exists(&path)?;
-        let inner = Python::with_gil(|py| {
-            py.allow_threads(|| safetensors::MmapModel::load(&path))
-                .map_err(map_reader_error)
-        })?;
-        Ok(SafeTensorsHandlePy {
-            inner: SafeTensorsHandleInner::Mmap(inner),
-        })
+        validate_directory(&path)?;
+        let inner = Python::with_gil(|py| py.allow_threads(|| MmapModel::open(&path)))
+            .map_err(map_reader_error)?;
+        Ok(Self { inner })
     }
 
     fn keys(&self) -> Vec<String> {
-        match &self.inner {
-            SafeTensorsHandleInner::Mmap(h) => h
-                .tensor_names()
-                .iter()
-                .map(|name| name.as_ref().to_string())
-                .collect(),
-            SafeTensorsHandleInner::Owned(h) => h
-                .tensor_names()
-                .iter()
-                .map(|name| name.as_ref().to_string())
-                .collect(),
-        }
+        self.inner
+            .tensor_names()
+            .iter()
+            .map(|name| name.as_ref().to_string())
+            .collect()
     }
 
     #[pyo3(signature = (name, framework="torch", device="cpu"))]
@@ -80,10 +81,29 @@ impl SafeTensorsHandlePy {
         framework: &str,
         device: &str,
     ) -> PyResult<PyObject> {
-        let view = match &self.inner {
-            SafeTensorsHandleInner::Mmap(h) => h.tensor(name).map_err(map_reader_error)?,
-            SafeTensorsHandleInner::Owned(h) => h.tensor(name).map_err(map_reader_error)?,
-        };
+        let view = self.inner.tensor(name).map_err(map_reader_error)?;
+        convert_tensor(
+            py,
+            framework,
+            TensorData {
+                shape: view.shape(),
+                dtype: view.dtype(),
+                data: view.data(),
+            },
+            device,
+        )
+    }
+}
+
+fn load_dict_from_model(
+    py: Python<'_>,
+    model: &Model,
+    framework: &str,
+    device: &str,
+) -> PyResult<PyObject> {
+    let dict = PyDict::new(py);
+    for name in model.tensor_names() {
+        let view = model.tensor(name).map_err(map_reader_error)?;
         let tensor = convert_tensor(
             py,
             framework,
@@ -94,72 +114,22 @@ impl SafeTensorsHandlePy {
             },
             device,
         )?;
-        Ok(tensor)
+        dict.set_item(name.as_ref(), tensor)?;
     }
+    Ok(dict.into())
 }
-
-// --- SafeTensors Functions ---
 
 #[pyfunction]
 #[pyo3(signature = (path,))]
 pub fn open_safetensors(path: PathBuf) -> PyResult<PyObject> {
-    validate_path_exists(&path)?;
-    let owned = Python::with_gil(|py| {
-        py.allow_threads(|| {
-            #[cfg(target_os = "linux")]
-            {
-                tokio_uring::start(async move { safetensors::Model::load(&path).await })
-            }
-            #[cfg(not(target_os = "linux"))]
-            {
-                let rt = tokio::runtime::Runtime::new().map_err(|e| {
-                    ReaderError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
-                })?;
-                rt.block_on(safetensors::Model::load(&path))
-            }
-        })
-        .map_err(map_reader_error)
-    })?;
+    validate_directory(&path)?;
     Python::with_gil(|py| {
         let handle = SafeTensorsHandlePy {
-            inner: SafeTensorsHandleInner::Owned(owned),
+            inner: py
+                .allow_threads(|| MmapModel::open(&path))
+                .map_err(map_reader_error)?,
         };
-        let handle_py = Py::new(py, handle)?;
-        Ok(handle_py.into_pyobject(py)?.into_any().unbind())
-    })
-}
-
-#[pyfunction]
-#[pyo3(signature = (path,))]
-pub fn open_safetensors_sync(path: PathBuf) -> PyResult<PyObject> {
-    validate_path_exists(&path)?;
-    let inner = Python::with_gil(|py| {
-        py.allow_threads(|| safetensors::Model::load_sync(&path))
-            .map_err(map_reader_error)
-    })?;
-    Python::with_gil(|py| {
-        let handle = SafeTensorsHandlePy {
-            inner: SafeTensorsHandleInner::Owned(inner),
-        };
-        let handle_py = Py::new(py, handle)?;
-        Ok(handle_py.into_pyobject(py)?.into_any().unbind())
-    })
-}
-
-#[pyfunction]
-#[pyo3(signature = (path,))]
-pub fn open_safetensors_mmap(path: PathBuf) -> PyResult<PyObject> {
-    validate_path_exists(&path)?;
-    let inner = Python::with_gil(|py| {
-        py.allow_threads(|| safetensors::MmapModel::load(&path))
-            .map_err(map_reader_error)
-    })?;
-    Python::with_gil(|py| {
-        let handle = SafeTensorsHandlePy {
-            inner: SafeTensorsHandleInner::Mmap(inner),
-        };
-        let handle_py = Py::new(py, handle)?;
-        Ok(handle_py.into_pyobject(py)?.into_any().unbind())
+        Ok(Py::new(py, handle)?.into_pyobject(py)?.into_any().unbind())
     })
 }
 
@@ -171,47 +141,26 @@ pub fn load_safetensors(
     framework: &str,
     device: &str,
 ) -> PyResult<PyObject> {
-    validate_path_exists(&path)?;
-    let builtins = py.import("builtins")?;
-    let result = builtins.getattr("dict")?.call0()?;
-
-    let path_ref = path.as_path();
-    let owned: Model = py
-        .allow_threads(|| {
-            #[cfg(target_os = "linux")]
-            {
-                tokio_uring::start(async move { safetensors::Model::load(path_ref).await })
-            }
-            #[cfg(not(target_os = "linux"))]
-            {
-                let rt = tokio::runtime::Runtime::new().map_err(|e| {
-                    ReaderError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
-                })?;
-                rt.block_on(safetensors::Model::load(path_ref))
-            }
-        })
+    validate_directory(&path)?;
+    let model = py
+        .allow_threads(|| run_async(Model::load(path)))
         .map_err(map_reader_error)?;
+    load_dict_from_model(py, &model, framework, device)
+}
 
-    let keys: Vec<String> = owned
-        .tensor_names()
-        .iter()
-        .map(|name| name.as_ref().to_string())
-        .collect();
-    for k in keys {
-        let view = owned.tensor(&k).map_err(map_reader_error)?;
-        let tensor = convert_tensor(
-            py,
-            framework,
-            TensorData {
-                shape: view.shape(),
-                dtype: view.dtype(),
-                data: view.data(),
-            },
-            device,
-        )?;
-        result.call_method1("__setitem__", (&k, tensor))?;
-    }
-    Ok(result.into())
+#[pyfunction]
+#[pyo3(signature = (path, framework="torch", device="cpu"))]
+pub fn load_safetensors_async(
+    py: Python<'_>,
+    path: PathBuf,
+    framework: &str,
+    device: &str,
+) -> PyResult<PyObject> {
+    validate_directory(&path)?;
+    let model = py
+        .allow_threads(|| run_async(Model::load_async(path)))
+        .map_err(map_reader_error)?;
+    load_dict_from_model(py, &model, framework, device)
 }
 
 #[pyfunction]
@@ -222,67 +171,12 @@ pub fn load_safetensors_sync(
     framework: &str,
     device: &str,
 ) -> PyResult<PyObject> {
-    validate_path_exists(&path)?;
-    let builtins = py.import("builtins")?;
-    let result = builtins.getattr("dict")?.call0()?;
-
-    let path_ref = path.as_path();
-    let handle: Model = py
-        .allow_threads(|| safetensors::Model::load_sync(path_ref))
+    validate_directory(&path)?;
+    let model = py
+        .allow_threads(|| Model::load_sync(path))
         .map_err(map_reader_error)?;
-    for name in handle.tensor_names() {
-        let key = name.as_ref();
-        let view = handle.tensor(key).map_err(map_reader_error)?;
-        let tensor = convert_tensor(
-            py,
-            framework,
-            TensorData {
-                shape: view.shape(),
-                dtype: view.dtype(),
-                data: view.data(),
-            },
-            device,
-        )?;
-        result.call_method1("__setitem__", (key, tensor))?;
-    }
-    Ok(result.into())
+    load_dict_from_model(py, &model, framework, device)
 }
-
-#[pyfunction]
-#[pyo3(signature = (path, framework="torch", device="cpu"))]
-pub fn load_safetensors_mmap(
-    py: Python<'_>,
-    path: PathBuf,
-    framework: &str,
-    device: &str,
-) -> PyResult<PyObject> {
-    validate_path_exists(&path)?;
-    let builtins = py.import("builtins")?;
-    let result = builtins.getattr("dict")?.call0()?;
-
-    let path_ref = path.as_path();
-    let handle: MmapModel = py
-        .allow_threads(|| safetensors::MmapModel::load(path_ref))
-        .map_err(map_reader_error)?;
-    for name in handle.tensor_names() {
-        let key = name.as_ref();
-        let view = handle.tensor(key).map_err(map_reader_error)?;
-        let tensor = convert_tensor(
-            py,
-            framework,
-            TensorData {
-                shape: view.shape(),
-                dtype: view.dtype(),
-                data: view.data(),
-            },
-            device,
-        )?;
-        result.call_method1("__setitem__", (key, tensor))?;
-    }
-    Ok(result.into())
-}
-
-// --- Save Functions ---
 
 fn str_to_dtype(s: &str) -> PyResult<Dtype> {
     match s {
@@ -300,10 +194,7 @@ fn str_to_dtype(s: &str) -> PyResult<Dtype> {
         "U8" | "uint8" => Ok(Dtype::U8),
         "BOOL" | "bool" => Ok(Dtype::BOOL),
         "C64" | "complex64" => Ok(Dtype::C64),
-        _ => Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "unsupported dtype: {}",
-            s
-        ))),
+        _ => Err(PyValueError::new_err(format!("unsupported dtype: {s}"))),
     }
 }
 
@@ -313,14 +204,12 @@ fn tensors_to_raw(
     framework: &str,
 ) -> PyResult<Vec<TensorTuple>> {
     let mut result = Vec::new();
-
     for (key, value) in tensors.iter() {
         let name: String = key.extract()?;
         let (shape, dtype_str, data) = extract_tensor_raw(py, framework, &value)?;
         let dtype = str_to_dtype(&dtype_str)?;
         result.push((name, shape, dtype, data));
     }
-
     Ok(result)
 }
 
@@ -334,21 +223,18 @@ pub fn save_safetensors(
     metadata: Option<HashMap<String, String>>,
 ) -> PyResult<()> {
     let raw_tensors = tensors_to_raw(py, &tensors, framework)?;
-
     let views: Vec<(String, SafetensorTensorView<'_>)> = raw_tensors
         .iter()
         .map(|(name, shape, dtype, data)| {
             let view = SafetensorTensorView::new(*dtype, shape.clone(), data.as_slice())
-                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
             Ok((name.clone(), view))
         })
         .collect::<PyResult<Vec<_>>>()?;
 
     let serialized = serialize(views.iter().map(|(n, v)| (n.as_str(), v)), metadata)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
     std::fs::write(&path, serialized).map_err(pyo3::exceptions::PyIOError::new_err)?;
-
     Ok(())
 }
 
@@ -361,19 +247,16 @@ pub fn save_safetensors_bytes(
     metadata: Option<HashMap<String, String>>,
 ) -> PyResult<PyObject> {
     let raw_tensors = tensors_to_raw(py, &tensors, framework)?;
-
     let views: Vec<(String, SafetensorTensorView<'_>)> = raw_tensors
         .iter()
         .map(|(name, shape, dtype, data)| {
             let view = SafetensorTensorView::new(*dtype, shape.clone(), data.as_slice())
-                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
             Ok((name.clone(), view))
         })
         .collect::<PyResult<Vec<_>>>()?;
 
     let serialized = serialize(views.iter().map(|(n, v)| (n.as_str(), v)), metadata)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-
-    let bytes_obj = pyo3::types::PyBytes::new(py, &serialized);
-    Ok(bytes_obj.into())
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    Ok(pyo3::types::PyBytes::new(py, &serialized).into())
 }

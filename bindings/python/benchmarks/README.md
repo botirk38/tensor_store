@@ -76,9 +76,20 @@ Default ServerlessLLM partition counts follow the Rust helper:
 There is no artificial upper cap (beyond practical `usize` limits). Override with explicit conversion
 arguments if you need a different layout.
 
+## Default backend policy
+
+- `open_*` defaults to `mmap`.
+- `load_*` defaults to eager loading and chooses between async and sync backends.
+- `load_*` does not auto-select `mmap`.
+
 ## Recommended Models
 
-For H100 experiments:
-- Small: `meta-llama/Llama-3.1-8B`
-- Medium: `Qwen/Qwen2.5-14B`
-- Large: `Qwen/Qwen2.5-32B`
+For this machine, use the fixture ladder:
+- Small: `gpt2`
+- Medium-small: `Qwen/Qwen2-0.5B`
+- Small-medium: `TinyLlama/TinyLlama-1.1B-Chat-v1.0`
+- Medium: `Qwen/Qwen2-1.5B`
+- Medium-large: `EleutherAI/pythia-1.4b-deduped`
+- Large: `EleutherAI/pythia-2.8b-deduped`
+
+Avoid 7B+ fixtures unless you have enough RAM for full eager loads.

@@ -60,3 +60,11 @@ def write_safetensors(tensors: dict[str, torch.Tensor], path: Path) -> Path:
     path = Path(path)
     save_file(tensors, path)
     return path
+
+
+def write_safetensors_dir(tensors: dict[str, torch.Tensor], out_dir: Path) -> Path:
+    """Write tensors to a one-file SafeTensors model directory."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    save_file(tensors, out_dir / "model.safetensors")
+    return out_dir

@@ -3,9 +3,10 @@
 import pytest
 
 torch = pytest.importorskip("torch")
+from safetensors.torch import load_file
 
-from tensor_store_py.torch import load_file as pytorch_load_file
-from tensor_store_py.torch import save_file as pytorch_save_file
+from tensor_store_py.torch import load_safetensors as pytorch_load_safetensors
+from tensor_store_py.torch import save_safetensors as pytorch_save_safetensors
 
 
 class TestPyTorchSave:
@@ -16,10 +17,10 @@ class TestPyTorchSave:
         tensors = {"weight": torch.randn(10, 20)}
         path = tmp_path / "single.safetensors"
 
-        pytorch_save_file(tensors, path)
+        pytorch_save_safetensors(tensors, path)
         assert path.exists()
 
-        loaded = pytorch_load_file(path)
+        loaded = load_file(path)
         assert "weight" in loaded
         assert torch.allclose(loaded["weight"], tensors["weight"])
 
@@ -33,9 +34,9 @@ class TestPyTorchSave:
         }
         path = tmp_path / "multiple.safetensors"
 
-        pytorch_save_file(tensors, path)
+        pytorch_save_safetensors(tensors, path)
 
-        loaded = pytorch_load_file(path)
+        loaded = load_file(path)
         assert set(loaded.keys()) == set(tensors.keys())
         for name, tensor in tensors.items():
             assert torch.allclose(loaded[name], tensor, atol=1e-6)
@@ -46,7 +47,7 @@ class TestPyTorchSave:
         metadata = {"model_name": "test", "version": "1.0"}
         path = tmp_path / "meta.safetensors"
 
-        pytorch_save_file(tensors, path, metadata=metadata)
+        pytorch_save_safetensors(tensors, path, metadata=metadata)
 
         from safetensors import safe_open
 
@@ -58,9 +59,9 @@ class TestPyTorchSave:
         tensors = {"empty": torch.zeros(0)}
         path = tmp_path / "empty.safetensors"
 
-        pytorch_save_file(tensors, path)
+        pytorch_save_safetensors(tensors, path)
 
-        loaded = pytorch_load_file(path)
+        loaded = load_file(path)
         assert "empty" in loaded
         assert loaded["empty"].shape == (0,)
 
@@ -69,9 +70,9 @@ class TestPyTorchSave:
         tensors = {"scalar": torch.tensor(42.0)}
         path = tmp_path / "scalar.safetensors"
 
-        pytorch_save_file(tensors, path)
+        pytorch_save_safetensors(tensors, path)
 
-        loaded = pytorch_load_file(path)
+        loaded = load_file(path)
         assert torch.allclose(loaded["scalar"], tensors["scalar"])
 
     def test_save_various_dtypes(self, tmp_path):
@@ -85,9 +86,9 @@ class TestPyTorchSave:
         }
         path = tmp_path / "dtypes.safetensors"
 
-        pytorch_save_file(tensors, path)
+        pytorch_save_safetensors(tensors, path)
 
-        loaded = pytorch_load_file(path)
+        loaded = load_file(path)
         for name, tensor in tensors.items():
             assert loaded[name].dtype == tensor.dtype
             assert torch.allclose(loaded[name], tensor)
@@ -104,8 +105,8 @@ class TestPyTorchRoundtrip:
         }
         path = tmp_path / "roundtrip.safetensors"
 
-        pytorch_save_file(tensors, path)
-        loaded = pytorch_load_file(path)
+        pytorch_save_safetensors(tensors, path)
+        loaded = load_file(path)
 
         assert set(loaded.keys()) == {"weight1", "weight2"}
         assert torch.allclose(loaded["weight1"], tensors["weight1"])
@@ -118,8 +119,8 @@ class TestPyTorchRoundtrip:
         }
         path = tmp_path / "large.safetensors"
 
-        pytorch_save_file(tensors, path)
-        loaded = pytorch_load_file(path)
+        pytorch_save_safetensors(tensors, path)
+        loaded = load_file(path)
 
         assert loaded["large"].shape == tensors["large"].shape
         assert torch.allclose(loaded["large"], tensors["large"], atol=1e-6)
@@ -136,9 +137,9 @@ class TestPyTorchGPUTensors:
         tensors = {"weight": torch.randn(10, 20, device="cuda")}
         path = tmp_path / "cuda.safetensors"
 
-        pytorch_save_file(tensors, path)
+        pytorch_save_safetensors(tensors, path)
 
-        loaded = pytorch_load_file(path)
+        loaded = load_file(path)
         assert "weight" in loaded
         assert loaded["weight"].device.type == "cpu"
         assert torch.allclose(loaded["weight"].cpu(), tensors["weight"].cpu())
