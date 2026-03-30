@@ -121,28 +121,16 @@ struct ConversionPlan {
     index: HashMap<String, TensorWriteEntry>,
 }
 
-/// Collect tensor metadata from all shards concurrently.
+/// Collect tensor metadata from all shards sequentially to limit memory usage.
 async fn collect_tensor_metadata_async(shard_paths: &[PathBuf]) -> WriterResult<Vec<TensorMeta>> {
-    let load_futures: Vec<_> = shard_paths
-        .iter()
-        .map(|path| {
-            let path = path.clone();
-            async move {
-                let shard = backends::async_backend()
-                    .load(&path)
-                    .await
-                    .map_err(WriterError::from)?;
-                Result::<_, WriterError>::Ok((path, shard))
-            }
-        })
-        .collect();
-
-    let results = futures::future::try_join_all(load_futures).await?;
-
     let mut all_metadata = Vec::new();
     let mut seen_names = BTreeSet::new();
 
-    for (shard_path, shard) in results {
+    // Process shards sequentially to limit peak memory usage
+    for shard_path in shard_paths {
+        let mut reader = backends::AsyncReader::new();
+        let shard = reader.load(shard_path).await.map_err(WriterError::from)?;
+
         let model = Model::from_bytes(shard)
             .map_err(|e| WriterError::Io(std::io::Error::other(e.to_string())))?;
 
@@ -182,9 +170,8 @@ fn collect_tensor_metadata_sync(shard_paths: &[PathBuf]) -> WriterResult<Vec<Ten
     let results: Vec<Result<Vec<TensorMeta>, WriterError>> = shard_paths
         .par_iter()
         .map(|path| {
-            let shard = backends::sync_backend()
-                .load(path)
-                .map_err(WriterError::from)?;
+            let mut reader = backends::SyncReader::new();
+            let shard = reader.load(path).map_err(WriterError::from)?;
 
             let model = Model::from_bytes(shard)
                 .map_err(|e| WriterError::Io(std::io::Error::other(e.to_string())))?;
@@ -322,10 +309,8 @@ async fn write_single_partition_async(
 ) -> WriterResult<()> {
     if tensors.is_empty() {
         let path = output_dir.join(format!("tensor.data_{}", partition_id));
-        backends::async_backend()
-            .write_all(&path, Vec::new())
-            .await
-            .map_err(WriterError::from)?;
+        let mut writer = backends::AsyncWriter::create(&path).await.map_err(WriterError::from)?;
+        writer.write_all(Vec::new()).await.map_err(WriterError::from)?;
         return Ok(());
     }
 
@@ -340,11 +325,9 @@ async fn write_single_partition_async(
 
     // Load all needed shards
     let mut shard_models: HashMap<PathBuf, Model> = HashMap::new();
+    let mut reader = backends::AsyncReader::new();
     for shard_path in tensors_by_shard.keys() {
-        let data = backends::async_backend()
-            .load(shard_path)
-            .await
-            .map_err(WriterError::from)?;
+        let data = reader.load(shard_path).await.map_err(WriterError::from)?;
         let model = Model::from_bytes(data)
             .map_err(|e| WriterError::Io(std::io::Error::other(e.to_string())))?;
         shard_models.insert(shard_path.to_path_buf(), model);
@@ -365,10 +348,8 @@ async fn write_single_partition_async(
     }
 
     let path = output_dir.join(format!("tensor.data_{}", partition_id));
-    backends::async_backend()
-        .write_all(&path, partition_data)
-        .await
-        .map_err(WriterError::from)?;
+    let mut writer = backends::AsyncWriter::create(&path).await.map_err(WriterError::from)?;
+    writer.write_all(partition_data).await.map_err(WriterError::from)?;
 
     Ok(())
 }
@@ -421,10 +402,9 @@ fn write_single_partition_sync(
 
     // Load all needed shards
     let mut shard_models: HashMap<PathBuf, Model> = HashMap::new();
+    let mut reader = backends::SyncReader::new();
     for shard_path in tensors_by_shard.keys() {
-        let data = backends::sync_backend()
-            .load(shard_path)
-            .map_err(WriterError::from)?;
+        let data = reader.load(shard_path).map_err(WriterError::from)?;
         let model = Model::from_bytes(data)
             .map_err(|e| WriterError::Io(std::io::Error::other(e.to_string())))?;
         shard_models.insert(shard_path.to_path_buf(), model);

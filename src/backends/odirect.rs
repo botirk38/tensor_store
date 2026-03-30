@@ -13,7 +13,6 @@ use std::io::{Error as IoError, ErrorKind};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::sync::Arc;
-use tokio::fs::OpenOptions as TokioOpenOptions;
 use tokio_uring::fs::{File as UringFile, OpenOptions};
 
 /// Block size for alignment (4KB - standard disk block size)
@@ -58,20 +57,6 @@ pub const fn can_use_direct_read(file_size: usize, chunk_size: usize) -> bool {
         && is_block_aligned(0, file_size)
         && chunk_size.is_multiple_of(BLOCK_SIZE)
         && file_size.is_multiple_of(chunk_size)
-}
-
-/// Determines whether a direct I/O write is safe for the given length.
-///
-/// Direct writes require block-sized buffers; caller is responsible for alignment.
-#[inline]
-pub const fn can_use_direct_write(len: usize) -> bool {
-    len.is_multiple_of(BLOCK_SIZE)
-}
-
-/// Align length for direct I/O write. Returns padded length.
-#[inline]
-pub const fn pad_to_block(len: usize) -> usize {
-    align_to_block(len)
 }
 
 /// Allocates a zeroed, block-aligned buffer.
@@ -359,52 +344,6 @@ pub async fn open_direct_read_io_uring(path: &Path) -> IoResult<UringFile> {
         .await
 }
 
-/// Open a file for direct writing (O_DIRECT) using tokio-uring.
-///
-/// # Errors
-///
-/// - File cannot be created or opened for writing
-#[inline]
-pub async fn open_direct_write_io_uring(path: &Path) -> IoResult<UringFile> {
-    OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .custom_flags(libc::O_DIRECT)
-        .open(path)
-        .await
-}
-
-/// Open a file for direct reading (O_DIRECT) using Tokio's async file type.
-///
-/// # Errors
-///
-/// - File does not exist or cannot be opened
-#[inline]
-pub async fn open_direct_read_tokio(path: &Path) -> IoResult<tokio::fs::File> {
-    TokioOpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_DIRECT)
-        .open(path)
-        .await
-}
-
-/// Open a file for direct writing (O_DIRECT) using Tokio's async file type.
-///
-/// # Errors
-///
-/// - File cannot be created or opened for writing
-#[inline]
-pub async fn open_direct_write_tokio(path: &Path) -> IoResult<tokio::fs::File> {
-    TokioOpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .custom_flags(libc::O_DIRECT)
-        .open(path)
-        .await
-}
-
 /// Open a file for direct reading (O_DIRECT) using std::fs.
 ///
 /// # Errors
@@ -418,21 +357,6 @@ pub fn open_direct_read_sync(path: &Path) -> IoResult<std::fs::File> {
         .open(path)
 }
 
-/// Open a file for direct writing (O_DIRECT) using std::fs.
-///
-/// # Errors
-///
-/// - File cannot be created or opened for writing
-#[inline]
-pub fn open_direct_write_sync(path: &Path) -> IoResult<std::fs::File> {
-    StdOpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .custom_flags(libc::O_DIRECT)
-        .open(path)
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -441,7 +365,7 @@ pub fn open_direct_write_sync(path: &Path) -> IoResult<std::fs::File> {
 mod tests {
     use super::{
         BLOCK_SIZE, BLOCK_SIZE_U64, OwnedAlignedBuffer, align_to_block, alloc_aligned,
-        can_use_direct_read, can_use_direct_write, is_block_aligned, pad_to_block,
+        can_use_direct_read, is_block_aligned,
     };
     use tokio_uring::buf::IoBuf;
 
@@ -529,24 +453,6 @@ mod tests {
         assert!(!can_use_direct_read(BLOCK_SIZE, BLOCK_SIZE + 1));
         assert!(!can_use_direct_read(BLOCK_SIZE + 1, BLOCK_SIZE));
         assert!(!can_use_direct_read(BLOCK_SIZE * 3, BLOCK_SIZE * 2));
-    }
-
-    #[test]
-    fn test_can_use_direct_write_edge_cases() {
-        assert!(can_use_direct_write(0));
-        assert!(can_use_direct_write(BLOCK_SIZE));
-        assert!(can_use_direct_write(BLOCK_SIZE * 100));
-        assert!(!can_use_direct_write(1));
-        assert!(!can_use_direct_write(BLOCK_SIZE - 1));
-        assert!(!can_use_direct_write(BLOCK_SIZE + 1));
-    }
-
-    #[test]
-    fn test_pad_to_block() {
-        assert_eq!(pad_to_block(0), 0);
-        assert_eq!(pad_to_block(1), BLOCK_SIZE);
-        assert_eq!(pad_to_block(BLOCK_SIZE), BLOCK_SIZE);
-        assert_eq!(pad_to_block(BLOCK_SIZE + 1), BLOCK_SIZE * 2);
     }
 
     #[test]

@@ -200,7 +200,8 @@ impl Index {
 
     /// Load index from file asynchronously.
     pub async fn load(path: impl AsRef<Path>) -> ReaderResult<Self> {
-        let data = backends::async_backend().load(path.as_ref()).await?;
+        let mut reader = backends::AsyncReader::new();
+        let data = reader.load(path.as_ref()).await?;
         Self::from_bytes(&data)
     }
 

@@ -116,14 +116,23 @@ fn estimate_sync_cost(stats: &LoadStats) -> f64 {
 fn estimate_async_cost(stats: &LoadStats) -> f64 {
     let parallelism = effective_async_parallelism(stats);
 
+    let io_throughput = if parallelism < 2.0 {
+        SYNC_THROUGHPUT_BPS
+    } else {
+        ASYNC_THROUGHPUT_BPS
+    };
+
     ASYNC_BASE_COST_NS
-        + bytes_to_ns(stats.total_bytes, ASYNC_THROUGHPUT_BPS) / parallelism
+        + bytes_to_ns(stats.total_bytes, io_throughput) / parallelism
         + ASYNC_PER_PARTITION_COST_NS * stats.partition_count as f64
         + ASYNC_PER_TENSOR_COST_NS * stats.tensor_count as f64
         + ASYNC_MAX_PARTITION_COST_NS_PER_BYTE * stats.max_partition_bytes as f64
 }
 
 fn choose_load_backend(stats: &LoadStats) -> bool {
+    if stats.partition_count <= 1 {
+        return false;
+    }
     estimate_async_cost(stats) < estimate_sync_cost(stats)
 }
 
@@ -156,9 +165,8 @@ fn execute_load_plan_sync(plan: &LoadPlan) -> ReaderResult<Tensors> {
     // Fast path: single partition - use direct load, avoid batch overhead
     if plan.partitions.len() == 1 {
         let read = &plan.partitions[0];
-        let data = backends::sync_backend()
-            .load(&read.path)
-            .map_err(ReaderError::from)?;
+        let mut reader = backends::SyncReader::new();
+        let data = reader.load(&read.path).map_err(ReaderError::from)?;
 
         if data.len() < read.size as usize {
             return Err(ReaderError::PartitionTooSmall {
@@ -188,9 +196,8 @@ fn execute_load_plan_sync(plan: &LoadPlan) -> ReaderResult<Tensors> {
         .map(|p| (p.path.clone(), 0, p.size as usize))
         .collect();
 
-    let results = backends::sync_backend()
-        .load_range_batch(&requests)
-        .map_err(ReaderError::from)?;
+    let mut reader = backends::SyncReader::new();
+    let results = reader.load_range_batch(&requests).map_err(ReaderError::from)?;
 
     // Build partition buffers in indexed slots to avoid hashing hot-path lookups.
     let max_partition_id = plan
@@ -263,10 +270,8 @@ async fn execute_load_plan_async(plan: &LoadPlan) -> ReaderResult<Tensors> {
     // Fast path: single partition - use direct load, avoid batch overhead
     if plan.partitions.len() == 1 {
         let read = &plan.partitions[0];
-        let data = backends::async_backend()
-            .load(&read.path)
-            .await
-            .map_err(ReaderError::from)?;
+        let mut reader = backends::AsyncReader::new();
+        let data = reader.load(&read.path).await.map_err(ReaderError::from)?;
 
         if data.len() < read.size as usize {
             return Err(ReaderError::PartitionTooSmall {
@@ -296,11 +301,9 @@ async fn execute_load_plan_async(plan: &LoadPlan) -> ReaderResult<Tensors> {
     let load_futures: Vec<_> = plan
         .partitions
         .iter()
-        .map(|read| async {
-            let data = backends::async_backend()
-                .load(&read.path)
-                .await
-                .map_err(ReaderError::from)?;
+        .map(|read| async move {
+            let mut reader = backends::AsyncReader::new();
+            let data = reader.load(&read.path).await.map_err(ReaderError::from)?;
             if data.len() < read.size as usize {
                 return Err(ReaderError::PartitionTooSmall {
                     path: read.path.to_string_lossy().to_string(),
@@ -317,6 +320,7 @@ async fn execute_load_plan_async(plan: &LoadPlan) -> ReaderResult<Tensors> {
         .await
         .into_iter()
         .collect::<ReaderResult<Vec<_>>>()?;
+    let all_results = results;
 
     // Build partition buffers in indexed slots to avoid hashing hot-path lookups.
     let max_partition_id = plan
@@ -326,7 +330,7 @@ async fn execute_load_plan_async(plan: &LoadPlan) -> ReaderResult<Tensors> {
         .max()
         .unwrap_or(0);
     let mut partition_buffers: Vec<Option<Arc<[u8]>>> = vec![None; max_partition_id + 1];
-    for (partition_id, buf) in results {
+    for (partition_id, buf) in all_results {
         partition_buffers[partition_id] = Some(buf);
     }
 
@@ -494,5 +498,17 @@ mod tests {
         };
 
         assert!(choose_load_backend(&stats));
+    }
+
+    #[test]
+    fn choose_sync_for_low_fanout_partitions() {
+        let stats = LoadStats {
+            partition_count: 2,
+            tensor_count: 160,
+            total_bytes: 524 * 1024 * 1024,
+            max_partition_bytes: 334 * 1024 * 1024,
+        };
+
+        assert!(!choose_load_backend(&stats));
     }
 }

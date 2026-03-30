@@ -66,10 +66,8 @@ pub async fn write_index(
     ensure_parent_dir_async(path).await?;
 
     let json = serialize_index(tensors)?;
-    backends::async_backend()
-        .write_all(path, json)
-        .await
-        .map_err(WriterError::from)
+    let mut writer = backends::AsyncWriter::create(path).await.map_err(WriterError::from)?;
+    writer.write_all(json).await.map_err(WriterError::from)
 }
 
 /// Write a partition file (`tensor.data_N`) asynchronously.
@@ -90,10 +88,8 @@ pub async fn write_partition(
     let path = output_path.as_ref();
     ensure_parent_dir_async(path).await?;
     let bytes = data.into();
-    backends::async_backend()
-        .write_all(path, bytes)
-        .await
-        .map_err(WriterError::from)
+    let mut writer = backends::AsyncWriter::create(path).await.map_err(WriterError::from)?;
+    writer.write_all(bytes).await.map_err(WriterError::from)
 }
 
 /// Write `tensor_index.json` synchronously.

@@ -188,7 +188,9 @@ fn profile_load_async(config: &ProfileConfig, default: bool) -> ProfileResult {
             "Running {label} serverlessllm load for '{}' ({iterations}x {cache_label})",
             fixture
         );
-        tokio_uring::start(async {
+        let mut builder = tokio_uring::builder();
+        builder.entries(32);
+        builder.start(async {
             for i in 0..iterations {
                 if config.cold_cache && i == 0 {
                     drop_page_cache_for_dir(&dir);

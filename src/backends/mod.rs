@@ -1,178 +1,237 @@
 //! High-performance I/O backends for tensor storage.
 //!
 //! This module provides zero-copy I/O operations optimized for large tensor files.
-//! The API is async-first with explicit sync alternatives for blocking contexts.
+//! The API is impl-based: readers and writers are concrete types with methods.
 //!
 //! # Platform Support
 //!
 //! - **Linux**: `io_uring` backend for async operations (maximum performance)
-//! - **macOS/Windows**: Async API delegates to sync backend via `spawn_blocking`;
-//!   regular files do not support true async I/O, so this matches sync performance
+//! - **macOS/Windows**: Async API delegates to tokio-based async
 //! - **Sync operations**: memory-mapped I/O on Linux, standard file I/O elsewhere
 //!
 //! # Usage
 //!
 //! ```rust,ignore
-//! use tensor_store::backends;
+//! use tensor_store::backends::{AsyncReader, AsyncWriter};
 //! use std::path::Path;
 //!
-//! // Async operations (default, recommended)
-//! let backend = backends::async_backend();
-//! let data = backend.load(Path::new("model.safetensors")).await?;
-//! backend.write_all(Path::new("output.bin"), data).await?;
+//! // Async reader operations
+//! let mut reader = AsyncReader::new();
+//! let data = reader.load(Path::new("model.safetensors")).await?;
 //!
-//! // Sync operations (for blocking contexts)
-//! let sync_backend = backends::sync_backend();
-//! let data = sync_backend.load(Path::new("model.safetensors"))?;
-//! let chunk = sync_backend.load_range(Path::new("model.safetensors"), 1024, 512)?;
+//! // Async writer operations - stateful and path-bound
+//! let mut writer = AsyncWriter::create(Path::new("output.bin")).await?;
+//! writer.write_at(0, data).await?;
+//! writer.sync_all().await?;
+//!
+//! // Sync equivalents
+//! let mut sync_reader = SyncReader::new();
+//! let chunk = sync_reader.load_range(Path::new("model.safetensors"), 1024, 512)?;
 //! ```
 
-pub mod async_io;
+#[cfg(not(target_os = "linux"))]
+mod async_io;
 pub mod batch;
 pub mod buffer_slice;
 #[cfg(target_os = "linux")]
-pub mod io_uring;
+mod io_uring;
 pub mod mmap;
 #[cfg(target_os = "linux")]
-pub mod odirect;
-pub mod sync_io;
+mod odirect;
+mod sync_io;
 
-use std::future::Future;
-pub use std::io::Result as IoResult;
-use std::path::{Path, PathBuf};
-use std::pin::Pin;
+use std::path::PathBuf;
 use zeropool::BufferPool;
 
-// Tuned for ML checkpoint loading (matches zeropool's profiling example).
 const CHECKPOINT_NUM_SHARDS: usize = 8;
 const CHECKPOINT_TLS_CACHE_SIZE: usize = 4;
 const CHECKPOINT_MAX_BUFFERS_PER_SHARD: usize = 32;
-const CHECKPOINT_MIN_BUFFER_SIZE: usize = 1024 * 1024; // 1MB minimum (drop tiny buffers)
-/// Global buffer pool for tensor data.
-/// Uses BufferPool for efficient buffer management.
+const CHECKPOINT_MIN_BUFFER_SIZE: usize = 1024 * 1024;
+
 static BUFFER_POOL: std::sync::OnceLock<BufferPool> = std::sync::OnceLock::new();
 
-/// Batch request type used by backend interfaces.
 pub type BatchRequest = (PathBuf, u64, usize);
 
-/// Boxed future alias to keep backend trait signatures readable.
-pub type AsyncBackendFuture<'a, T> = Pin<Box<dyn Future<Output = IoResult<T>> + 'a>>;
+pub use std::io::Result as IoResult;
 
-/// Safe interface for asynchronous backends.
-pub trait AsyncBackend: Send + Sync + 'static {
-    fn load<'a>(&'a self, path: &'a Path) -> AsyncBackendFuture<'a, Vec<u8>>;
-    fn load_range<'a>(
-        &'a self,
-        path: &'a Path,
-        offset: u64,
-        len: usize,
-    ) -> AsyncBackendFuture<'a, Vec<u8>>;
-    fn load_range_batch<'a>(
-        &'a self,
-        requests: &'a [BatchRequest],
-    ) -> AsyncBackendFuture<'a, Vec<batch::FlattenedResult>>;
-    fn write_all<'a>(&'a self, path: &'a Path, data: Vec<u8>) -> AsyncBackendFuture<'a, ()>;
-}
-
-/// Safe interface for synchronous backends.
-pub trait SyncBackend: Send + Sync + 'static {
-    fn load(&self, path: &Path) -> IoResult<Vec<u8>>;
-    fn load_range(&self, path: &Path, offset: u64, len: usize) -> IoResult<Vec<u8>>;
-    fn load_range_batch(&self, requests: &[BatchRequest]) -> IoResult<Vec<batch::FlattenedResult>>;
-    fn write_all(&self, path: &Path, data: Vec<u8>) -> IoResult<()>;
-}
-
-/// Build a buffer pool tuned for checkpoint loading workloads.
-///
-/// Settings mirror zeropool's ML checkpoint loader profile:
-/// - Enough shards to reduce contention while keeping cache locality
-/// - Modest TLS cache to keep metadata + weight buffers hot per thread
-/// - Larger shard capacity to absorb bursty tensor allocations
-/// - 1MB minimum buffer size to avoid polluting the pool with tiny buffers
-fn build_buffer_pool() -> BufferPool {
-    BufferPool::builder()
-        .num_shards(CHECKPOINT_NUM_SHARDS)
-        .tls_cache_size(CHECKPOINT_TLS_CACHE_SIZE)
-        .max_buffers_per_shard(CHECKPOINT_MAX_BUFFERS_PER_SHARD)
-        .min_buffer_size(CHECKPOINT_MIN_BUFFER_SIZE)
-        // Pin memory to avoid page faults during high-throughput checkpoint reads.
-        .pinned_memory(true)
-        .build()
-}
-
-/// Get the global buffer pool instance.
-#[inline]
 pub fn get_buffer_pool() -> &'static BufferPool {
-    BUFFER_POOL.get_or_init(build_buffer_pool)
+    BUFFER_POOL.get_or_init(|| {
+        BufferPool::builder()
+            .num_shards(CHECKPOINT_NUM_SHARDS)
+            .tls_cache_size(CHECKPOINT_TLS_CACHE_SIZE)
+            .max_buffers_per_shard(CHECKPOINT_MAX_BUFFERS_PER_SHARD)
+            .min_buffer_size(CHECKPOINT_MIN_BUFFER_SIZE)
+            .pinned_memory(true)
+            .build()
+    })
 }
 
 #[cfg(target_os = "linux")]
-static ASYNC_BACKEND: crate::backends::io_uring::IoUringBackend =
-    crate::backends::io_uring::IoUringBackend;
-#[cfg(not(target_os = "linux"))]
-static ASYNC_BACKEND: async_io::TokioAsyncBackend = async_io::TokioAsyncBackend;
-static SYNC_BACKEND: sync_io::DefaultSyncBackend = sync_io::DefaultSyncBackend;
-
-/// Get the default asynchronous backend for the current platform.
-pub fn async_backend() -> &'static dyn AsyncBackend {
-    &ASYNC_BACKEND
+pub struct AsyncReader {
+    inner: io_uring::IoUringReader,
 }
 
-/// Get the default synchronous backend for the current platform.
-pub fn sync_backend() -> &'static dyn SyncBackend {
-    &SYNC_BACKEND
+#[cfg(not(target_os = "linux"))]
+pub struct AsyncReader {
+    inner: async_io::TokioReader,
+}
+
+impl AsyncReader {
+    pub fn new() -> Self {
+        #[cfg(target_os = "linux")]
+        {
+            Self { inner: io_uring::IoUringReader::new() }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Self { inner: async_io::TokioReader::new() }
+        }
+    }
+
+    pub async fn load(&mut self, path: impl AsRef<std::path::Path> + Send) -> IoResult<Vec<u8>> {
+        self.inner.load(path).await
+    }
+
+    pub async fn load_range(&mut self, path: impl AsRef<std::path::Path> + Send, offset: u64, len: usize) -> IoResult<Vec<u8>> {
+        self.inner.load_range(path, offset, len).await
+    }
+
+    pub async fn load_range_batch(&mut self, requests: &[BatchRequest]) -> IoResult<Vec<batch::FlattenedResult>> {
+        self.inner.load_range_batch(requests).await
+    }
+}
+
+impl Default for AsyncReader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub struct SyncReader {
+    inner: sync_io::SyncReaderEngine,
+}
+
+impl SyncReader {
+    pub fn new() -> Self {
+        Self { inner: sync_io::SyncReaderEngine::new() }
+    }
+
+    pub fn load(&mut self, path: impl AsRef<std::path::Path>) -> IoResult<Vec<u8>> {
+        self.inner.load(path)
+    }
+
+    pub fn load_range(&mut self, path: impl AsRef<std::path::Path>, offset: u64, len: usize) -> IoResult<Vec<u8>> {
+        self.inner.load_range(path, offset, len)
+    }
+
+    pub fn load_range_batch(&mut self, requests: &[BatchRequest]) -> IoResult<Vec<batch::FlattenedResult>> {
+        self.inner.load_range_batch(requests)
+    }
+}
+
+impl Default for SyncReader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub struct AsyncWriter {
+    inner: io_uring::IoUringWriter,
+}
+
+#[cfg(not(target_os = "linux"))]
+pub struct AsyncWriter {
+    inner: async_io::TokioWriter,
+}
+
+impl AsyncWriter {
+    pub async fn create(path: impl AsRef<std::path::Path>) -> IoResult<Self> {
+        #[cfg(target_os = "linux")]
+        {
+            let inner = io_uring::IoUringWriter::create(path.as_ref()).await?;
+            Ok(Self { inner })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let inner = async_io::TokioWriter::create(path.as_ref()).await?;
+            Ok(Self { inner })
+        }
+    }
+
+    pub async fn write_all(&mut self, data: Vec<u8>) -> IoResult<()> {
+        self.inner.write_all(data).await
+    }
+
+    pub async fn write_at(&mut self, offset: u64, data: Vec<u8>) -> IoResult<()> {
+        self.inner.write_at(offset, data).await
+    }
+
+    pub async fn sync_all(&mut self) -> IoResult<()> {
+        self.inner.sync_all().await
+    }
+}
+
+pub struct SyncWriter {
+    inner: sync_io::SyncWriterEngine,
+}
+
+impl SyncWriter {
+    pub fn create(path: impl AsRef<std::path::Path>) -> IoResult<Self> {
+        let inner = sync_io::SyncWriterEngine::create(path.as_ref())?;
+        Ok(Self { inner })
+    }
+
+    pub fn write_all(&mut self, data: &[u8]) -> IoResult<()> {
+        self.inner.write_all(data)
+    }
+
+    pub fn write_at(&mut self, offset: u64, data: &[u8]) -> IoResult<()> {
+        self.inner.write_at(offset, data)
+    }
+
+    pub fn sync_all(&mut self) -> IoResult<()> {
+        self.inner.sync_all()
+    }
+}
+
+const PARALLELISM_TARGET_BYTES: f64 = 128.0 * 1024.0 * 1024.0;
+
+pub(crate) fn bounded_async_concurrency(item_count: usize, total_bytes: u64, max_item_bytes: u64) -> usize {
+    if item_count <= 1 {
+        return 1;
+    }
+
+    let total = total_bytes.max(1) as f64;
+    let max_item = max_item_bytes.max(1) as f64;
+    let avg_item = total / item_count as f64;
+
+    let count_factor = (item_count as f64).ln_1p();
+    let size_factor = (PARALLELISM_TARGET_BYTES / avg_item).sqrt().clamp(0.5, 4.0);
+    let skew_factor = (max_item / avg_item).sqrt().clamp(1.0, 4.0);
+
+    let raw = 1.0 + count_factor * size_factor / skew_factor;
+    let unbounded = raw.clamp(1.0, item_count as f64);
+
+    let cpu_count = std::thread::available_parallelism()
+        .map(|p| p.get())
+        .unwrap_or(4)
+        .max(2);
+
+    let min_floor = item_count.clamp(2, 4);
+
+    (unbounded as usize)
+        .min(cpu_count)
+        .max(min_floor)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        CHECKPOINT_MAX_BUFFERS_PER_SHARD, CHECKPOINT_MIN_BUFFER_SIZE, CHECKPOINT_NUM_SHARDS,
-        CHECKPOINT_TLS_CACHE_SIZE, async_backend, get_buffer_pool, sync_backend,
-    };
+    use super::*;
 
     #[test]
-    fn test_buffer_pool_initialization() {
-        let pool = get_buffer_pool();
-        // Just verify we can get the pool without panicking
-        assert!(!std::ptr::eq(pool, std::ptr::null()));
-    }
-
-    #[test]
-    fn test_buffer_pool_singleton() {
-        let pool1 = get_buffer_pool();
-        let pool2 = get_buffer_pool();
-        // Verify both references point to the same instance
-        assert!(std::ptr::eq(pool1, pool2));
-    }
-
-    #[test]
-    #[allow(clippy::assertions_on_constants)]
-    fn test_buffer_pool_config_values() {
-        assert!(CHECKPOINT_NUM_SHARDS > 0);
-        assert!(CHECKPOINT_NUM_SHARDS <= 64);
-        assert!(CHECKPOINT_TLS_CACHE_SIZE > 0);
-        assert!(CHECKPOINT_MAX_BUFFERS_PER_SHARD > 0);
-        assert!(CHECKPOINT_MIN_BUFFER_SIZE >= 1024);
-    }
-
-    #[test]
-    fn test_get_buffer_pool_multiple_calls() {
-        // Call multiple times to verify stability
-        for _ in 0..10 {
-            let pool = get_buffer_pool();
-            assert!(!std::ptr::eq(pool, std::ptr::null()));
-        }
-    }
-
-    #[test]
-    fn test_platform_specific_exports() {
-        // Ensure singletons are stable and non-null
-        let async_b1 = async_backend();
-        let async_b2 = async_backend();
-        assert!(std::ptr::eq(async_b1, async_b2));
-
-        let sync_b1 = sync_backend();
-        let sync_b2 = sync_backend();
-        assert!(std::ptr::eq(sync_b1, sync_b2));
+    fn test_reader_construction() {
+        let _ = AsyncReader::new();
+        let _ = SyncReader::new();
     }
 }

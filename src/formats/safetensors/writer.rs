@@ -26,7 +26,7 @@
 //! ```
 
 use crate::backends;
-use crate::formats::error::WriterResult;
+use crate::formats::error::{WriterError, WriterResult};
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::path::Path;
@@ -174,10 +174,8 @@ impl Writer {
             std::fs::create_dir_all(parent)?;
         }
         let buffer = safetensors::serialize(tensors, metadata)?;
-        backends::async_backend()
-            .write_all(path_ref, buffer)
-            .await
-            .map_err(Into::into)
+        let mut writer = backends::AsyncWriter::create(path_ref).await.map_err(|e| std::io::Error::other(e.to_string()))?;
+        writer.write_all(buffer).await.map_err(WriterError::from)
     }
 }
 

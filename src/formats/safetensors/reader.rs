@@ -137,12 +137,21 @@ fn estimate_sync_cost(stats: &LoadStats) -> f64 {
 fn estimate_async_cost(stats: &LoadStats) -> f64 {
     let parallelism = effective_async_parallelism(stats);
 
+    let io_throughput = if parallelism < 2.0 {
+        SYNC_THROUGHPUT_BPS
+    } else {
+        ASYNC_THROUGHPUT_BPS
+    };
+
     ASYNC_BASE_COST_NS
-        + bytes_to_ns(stats.total_bytes, ASYNC_THROUGHPUT_BPS) / parallelism
+        + bytes_to_ns(stats.total_bytes, io_throughput) / parallelism
         + ASYNC_PER_SHARD_COST_NS * stats.shard_count as f64
 }
 
 fn choose_load_backend(stats: &LoadStats) -> bool {
+    if stats.shard_count <= 1 {
+        return false;
+    }
     estimate_async_cost(stats) < estimate_sync_cost(stats)
 }
 
@@ -216,14 +225,13 @@ fn build_tensor_index<'a>(
 }
 
 async fn load_bytes_async(path: &Path) -> ReaderResult<Vec<u8>> {
-    backends::async_backend()
-        .load(path)
-        .await
-        .map_err(Into::into)
+    let mut reader = backends::AsyncReader::new();
+    reader.load(path).await.map_err(Into::into)
 }
 
 fn load_bytes_sync(path: &Path) -> ReaderResult<Vec<u8>> {
-    backends::sync_backend().load(path).map_err(Into::into)
+    let mut reader = backends::SyncReader::new();
+    reader.load(path).map_err(Into::into)
 }
 
 fn load_mmap(path: &Path) -> ReaderResult<MmapShard> {
@@ -371,12 +379,31 @@ impl Model {
             });
         }
 
-        let shard_bytes = try_join_all(
-            shard_paths
-                .into_iter()
-                .map(|shard_path| async move { load_bytes_async(&shard_path).await }),
-        )
-        .await?;
+        let mut total_bytes = 0u64;
+        let mut max_shard_bytes = 0u64;
+        for shard_path in &shard_paths {
+            if let Ok(size) = fs::metadata(shard_path).map(|m| m.len()) {
+                total_bytes = total_bytes.saturating_add(size);
+                max_shard_bytes = max_shard_bytes.max(size);
+            }
+        }
+
+        let limit = backends::bounded_async_concurrency(
+            shard_paths.len(),
+            total_bytes,
+            max_shard_bytes,
+        );
+        let mut shard_bytes: Vec<Vec<u8>> = Vec::new();
+
+        for chunk in shard_paths.chunks(limit) {
+            let chunk_results = try_join_all(
+                chunk
+                    .iter()
+                    .map(|sp| async move { load_bytes_async(sp).await }),
+            )
+            .await?;
+            shard_bytes.extend(chunk_results);
+        }
 
         let shards: ReaderResult<Vec<_>> = shard_bytes
             .into_par_iter()
