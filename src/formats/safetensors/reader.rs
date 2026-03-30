@@ -104,8 +104,7 @@ const SYNC_BASE_COST_NS: f64 = 180_000.0;
 const ASYNC_BASE_COST_NS: f64 = 650_000.0;
 const SYNC_PER_SHARD_COST_NS: f64 = 35_000.0;
 const ASYNC_PER_SHARD_COST_NS: f64 = 95_000.0;
-const SYNC_THROUGHPUT_BPS: f64 = 7.5 * 1024.0 * 1024.0 * 1024.0;
-const ASYNC_THROUGHPUT_BPS: f64 = 6.0 * 1024.0 * 1024.0 * 1024.0;
+const THROUGHPUT_BPS: f64 = 7.5 * 1024.0 * 1024.0 * 1024.0;
 const PARALLELISM_TARGET_BYTES: f64 = 128.0 * 1024.0 * 1024.0;
 
 fn bytes_to_ns(bytes: u64, throughput_bps: f64) -> f64 {
@@ -130,21 +129,15 @@ fn effective_async_parallelism(stats: &LoadStats) -> f64 {
 
 fn estimate_sync_cost(stats: &LoadStats) -> f64 {
     SYNC_BASE_COST_NS
-        + bytes_to_ns(stats.total_bytes, SYNC_THROUGHPUT_BPS)
+        + bytes_to_ns(stats.total_bytes, THROUGHPUT_BPS)
         + SYNC_PER_SHARD_COST_NS * stats.shard_count as f64
 }
 
 fn estimate_async_cost(stats: &LoadStats) -> f64 {
     let parallelism = effective_async_parallelism(stats);
 
-    let io_throughput = if parallelism < 2.0 {
-        SYNC_THROUGHPUT_BPS
-    } else {
-        ASYNC_THROUGHPUT_BPS
-    };
-
     ASYNC_BASE_COST_NS
-        + bytes_to_ns(stats.total_bytes, io_throughput) / parallelism
+        + bytes_to_ns(stats.total_bytes, THROUGHPUT_BPS) / parallelism
         + ASYNC_PER_SHARD_COST_NS * stats.shard_count as f64
 }
 

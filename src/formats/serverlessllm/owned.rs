@@ -62,9 +62,8 @@ const SYNC_PER_PARTITION_COST_NS: f64 = 45_000.0;
 const ASYNC_PER_PARTITION_COST_NS: f64 = 105_000.0;
 const SYNC_PER_TENSOR_COST_NS: f64 = 2_000.0;
 const ASYNC_PER_TENSOR_COST_NS: f64 = 3_500.0;
-const ASYNC_MAX_PARTITION_COST_NS_PER_BYTE: f64 = 0.4;
-const SYNC_THROUGHPUT_BPS: f64 = 7.5 * 1024.0 * 1024.0 * 1024.0;
-const ASYNC_THROUGHPUT_BPS: f64 = 5.75 * 1024.0 * 1024.0 * 1024.0;
+const ASYNC_OVERHEAD_PER_BYTE: f64 = 0.15;
+const THROUGHPUT_BPS: f64 = 7.5 * 1024.0 * 1024.0 * 1024.0;
 const PARALLELISM_TARGET_BYTES: f64 = 128.0 * 1024.0 * 1024.0;
 
 fn bytes_to_ns(bytes: u64, throughput_bps: f64) -> f64 {
@@ -108,7 +107,7 @@ fn effective_async_parallelism(stats: &LoadStats) -> f64 {
 
 fn estimate_sync_cost(stats: &LoadStats) -> f64 {
     SYNC_BASE_COST_NS
-        + bytes_to_ns(stats.total_bytes, SYNC_THROUGHPUT_BPS)
+        + bytes_to_ns(stats.total_bytes, THROUGHPUT_BPS)
         + SYNC_PER_PARTITION_COST_NS * stats.partition_count as f64
         + SYNC_PER_TENSOR_COST_NS * stats.tensor_count as f64
 }
@@ -116,17 +115,11 @@ fn estimate_sync_cost(stats: &LoadStats) -> f64 {
 fn estimate_async_cost(stats: &LoadStats) -> f64 {
     let parallelism = effective_async_parallelism(stats);
 
-    let io_throughput = if parallelism < 2.0 {
-        SYNC_THROUGHPUT_BPS
-    } else {
-        ASYNC_THROUGHPUT_BPS
-    };
-
     ASYNC_BASE_COST_NS
-        + bytes_to_ns(stats.total_bytes, io_throughput) / parallelism
+        + bytes_to_ns(stats.total_bytes, THROUGHPUT_BPS) / parallelism
         + ASYNC_PER_PARTITION_COST_NS * stats.partition_count as f64
         + ASYNC_PER_TENSOR_COST_NS * stats.tensor_count as f64
-        + ASYNC_MAX_PARTITION_COST_NS_PER_BYTE * stats.max_partition_bytes as f64
+        + ASYNC_OVERHEAD_PER_BYTE * stats.max_partition_bytes as f64
 }
 
 fn choose_load_backend(stats: &LoadStats) -> bool {
