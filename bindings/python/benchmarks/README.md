@@ -82,14 +82,15 @@ arguments if you need a different layout.
 - `load_*` defaults to eager loading and chooses between async and sync backends.
 - `load_*` does not auto-select `mmap`.
 
-## Recommended Models
+## Recommended Models (H100 Box)
 
-For this machine, use the fixture ladder:
-- Small: `gpt2`
-- Medium-small: `Qwen/Qwen2-0.5B`
-- Small-medium: `TinyLlama/TinyLlama-1.1B-Chat-v1.0`
-- Medium: `Qwen/Qwen2-1.5B`
-- Medium-large: `EleutherAI/pythia-1.4b-deduped`
-- Large: `EleutherAI/pythia-2.8b-deduped`
+For the H100 box with 180GB RAM, use this fixture ladder:
+- Tiny: `openai-community/gpt2`
+- Small: `Qwen/Qwen2.5-0.5B-Instruct`
+- Medium-small: `Qwen/Qwen2.5-1.5B-Instruct`
+- Medium: `Qwen/Qwen2.5-3B-Instruct`
+- Large: `Qwen/Qwen2.5-7B-Instruct`
+- XL: `Qwen/Qwen2.5-14B-Instruct`
+- XXL: `Qwen/Qwen2.5-32B-Instruct`
 
-Avoid 7B+ fixtures unless you have enough RAM for full eager loads.
+All models have open weights, safetensors format, and vLLM compatibility.
