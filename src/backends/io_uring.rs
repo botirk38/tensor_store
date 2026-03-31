@@ -29,7 +29,10 @@ const IO_URING_MIN_BATCH_BYTES: usize = 4 * 1024 * 1024; // 4 MiB
 /// Small-read threshold below which sync is faster than io_uring setup.
 const SMALL_READ_THRESHOLD: usize = 1024 * 1024; // 1 MiB
 
-const WAIT_FOR_COMPLETIONS: usize = 32;
+/// io_uring-specific chunk size. Larger than sync to reduce SQE/CQE churn.
+const IO_URING_CHUNK_SIZE: usize = 512 * 1024 * 1024; // 512 MiB
+
+const WAIT_FOR_COMPLETIONS: usize = RING_DEPTH as usize;
 
 /// A persistent io_uring reader that reuses a single ring across operations.
 pub struct Reader {
@@ -213,7 +216,7 @@ impl Reader {
         let base_ptr = buffer.as_mut_ptr();
         let fd = file.as_raw_fd();
 
-        let chunk_size = MAX_CHUNK_SIZE;
+        let chunk_size = IO_URING_CHUNK_SIZE.min(MAX_CHUNK_SIZE.saturating_mul(4));
         let chunks = file_size.div_ceil(chunk_size);
 
         if chunks == 0 {
@@ -284,7 +287,7 @@ impl Reader {
         let base_ptr = buffer.as_mut_ptr();
         let fd = file.as_raw_fd();
 
-        let chunk_size = MAX_CHUNK_SIZE;
+        let chunk_size = IO_URING_CHUNK_SIZE.min(MAX_CHUNK_SIZE.saturating_mul(4));
         let chunks = file_size.div_ceil(chunk_size);
 
         if chunks == 0 {

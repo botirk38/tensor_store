@@ -431,9 +431,18 @@ impl Model {
         }
 
         let mut reader = backends::io_uring::Reader::new()?;
-        let shards: ReaderResult<Vec<_>> = shard_paths
+        let requests: Vec<backends::BatchRequest> = shard_paths
+            .iter()
+            .map(|shard_path| {
+                let len = usize::try_from(fs::metadata(shard_path)?.len())
+                    .map_err(|_| std::io::Error::other("file too large"))?;
+                Ok((shard_path.clone(), 0, len))
+            })
+            .collect::<ReaderResult<_>>()?;
+        let results = reader.load_range_batch(&requests)?;
+        let shards: ReaderResult<Vec<_>> = results
             .into_iter()
-            .map(|shard_path| OwnedShard::from_owned(load_bytes_io_uring(&mut reader, &shard_path)?))
+            .map(|(data, _, _)| OwnedShard::from_owned(backends::byte::OwnedBytes::Shared(data)))
             .collect();
         Ok(Self {
             storage: ModelStorage::Sharded(OwnedShardedModel::from_shards(shards?)?),
