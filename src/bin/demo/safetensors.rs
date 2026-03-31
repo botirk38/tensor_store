@@ -81,7 +81,6 @@ fn fixtures(config: &DemoConfig) -> Result<Vec<(String, PathBuf)>, DemoError> {
     }
 }
 
-#[cfg(target_os = "linux")]
 fn demo_async(config: &DemoConfig) -> DemoResult {
     println!("=== SafeTensors Async Sequential Loading Demo (tokio) ===\n");
 

@@ -7,36 +7,6 @@ use tensor_store::formats::serverlessllm;
 use crate::config::{ProfileConfig, ProfileError, ProfileResult};
 use crate::stats::summarize;
 
-#[cfg(unix)]
-fn drop_page_cache_for_file(path: &Path) {
-    use std::os::unix::io::AsRawFd;
-    if let Ok(file) = std::fs::File::open(path) {
-        let fd = file.as_raw_fd();
-        unsafe {
-            let _ = libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_DONTNEED);
-        }
-    }
-}
-
-#[cfg(unix)]
-fn drop_page_cache_for_dir(dir: &Path) {
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            if let Ok(file_type) = entry.file_type()
-                && file_type.is_file()
-            {
-                drop_page_cache_for_file(&entry.path());
-            }
-        }
-    }
-}
-
-#[cfg(not(unix))]
-fn drop_page_cache_for_file(_path: &Path) {}
-
-#[cfg(not(unix))]
-fn drop_page_cache_for_dir(_dir: &Path) {}
-
 fn discover_fixtures() -> Vec<(String, PathBuf)> {
     let fixtures_dir = Path::new("fixtures");
     let mut fixtures = Vec::new();
@@ -95,17 +65,13 @@ fn profile_load_sync(config: &ProfileConfig) -> ProfileResult {
     let fixtures = fixtures(config)?;
     for (fixture, dir) in fixtures {
         let iterations = config.normalized_iterations();
-        let cache_label = if config.cold_cache { "cold" } else { "warm" };
         let mut durations = Vec::with_capacity(iterations);
 
         println!(
-            "Running sync serverlessllm load for '{}' ({iterations}x {cache_label})",
+            "Running sync serverlessllm load for '{}' ({iterations}x)",
             fixture
         );
         for i in 0..iterations {
-            if config.cold_cache && i == 0 {
-                drop_page_cache_for_dir(&dir);
-            }
             let start = Instant::now();
             let model = serverlessllm::Model::load_sync(&dir)?;
             let elapsed = start.elapsed();
@@ -135,17 +101,13 @@ fn profile_load_mmap(config: &ProfileConfig) -> ProfileResult {
     let fixtures = fixtures(config)?;
     for (fixture, dir) in fixtures {
         let iterations = config.normalized_iterations();
-        let cache_label = if config.cold_cache { "cold" } else { "warm" };
         let mut durations = Vec::with_capacity(iterations);
 
         println!(
-            "Running mmap serverlessllm load for '{}' ({iterations}x {cache_label})",
+            "Running mmap serverlessllm load for '{}' ({iterations}x)",
             fixture
         );
         for i in 0..iterations {
-            if config.cold_cache && i == 0 {
-                drop_page_cache_for_dir(&dir);
-            }
             let start = Instant::now();
             let model = serverlessllm::MmapModel::open(&dir)?;
             let elapsed = start.elapsed();
@@ -180,19 +142,15 @@ fn profile_load_async(config: &ProfileConfig, default: bool) -> ProfileResult {
     let rt = tokio::runtime::Runtime::new()?;
     for (fixture, dir) in fixtures {
         let iterations = config.normalized_iterations();
-        let cache_label = if config.cold_cache { "cold" } else { "warm" };
         let mut durations = Vec::with_capacity(iterations);
         let label = if default { "default" } else { "async" };
 
         println!(
-            "Running {label} serverlessllm load for '{}' ({iterations}x {cache_label})",
+            "Running {label} serverlessllm load for '{}' ({iterations}x)",
             fixture
         );
         rt.block_on(async {
             for i in 0..iterations {
-                if config.cold_cache && i == 0 {
-                    drop_page_cache_for_dir(&dir);
-                }
                 let start = Instant::now();
                 let model = if default {
                     serverlessllm::Model::load(&dir).await?
@@ -224,21 +182,18 @@ fn profile_load_async(config: &ProfileConfig, default: bool) -> ProfileResult {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn profile_load_io_uring(config: &ProfileConfig) -> ProfileResult {
     let fixtures = fixtures(config)?;
     for (fixture, dir) in fixtures {
         let iterations = config.normalized_iterations();
-        let cache_label = if config.cold_cache { "cold" } else { "warm" };
         let mut durations = Vec::with_capacity(iterations);
 
         println!(
-            "Running io-uring serverlessllm load for '{}' ({iterations}x {cache_label})",
+            "Running io-uring serverlessllm load for '{}' ({iterations}x)",
             fixture
         );
         for i in 0..iterations {
-            if config.cold_cache && i == 0 {
-                drop_page_cache_for_dir(&dir);
-            }
             let start = Instant::now();
             let model = serverlessllm::Model::load_io_uring(&dir)?;
             let elapsed = start.elapsed();
@@ -270,7 +225,10 @@ pub fn run(case: &str, config: &ProfileConfig) -> ProfileResult {
         "sync" => profile_load_sync(config),
         "async" => profile_load_async(config, false),
         "mmap" => profile_load_mmap(config),
+        #[cfg(target_os = "linux")]
         "io-uring" => profile_load_io_uring(config),
+        #[cfg(not(target_os = "linux"))]
+        "io-uring" => Err(ProfileError::new("io-uring is only available on Linux").into()),
         other => Err(ProfileError::new(format!("Unknown serverlessllm case '{}'", other)).into()),
     }
 }

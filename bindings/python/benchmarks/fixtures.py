@@ -199,26 +199,3 @@ def get_or_build_serverlessllm(
 def touch_tensor(t: torch.Tensor) -> float:
     """Force read of all pages (e.g. for mmap-backed tensors). Returns sum for sanity."""
     return t.sum().item()
-
-
-def drop_page_cache(path: str | Path) -> None:
-    """Hint kernel to drop page cache for path. Unix-only; no-op on Windows."""
-    path = Path(path)
-    if not hasattr(os, "posix_fadvise"):
-        return
-    try:
-        if path.is_file():
-            with open(path, "rb") as f:
-                os.posix_fadvise(f.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
-        else:
-            for f in path.glob("*.data_*"):
-                with open(f, "rb") as fp:
-                    os.posix_fadvise(fp.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
-    except OSError:
-        pass
-
-
-def drop_page_cache_for_shards(files: list[Path]) -> None:
-    """Drop page cache for multiple shard files."""
-    for f in files:
-        drop_page_cache(f)

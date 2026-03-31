@@ -67,15 +67,14 @@ fn collect_shard_files(dir: &Path) -> Vec<PathBuf> {
 
 fn bench_default(c: &mut Criterion) {
     let mut group = c.benchmark_group("safetensors_default");
+    let rt = tokio::runtime::Runtime::new().unwrap();
     for (model_name, dir) in discover_fixtures() {
         let dir_str = dir.to_str().unwrap().to_string();
         group.bench_with_input(BenchmarkId::new("load", &model_name), &dir_str, |b, p| {
-            b.iter(|| {
-                tokio_uring::start(async {
-                    let data = safetensors::Model::load(black_box(p)).await.unwrap();
-                    black_box((data.len(), data.tensor_names().len()))
-                })
-            })
+            b.to_async(&rt).iter(|| async {
+                let data = safetensors::Model::load(black_box(p)).await.unwrap();
+                black_box((data.len(), data.tensor_names().len()))
+            });
         });
     }
     group.finish();
@@ -95,24 +94,6 @@ fn bench_sync(c: &mut Criterion) {
     group.finish();
 }
 
-#[cfg(target_os = "linux")]
-fn bench_async(c: &mut Criterion) {
-    let mut group = c.benchmark_group("safetensors_async");
-    for (model_name, dir) in discover_fixtures() {
-        let dir_str = dir.to_str().unwrap().to_string();
-        group.bench_with_input(BenchmarkId::new("load", &model_name), &dir_str, |b, p| {
-            b.iter(|| {
-                tokio_uring::start(async {
-                    let data = safetensors::Model::load_async(black_box(p)).await.unwrap();
-                    black_box((data.len(), data.tensor_names().len()))
-                })
-            })
-        });
-    }
-    group.finish();
-}
-
-#[cfg(not(target_os = "linux"))]
 fn bench_async(c: &mut Criterion) {
     let mut group = c.benchmark_group("safetensors_async");
     let rt = tokio::runtime::Runtime::new().unwrap();

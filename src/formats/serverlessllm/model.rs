@@ -627,7 +627,9 @@ mod tests {
             max_partition_bytes: 2 * 1024 * 1024 * 1024,
         };
         match choose_load_backend(&stats) {
-            LoadBackend::Sync | LoadBackend::IoUring => {}
+            LoadBackend::Sync => {}
+            #[cfg(target_os = "linux")]
+            LoadBackend::IoUring => {}
             LoadBackend::TokioAsync => panic!("expected Sync or IoUring, got TokioAsync"),
         }
     }
@@ -641,7 +643,9 @@ mod tests {
             max_partition_bytes: 32 * 1024 * 1024,
         };
         match choose_load_backend(&stats) {
-            LoadBackend::TokioAsync | LoadBackend::IoUring => {}
+            #[cfg(target_os = "linux")]
+            LoadBackend::IoUring => {}
+            LoadBackend::TokioAsync => {}
             LoadBackend::Sync => panic!("expected TokioAsync or IoUring, got Sync"),
         }
     }
@@ -655,7 +659,9 @@ mod tests {
             max_partition_bytes: 334 * 1024 * 1024,
         };
         match choose_load_backend(&stats) {
-            LoadBackend::Sync | LoadBackend::IoUring => {}
+            LoadBackend::Sync => {}
+            #[cfg(target_os = "linux")]
+            LoadBackend::IoUring => {}
             LoadBackend::TokioAsync => panic!("expected Sync or IoUring, got TokioAsync"),
         }
     }

@@ -13,7 +13,7 @@ cargo run --bin profile -- <COMMAND> <CASE> [OPTIONS]
 ### SafeTensors Profiling
 
 ```bash
-cargo run --bin profile -- safetensors <CASE> [--fixture <NAME>] [--iterations <N>] [--cold-cache]
+cargo run --bin profile -- safetensors <CASE> [--fixture <NAME>] [--iterations <N>]
 ```
 
 **Available Cases:**
@@ -26,7 +26,7 @@ cargo run --bin profile -- safetensors <CASE> [--fixture <NAME>] [--iterations <
 ### ServerlessLLM Profiling
 
 ```bash
-cargo run --bin profile -- serverlessllm <CASE> [--fixture <NAME>] [--iterations <N>] [--cold-cache]
+cargo run --bin profile -- serverlessllm <CASE> [--fixture <NAME>] [--iterations <N>]
 ```
 
 **Available Cases:**
@@ -40,7 +40,6 @@ cargo run --bin profile -- serverlessllm <CASE> [--fixture <NAME>] [--iterations
 
 - `-f, --fixture <NAME>` - Specify a fixture name (e.g., gpt2, qwen-qwen2-0.5b, eleutherai-pythia-1.4b-deduped)
 - `-i, --iterations <N>` - Number of iterations to run (default: 1)
-- `--cold-cache` - Drop page cache before first iteration via `posix_fadvise(DONTNEED)`
 
 ## Examples
 
@@ -68,6 +67,16 @@ perf stat -e cycles,instructions,cache-references,cache-misses ./target/release/
 Profile all fixtures:
 ```bash
 cargo run --bin profile -- safetensors default
+```
+
+## Cold-Cache Runs
+
+This harness does not perform cache eviction. For cold-cache measurements, prepare the environment manually before running:
+
+```bash
+sync
+echo 3 > /proc/sys/vm/drop_caches
+./target/release/profile safetensors sync --fixture gpt2
 ```
 
 ## Performance Notes

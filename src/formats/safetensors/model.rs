@@ -877,7 +877,9 @@ mod tests {
         };
 
         match choose_load_backend(&stats) {
-            LoadBackend::Sync | LoadBackend::IoUring => {}
+            LoadBackend::Sync => {}
+            #[cfg(target_os = "linux")]
+            LoadBackend::IoUring => {}
             LoadBackend::TokioAsync => panic!("expected Sync or IoUring, got TokioAsync"),
         }
     }
@@ -892,9 +894,9 @@ mod tests {
 
         match choose_load_backend(&stats) {
             LoadBackend::Sync => {}
-            LoadBackend::TokioAsync => panic!("expected Sync, got TokioAsync"),
             #[cfg(target_os = "linux")]
             LoadBackend::IoUring => panic!("expected Sync, got IoUring"),
+            LoadBackend::TokioAsync => panic!("expected Sync, got TokioAsync"),
         }
     }
 }

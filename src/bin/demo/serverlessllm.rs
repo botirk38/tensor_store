@@ -110,7 +110,6 @@ fn total_size(dir: &Path) -> std::io::Result<u64> {
     Ok(total)
 }
 
-#[cfg(target_os = "linux")]
 fn demo_async(config: &DemoConfig) -> DemoResult {
     println!("=== ServerlessLLM Async Sequential Loading Demo (tokio) ===\n");
 
