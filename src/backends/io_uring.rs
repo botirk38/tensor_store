@@ -86,7 +86,7 @@ impl Reader {
     pub fn load_batch(
         &mut self,
         requests: &[(PathBuf, u64, usize)],
-    ) -> IoResult<Vec<OwnedBytes>> {
+    ) -> IoResult<Vec<Arc<[u8]>>> {
         if requests.is_empty() {
             return Ok(Vec::new());
         }
@@ -97,7 +97,9 @@ impl Reader {
         if total_bytes < IO_URING_MIN_BATCH_BYTES {
             return requests
                 .iter()
-                .map(|(path, offset, len)| self.load_range(path, *offset, *len))
+                .map(|(path, offset, len)| {
+                    self.load_range(path, *offset, *len).map(|b| b.into_shared())
+                })
                 .collect();
         }
 
@@ -110,13 +112,10 @@ impl Reader {
             }
         }
 
-        // Build submission plan: group by file, then submit all SQEs
-        let mut results: Vec<Option<OwnedBytes>> = (0..requests.len()).map(|_| None).collect();
-
-        // For each request, allocate a buffer and submit an SQE
-        let mut buffers: Vec<OwnedBytes> = Vec::with_capacity(requests.len());
+        // Allocate raw buffers for each request
+        let mut buffers: Vec<Vec<u8>> = Vec::with_capacity(requests.len());
         for (_, _, len) in requests {
-            buffers.push(OwnedBytes::Pooled(super::get_buffer_pool().get(*len)));
+            buffers.push(vec![0u8; *len]);
         }
 
         let mut pending = requests.len();
@@ -146,7 +145,92 @@ impl Reader {
             }
 
             // Submit and wait for at least one completion
-            let to_wait = std::cmp::min(pending as u32, RING_DEPTH);
+            self.ring.submit_and_wait(1)?;
+
+            // Drain all available completions
+            let cq: CompletionQueue<'_, io_uring::cqueue::Entry> = self.ring.completion();
+            for cqe in cq {
+                let idx = cqe.user_data() as usize;
+                let result = cqe.result();
+
+                if result < 0 {
+                    return Err(std::io::Error::other(format!(
+                        "read error at request {}: {}",
+                        idx, result
+                    )));
+                }
+
+                let bytes_read = result as usize;
+                let expected = requests[idx].2;
+                if bytes_read < expected {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        format!(
+                            "short read at request {}: expected {} bytes, got {}",
+                            idx, expected, bytes_read
+                        ),
+                    ));
+                }
+                pending -= 1;
+            }
+        }
+
+        // Convert to Arc<[u8]>
+        Ok(buffers.into_iter().map(Arc::from).collect())
+    }
+
+        let total_bytes: usize = requests.iter().map(|(_, _, len)| *len).sum();
+
+        // Fast path: small total batch, use sync
+        if total_bytes < IO_URING_MIN_BATCH_BYTES {
+            return requests
+                .iter()
+                .map(|(path, offset, len)| self.load_range(path, *offset, *len))
+                .collect();
+        }
+
+        // Open all needed files first
+        self.files.clear();
+        for (path, _, _) in requests {
+            if !self.files.contains_key(path) {
+                let file = File::open(path)?;
+                self.files.insert(path.clone(), file);
+            }
+        }
+
+        // Build submission plan: group by file, then submit all SQEs
+        let mut buffers: Vec<Vec<u8>> = Vec::with_capacity(requests.len());
+        for (_, _, len) in requests {
+            buffers.push(vec![0u8; *len]);
+        }
+
+        let mut pending = requests.len();
+        let mut submitted = 0;
+
+        while pending > 0 {
+            // Fill the submission queue
+            while submitted < requests.len() && self.ring.submission().capacity() > 0 {
+                let (path, offset, len) = &requests[submitted];
+                let file = self.files.get(path).ok_or_else(|| {
+                    std::io::Error::other(format!("file not found: {:?}", path))
+                })?;
+                let fd = file.as_raw_fd();
+                let ptr = buffers[submitted].as_mut_ptr();
+
+                let sqe = opcode::Read::new(types::Fd(fd), ptr, *len as u32)
+                    .offset(*offset)
+                    .build()
+                    .user_data(submitted as u64);
+
+                unsafe {
+                    if self.ring.submission().push(&sqe).is_err() {
+                        break;
+                    }
+                }
+                submitted += 1;
+            }
+
+            // Submit and wait for at least one completion
             self.ring.submit_and_wait(1)?;
 
             // Drain all available completions
