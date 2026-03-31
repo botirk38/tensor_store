@@ -155,64 +155,6 @@ fn profile_sync(serverlessllm_dir: &str) {
     println!("  Total profiling time: {:.2}s", load_time.as_secs_f64());
 }
 
-#[cfg(target_os = "linux")]
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let fixture = get_fixture();
-    let mode = get_profile_mode().map_err(|e| {
-        eprintln!("{}", e);
-        std::process::exit(1);
-    })?;
-
-    let serverlessllm_dir = format!("tests/fixtures/{}/tiny_serverlessllm", fixture);
-
-    // Check if test directory exists
-    if !std::path::Path::new(&serverlessllm_dir).exists() {
-        eprintln!("❌ Test directory '{}' not found", serverlessllm_dir);
-        eprintln!("Please ensure the fixture exists");
-        std::process::exit(1);
-    }
-
-    println!("🚀 Starting serverlessllm reader profiling");
-    println!("  Mode: {:?}", mode);
-    println!("  Fixture: {}", fixture);
-    println!("  Test directory: {}", serverlessllm_dir);
-    println!();
-
-    // Use minimal queue size for profiling to avoid memory conflicts with perf/flamegraph
-    let mut binding = tokio_uring::builder();
-    let builder = binding.entries(8);
-    match builder.start(async {
-        match mode {
-            ProfileMode::Async => {
-                profile_async(&serverlessllm_dir).await;
-            }
-            ProfileMode::Sync => {
-                profile_sync(&serverlessllm_dir);
-            }
-        }
-
-        println!("\n✅ Profiling complete!");
-        Ok::<(), std::io::Error>(())
-    }) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            eprintln!("❌ Failed to initialize io_uring runtime: {}", e);
-            eprintln!();
-            eprintln!("💡 Troubleshooting:");
-            eprintln!("  • If using flamegraph/perf: Try running without profiling tools first");
-            eprintln!("  • If running as non-root: perf may be limited by memory locks");
-            eprintln!(
-                "  • Try increasing perf memory limits: sudo sysctl kernel.perf_event_mlock_kb=2048"
-            );
-            eprintln!(
-                "  • Or run with: CARGO_PROFILE_RELEASE_DEBUG=true cargo flamegraph --bin serverlessllm_reader -- --profile sync"
-            );
-            std::process::exit(1);
-        }
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let fixture = get_fixture();
     let mode = get_profile_mode().map_err(|e| {

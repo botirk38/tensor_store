@@ -173,12 +173,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
-    println!("🚀 Starting safetensors reader profiling");
-    println!("  Mode: {:?}", mode);
-    println!("  Fixture: {}", fixture);
-    println!("  Test directory: {}", test_dir);
-    println!();
-    match tokio_uring::start(async {
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
         match mode {
             ProfileMode::Async => {
                 profile_async(&test_dir).await;
@@ -189,24 +185,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         println!("\n✅ Profiling complete!");
-        Ok::<(), std::io::Error>(())
-    }) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            eprintln!("❌ Failed to initialize io_uring runtime: {}", e);
-            eprintln!();
-            eprintln!("💡 Troubleshooting:");
-            eprintln!("  • If using flamegraph/perf: Try running without profiling tools first");
-            eprintln!("  • If running as non-root: perf may be limited by memory locks");
-            eprintln!(
-                "  • Try increasing perf memory limits: sudo sysctl kernel.perf_event_mlock_kb=2048"
-            );
-            eprintln!(
-                "  • Or run with: CARGO_PROFILE_RELEASE_DEBUG=true cargo flamegraph --bin safetensors_reader -- --profile sync"
-            );
-            std::process::exit(1);
-        }
-    }
+    });
+
+    Ok(())
 }
 
 #[cfg(not(target_os = "linux"))]
