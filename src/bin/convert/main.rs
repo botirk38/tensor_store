@@ -95,3 +95,9 @@ fn main() {
         }
     });
 }
+
+#[cfg(not(target_os = "linux"))]
+fn main() {
+    eprintln!("The convert binary is only available on Linux.");
+    process::exit(1);
+}

@@ -52,6 +52,7 @@ mod async_io;
 pub mod batch;
 pub mod buffer_slice;
 pub mod byte;
+#[cfg(target_os = "linux")]
 pub mod io_uring;
 pub mod mmap;
 #[cfg(target_os = "linux")]

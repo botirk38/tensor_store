@@ -17,6 +17,7 @@
 
 use super::odirect::{is_block_aligned, open_direct_read_sync, alloc_aligned, can_use_direct_read};
 use super::{BatchRequest, IoResult, batch::FlattenedResult, byte::OwnedBytes, get_buffer_pool, calculate_chunks, build_chunk_plan, validate_read_count, MAX_CHUNK_SIZE};
+use io_uring::cqueue::CompletionQueue;
 use io_uring::{opcode, types, IoUring};
 use std::fs::File;
 use std::os::unix::io::AsRawFd;
@@ -222,7 +223,7 @@ impl Reader {
         }
         ring.submit_and_wait(1)?;
 
-        let mut cq: io_uring::CompletionQueue<'_> = ring.completion();
+        let mut cq: CompletionQueue<'_, io_uring::cqueue::Entry> = ring.completion();
         let cqe = cq
             .next()
             .ok_or_else(|| std::io::Error::other("completion queue empty"))?;
@@ -256,7 +257,7 @@ impl Reader {
         }
         ring.submit_and_wait(1)?;
 
-        let mut cq: io_uring::CompletionQueue<'_> = ring.completion();
+        let mut cq: CompletionQueue<'_, io_uring::cqueue::Entry> = ring.completion();
         let cqe = cq
             .next()
             .ok_or_else(|| std::io::Error::other("completion queue empty"))?;
@@ -351,7 +352,7 @@ impl Reader {
                     break;
                 }
                 
-                let cq: io_uring::CompletionQueue<'_> = ring.completion();
+                let cq: CompletionQueue<'_, io_uring::cqueue::Entry> = ring.completion();
                 for cqe in cq {
                     let idx = cqe.user_data() as usize;
                     let result = cqe.result();
@@ -449,7 +450,7 @@ impl Writer {
         }
         ring.submit_and_wait(1)?;
 
-        let cq: io_uring::CompletionQueue<'_> = ring.completion();
+        let cq: CompletionQueue<'_, io_uring::cqueue::Entry> = ring.completion();
         for cqe in cq {
             if cqe.user_data() == u64::MAX && cqe.result() < 0 {
                 return Err(std::io::Error::other(format!("fsync error: {}", cqe.result())));
@@ -487,7 +488,7 @@ impl Writer {
         }
         ring.submit_and_wait(1)?;
 
-        let mut cq: io_uring::CompletionQueue<'_> = ring.completion();
+        let mut cq: CompletionQueue<'_, io_uring::cqueue::Entry> = ring.completion();
         let cqe = cq
             .next()
             .ok_or_else(|| std::io::Error::other("completion queue empty"))?;

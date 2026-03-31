@@ -27,7 +27,11 @@ pub use formats::serverlessllm::{
 
 // Conversion functions
 pub use converters::safetensors_to_serverlessllm::convert_safetensors_to_serverlessllm;
+pub use converters::safetensors_to_serverlessllm::convert_safetensors_to_serverlessllm_async;
 pub use converters::safetensors_to_serverlessllm::convert_safetensors_to_serverlessllm_sync;
+#[cfg(target_os = "linux")]
+pub use converters::safetensors_to_serverlessllm::convert_safetensors_to_serverlessllm_io_uring;
+pub use converters::safetensors_to_serverlessllm::{ConversionPlan, ConversionStats, CopyOp, TensorSource};
 
 #[cfg(test)]
 pub(crate) mod test_utils {

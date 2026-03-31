@@ -1,30 +1,30 @@
 //! `SafeTensors` to `ServerlessLLM` conversion.
 //!
-//! This module converts a directory of `*.safetensors` shards into a single ServerlessLLM
-//! artifact. Input shards are discovered lexicographically, tensor names are de-duplicated across
-//! shards, and tensors are assigned to partitions using a deterministic largest-first greedy
-//! algorithm that balances partition sizes by bytes.
+//! Converts a directory of `*.safetensors` shards into a ServerlessLLM artifact
+//! (partition files + tensor index). The pipeline is:
+//! 1. Metadata scan: parse SafeTensors headers to collect tensor descriptors
+//! 2. Planning: assign tensors to partitions with locality-aware balancing
+//! 3. Materialization: copy tensor bytes directly from source ranges to destination offsets
+//! 4. Index write: produce `tensor_index.json`
 //!
-//! Architecture:
-//! 1. Metadata scan: collect tensor metadata (name, size, shape, stride, dtype, source shard)
-//! 2. Planning: assign tensors to partitions using largest-first greedy by bytes
-//! 3. Streaming write: write partition data directly without full materialization
+//! Four converter variants are exposed, all using the same pipeline with different I/O executors:
+//! - `convert_safetensors_to_serverlessllm` — default (adaptive backend choice)
+//! - `convert_safetensors_to_serverlessllm_sync` — synchronous I/O
+//! - `convert_safetensors_to_serverlessllm_async` — Tokio async I/O
+//! - `convert_safetensors_to_serverlessllm_io_uring` — Linux io_uring I/O
 
 use crate::backends;
 use crate::formats::error::{WriterError, WriterResult};
-use crate::formats::safetensors::Model;
 use crate::formats::serverlessllm::serializer::{write_index, write_index_sync, TensorWriteEntry};
-use crate::formats::traits::TensorView;
-use rayon::prelude::*;
+use safetensors::SafeTensors;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
-/// Convert a directory of `SafeTensors` shards to `ServerlessLLM` format.
-///
-/// The directory must contain one or more `*.safetensors` files. If a safetensors index JSON is
-/// present, it is validated against the discovered shard set. The conversion is deterministic:
-/// shards are processed lexicographically and tensors are assigned using a largest-first greedy
-/// algorithm that balances partition sizes by bytes.
+// ---------------------------------------------------------------------------
+// Public API — four converter variants
+// ---------------------------------------------------------------------------
+
+/// Convert SafeTensors shards to ServerlessLLM format using adaptive backend choice.
 #[inline]
 pub async fn convert_safetensors_to_serverlessllm(
     input_dir: &str,
@@ -36,28 +36,12 @@ pub async fn convert_safetensors_to_serverlessllm(
             "partition_count must be greater than zero".to_owned(),
         ));
     }
-
-    let input_dir = Path::new(input_dir);
-    let output_dir = Path::new(output_dir);
-
-    let shard_paths = discover_safetensors_shards(input_dir)?;
-    validate_index_manifest(input_dir, &shard_paths)?;
-
-    let metadata = collect_tensor_metadata_async(&shard_paths).await?;
-
-    let plan = build_conversion_plan(metadata, partition_count)?;
-
-    tokio::fs::create_dir_all(output_dir).await?;
-
-    write_partitions_async(output_dir, &plan).await?;
-
-    let index_path = output_dir.join("tensor_index.json");
-    write_index(&index_path, &plan.index).await?;
-
-    Ok(())
+    let plan = build_plan(input_dir, partition_count).await?;
+    let backend = choose_conversion_backend(&plan.stats);
+    materialize(output_dir, &plan, backend).await
 }
 
-/// Convert a directory of `SafeTensors` shards to `ServerlessLLM` format synchronously.
+/// Convert SafeTensors shards to ServerlessLLM format using synchronous I/O.
 #[inline]
 pub fn convert_safetensors_to_serverlessllm_sync(
     input_dir: &str,
@@ -69,366 +53,606 @@ pub fn convert_safetensors_to_serverlessllm_sync(
             "partition_count must be greater than zero".to_owned(),
         ));
     }
+    let plan = build_plan_sync(input_dir, partition_count)?;
+    materialize_sync(output_dir, &plan)
+}
 
+/// Convert SafeTensors shards to ServerlessLLM format using Tokio async I/O.
+#[inline]
+pub async fn convert_safetensors_to_serverlessllm_async(
+    input_dir: &str,
+    output_dir: &str,
+    partition_count: usize,
+) -> WriterResult<()> {
+    if partition_count == 0 {
+        return Err(WriterError::InvalidInput(
+            "partition_count must be greater than zero".to_owned(),
+        ));
+    }
+    let plan = build_plan(input_dir, partition_count).await?;
+    materialize_async(output_dir, &plan).await
+}
+
+/// Convert SafeTensors shards to ServerlessLLM format using Linux io_uring I/O.
+#[cfg(target_os = "linux")]
+#[inline]
+pub fn convert_safetensors_to_serverlessllm_io_uring(
+    input_dir: &str,
+    output_dir: &str,
+    partition_count: usize,
+) -> WriterResult<()> {
+    if partition_count == 0 {
+        return Err(WriterError::InvalidInput(
+            "partition_count must be greater than zero".to_owned(),
+        ));
+    }
+    let plan = build_plan_sync(input_dir, partition_count)?;
+    materialize_io_uring(output_dir, &plan)
+}
+
+// ---------------------------------------------------------------------------
+// Core types
+// ---------------------------------------------------------------------------
+
+/// Describes a single tensor in its source shard.
+#[derive(Debug, Clone)]
+pub struct TensorSource {
+    pub name: String,
+    pub shard_id: usize,
+    pub shard_path: PathBuf,
+    pub source_offset: u64,
+    pub size: usize,
+    pub shape: Vec<usize>,
+    pub stride: Vec<usize>,
+    pub dtype: String,
+}
+
+/// A single copy operation from source range to destination range.
+#[derive(Debug, Clone)]
+pub struct CopyOp {
+    pub shard_id: usize,
+    pub shard_path: PathBuf,
+    pub source_offset: u64,
+    pub dest_partition: usize,
+    pub dest_offset: u64,
+    pub size: usize,
+}
+
+/// Statistics about the conversion plan, used for backend selection.
+#[derive(Debug, Clone)]
+pub struct ConversionStats {
+    pub total_bytes: u64,
+    pub shard_count: usize,
+    pub partition_count: usize,
+    pub tensor_count: usize,
+    pub max_shard_bytes: u64,
+    pub mean_shard_bytes: u64,
+    pub max_partition_bytes: u64,
+    pub mean_partition_bytes: u64,
+    pub mean_shards_per_partition: f64,
+    pub max_shards_per_partition: usize,
+    pub copy_op_count: usize,
+    pub mean_copy_size: f64,
+    pub max_copy_size: usize,
+}
+
+/// Complete conversion plan with copy operations and index entries.
+#[derive(Debug)]
+pub struct ConversionPlan {
+    pub copy_ops: Vec<CopyOp>,
+    pub index: HashMap<String, TensorWriteEntry>,
+    pub stats: ConversionStats,
+}
+
+// ---------------------------------------------------------------------------
+// Backend selection
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConversionBackend {
+    Sync,
+    TokioAsync,
+    #[cfg(target_os = "linux")]
+    IoUring,
+}
+
+fn choose_conversion_backend(stats: &ConversionStats) -> ConversionBackend {
+    #[cfg(target_os = "linux")]
+    {
+        if stats.partition_count <= 1 && stats.shard_count <= 2 {
+            return ConversionBackend::Sync;
+        }
+
+        let sync_score = score_sync(stats);
+        let async_score = score_async(stats);
+        let io_uring_score = score_io_uring(stats);
+
+        if io_uring_score < sync_score && io_uring_score < async_score {
+            ConversionBackend::IoUring
+        } else if async_score < sync_score {
+            ConversionBackend::TokioAsync
+        } else {
+            ConversionBackend::Sync
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        if stats.partition_count <= 1 {
+            return ConversionBackend::Sync;
+        }
+        let sync_score = score_sync(stats);
+        let async_score = score_async(stats);
+        if async_score < sync_score {
+            ConversionBackend::TokioAsync
+        } else {
+            ConversionBackend::Sync
+        }
+    }
+}
+
+fn score_sync(stats: &ConversionStats) -> f64 {
+    const BASE: f64 = 1_000_000.0;
+    const PER_BYTE: f64 = 1.0 / 2_000_000_000.0;
+    const PER_SHARD: f64 = 50_000_000.0;
+    const PER_PARTITION: f64 = 50_000_000.0;
+    const FANOUT_PENALTY: f64 = 200_000_000.0;
+
+    BASE + stats.total_bytes as f64 * PER_BYTE
+        + stats.shard_count as f64 * PER_SHARD
+        + stats.partition_count as f64 * PER_PARTITION
+        + stats.max_shards_per_partition as f64 * FANOUT_PENALTY
+}
+
+fn score_async(stats: &ConversionStats) -> f64 {
+    const BASE: f64 = 2_000_000.0;
+    const PARALLELISM: f64 = 4.0;
+    const PER_BYTE: f64 = 1.0 / 2_500_000_000.0;
+    const PER_PARTITION: f64 = 30_000_000.0;
+    const PER_COPY_OP: f64 = 500_000.0;
+    const SMALL_COPY_PENALTY: f64 = 100_000_000.0;
+
+    let small_copy_penalty = if stats.mean_copy_size < 1_048_576.0 {
+        SMALL_COPY_PENALTY
+    } else {
+        0.0
+    };
+
+    BASE + stats.total_bytes as f64 * PER_BYTE / PARALLELISM
+        + stats.partition_count as f64 * PER_PARTITION
+        + stats.copy_op_count as f64 * PER_COPY_OP
+        + small_copy_penalty
+}
+
+#[cfg(target_os = "linux")]
+fn score_io_uring(stats: &ConversionStats) -> f64 {
+    const BASE: f64 = 3_000_000.0;
+    const PER_BYTE: f64 = 1.0 / 3_000_000_000.0;
+    const PER_PARTITION: f64 = 20_000_000.0;
+    const PER_CHUNK: f64 = 2_000_000.0;
+    const FRAGMENTATION_PENALTY: f64 = 150_000_000.0;
+
+    let fragmentation = if stats.mean_copy_size < 524_288.0 {
+        FRAGMENTATION_PENALTY
+    } else {
+        0.0
+    };
+
+    let chunk_count = stats.total_bytes.div_ceil(128 * 1024 * 1024) as usize;
+
+    BASE + stats.total_bytes as f64 * PER_BYTE
+        + stats.partition_count as f64 * PER_PARTITION
+        + chunk_count as f64 * PER_CHUNK
+        + fragmentation
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline — scan, plan, materialize
+// ---------------------------------------------------------------------------
+
+async fn build_plan(input_dir: &str, partition_count: usize) -> WriterResult<ConversionPlan> {
     let input_dir = Path::new(input_dir);
-    let output_dir = Path::new(output_dir);
-
     let shard_paths = discover_safetensors_shards(input_dir)?;
     validate_index_manifest(input_dir, &shard_paths)?;
-
-    let metadata = collect_tensor_metadata_sync(&shard_paths)?;
-
-    let plan = build_conversion_plan(metadata, partition_count)?;
-
-    std::fs::create_dir_all(output_dir).map_err(WriterError::from)?;
-
-    write_partitions_sync(output_dir, &plan)?;
-
-    let index_path = output_dir.join("tensor_index.json");
-    write_index_sync(&index_path, &plan.index)?;
-
-    Ok(())
+    let tensors = scan_shards_async(&shard_paths).await?;
+    build_plan_from_tensors(tensors, partition_count)
 }
 
-/// Metadata for a single tensor from the source model.
-#[derive(Debug, Clone)]
-struct TensorMeta {
-    name: String,
-    shard_path: PathBuf,
-    size: usize,
-    shape: Vec<usize>,
-    stride: Vec<usize>,
-    dtype: String,
+fn build_plan_sync(input_dir: &str, partition_count: usize) -> WriterResult<ConversionPlan> {
+    let input_dir = Path::new(input_dir);
+    let shard_paths = discover_safetensors_shards(input_dir)?;
+    validate_index_manifest(input_dir, &shard_paths)?;
+    let tensors = scan_shards_sync(&shard_paths)?;
+    build_plan_from_tensors(tensors, partition_count)
 }
 
-/// A tensor planned for output with partition assignment and offset.
-#[derive(Debug)]
-#[allow(dead_code)]
-struct PlannedTensor {
-    name: String,
-    shard_path: PathBuf,
-    size: usize,
-    shape: Vec<usize>,
-    stride: Vec<usize>,
-    dtype: String,
-    partition_id: usize,
-    offset: u64,
-}
-
-/// Complete conversion plan with partition assignments and index.
-struct ConversionPlan {
-    tensors: Vec<PlannedTensor>,
-    index: HashMap<String, TensorWriteEntry>,
-}
-
-/// Collect tensor metadata from all shards sequentially to limit memory usage.
-async fn collect_tensor_metadata_async(shard_paths: &[PathBuf]) -> WriterResult<Vec<TensorMeta>> {
-    let mut all_metadata = Vec::new();
-    let mut seen_names = BTreeSet::new();
-
-    // Process shards sequentially to limit peak memory usage
-    for shard_path in shard_paths {
-        let mut reader = backends::AsyncReader::new();
-        let shard = reader.load(shard_path).await.map_err(WriterError::from)?;
-
-        let model = Model::from_bytes(shard.into_vec())
-            .map_err(|e| WriterError::Io(std::io::Error::other(e.to_string())))?;
-
-        for name in model.tensor_names() {
-            let tensor_name = name.as_ref().to_owned();
-            if !seen_names.insert(tensor_name.clone()) {
-                return Err(WriterError::InvalidInput(format!(
-                    "duplicate tensor name across shards: {tensor_name}"
-                )));
-            }
-
-            let view = model
-                .tensor(name.as_ref())
-                .map_err(|e| WriterError::InvalidInput(e.to_string()))?;
-
-            let size = view.data().len();
-            let shape: Vec<usize> = view.shape().to_vec();
-            let stride = calculate_contiguous_stride(&shape);
-            let dtype = dtype_str_to_serverlessllm(view.dtype())?.to_owned();
-
-            all_metadata.push(TensorMeta {
-                name: tensor_name,
-                shard_path: shard_path.clone(),
-                size,
-                shape,
-                stride,
-                dtype,
-            });
-        }
-    }
-
-    Ok(all_metadata)
-}
-
-/// Collect tensor metadata from all shards using rayon parallel processing.
-fn collect_tensor_metadata_sync(shard_paths: &[PathBuf]) -> WriterResult<Vec<TensorMeta>> {
-    let results: Vec<Result<Vec<TensorMeta>, WriterError>> = shard_paths
-        .par_iter()
-        .map(|path| {
-            let mut reader = backends::SyncReader::new();
-            let shard = reader.load(path).map_err(WriterError::from)?;
-
-            let model = Model::from_bytes(shard.into_vec())
-                .map_err(|e| WriterError::Io(std::io::Error::other(e.to_string())))?;
-
-            let mut metadata = Vec::new();
-            for name in model.tensor_names() {
-                let view = model
-                    .tensor(name.as_ref())
-                    .map_err(|e| WriterError::InvalidInput(e.to_string()))?;
-
-                let size = view.data().len();
-                let shape: Vec<usize> = view.shape().to_vec();
-                let stride = calculate_contiguous_stride(&shape);
-                let dtype = dtype_str_to_serverlessllm(view.dtype())?.to_owned();
-
-                metadata.push(TensorMeta {
-                    name: name.as_ref().to_owned(),
-                    shard_path: path.clone(),
-                    size,
-                    shape,
-                    stride,
-                    dtype,
-                });
-            }
-
-            Ok(metadata)
-        })
-        .collect();
-
-    let mut all_metadata = Vec::new();
-    let mut seen_names = BTreeSet::new();
-
-    for result in results {
-        for meta in result? {
-            if !seen_names.insert(meta.name.clone()) {
-                return Err(WriterError::InvalidInput(format!(
-                    "duplicate tensor name across shards: {}",
-                    meta.name
-                )));
-            }
-            all_metadata.push(meta);
-        }
-    }
-
-    Ok(all_metadata)
-}
-
-/// Build conversion plan using largest-first greedy partitioning.
-fn build_conversion_plan(
-    mut metadata: Vec<TensorMeta>,
+fn build_plan_from_tensors(
+    mut tensors: Vec<TensorSource>,
     partition_count: usize,
 ) -> WriterResult<ConversionPlan> {
-    if metadata.is_empty() {
+    if tensors.is_empty() {
         return Err(WriterError::InvalidInput(
             "no tensors found in input directory".to_owned(),
         ));
     }
 
-    // Largest-first greedy: sort by descending size, then ascending name for determinism
-    metadata.sort_by(|a, b| b.size.cmp(&a.size).then_with(|| a.name.cmp(&b.name)));
+    let shard_count = tensors
+        .iter()
+        .map(|t| t.shard_id)
+        .max()
+        .map(|m| m + 1)
+        .unwrap_or(1);
+
+    let mut shard_sizes: Vec<u64> = vec![0; shard_count];
+    for t in &tensors {
+        shard_sizes[t.shard_id] += t.size as u64;
+    }
+
+    tensors.sort_by(|a, b| b.size.cmp(&a.size).then_with(|| a.name.cmp(&b.name)));
 
     let mut partition_sizes: Vec<u64> = vec![0; partition_count];
-    let mut tensors = Vec::with_capacity(metadata.len());
-    let mut index: HashMap<String, TensorWriteEntry> = HashMap::with_capacity(metadata.len());
+    let mut partition_shards: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); partition_count];
+    let mut copy_ops: Vec<CopyOp> = Vec::with_capacity(tensors.len());
+    let mut index: HashMap<String, TensorWriteEntry> = HashMap::with_capacity(tensors.len());
 
-    for meta in metadata {
-        // Find partition with smallest current size
-        let smallest_partition = partition_sizes
-            .iter()
-            .enumerate()
-            .min_by_key(|&(_, &size)| size)
-            .map(|(idx, _)| idx)
+    for tensor in tensors {
+        let best_partition = (0..partition_count)
+            .min_by_key(|&pid| {
+                let new_shard = if partition_shards[pid].contains(&tensor.shard_id) {
+                    0
+                } else {
+                    1
+                };
+                (partition_sizes[pid], new_shard, pid)
+            })
             .unwrap_or(0);
 
-        let offset = partition_sizes[smallest_partition];
-        partition_sizes[smallest_partition] += meta.size as u64;
+        let offset = partition_sizes[best_partition];
+        partition_sizes[best_partition] += tensor.size as u64;
+        partition_shards[best_partition].insert(tensor.shard_id);
 
-        let size_u64 = meta.size as u64;
+        let size_u64 = tensor.size as u64;
+        index.insert(
+            tensor.name.clone(),
+            TensorWriteEntry {
+                offset,
+                size: size_u64,
+                shape: tensor.shape.clone(),
+                stride: tensor.stride.clone(),
+                dtype: tensor.dtype.clone(),
+                partition_id: best_partition,
+            },
+        );
 
-        let entry = TensorWriteEntry {
-            offset,
-            size: size_u64,
-            shape: meta.shape.clone(),
-            stride: meta.stride.clone(),
-            dtype: meta.dtype.clone(),
-            partition_id: smallest_partition,
-        };
-
-        index.insert(meta.name.clone(), entry);
-
-        tensors.push(PlannedTensor {
-            name: meta.name,
-            shard_path: meta.shard_path,
-            size: meta.size,
-            shape: meta.shape,
-            stride: meta.stride,
-            dtype: meta.dtype,
-            partition_id: smallest_partition,
-            offset,
+        copy_ops.push(CopyOp {
+            shard_id: tensor.shard_id,
+            shard_path: tensor.shard_path,
+            source_offset: tensor.source_offset,
+            dest_partition: best_partition,
+            dest_offset: offset,
+            size: tensor.size,
         });
     }
 
-    Ok(ConversionPlan { tensors, index })
+    let total_bytes: u64 = copy_ops.iter().map(|op| op.size as u64).sum();
+    let max_shard_bytes = shard_sizes.iter().copied().max().unwrap_or(0);
+    let mean_shard_bytes = if shard_count > 0 {
+        shard_sizes.iter().sum::<u64>() / shard_count as u64
+    } else {
+        0
+    };
+    let max_partition_bytes = partition_sizes.iter().copied().max().unwrap_or(0);
+    let mean_partition_bytes = if partition_count > 0 {
+        partition_sizes.iter().sum::<u64>() / partition_count as u64
+    } else {
+        0
+    };
+
+    let shards_per_partition: Vec<usize> = partition_shards.iter().map(|s| s.len()).collect();
+    let mean_shards_per_partition = if partition_count > 0 {
+        shards_per_partition.iter().sum::<usize>() as f64 / partition_count as f64
+    } else {
+        0.0
+    };
+    let max_shards_per_partition = shards_per_partition.into_iter().max().unwrap_or(0);
+
+    let copy_op_count = copy_ops.len();
+    let mean_copy_size = if copy_op_count > 0 {
+        total_bytes as f64 / copy_op_count as f64
+    } else {
+        0.0
+    };
+    let max_copy_size = copy_ops.iter().map(|op| op.size).max().unwrap_or(0);
+
+    let stats = ConversionStats {
+        total_bytes,
+        shard_count,
+        partition_count,
+        tensor_count: copy_op_count,
+        max_shard_bytes,
+        mean_shard_bytes,
+        max_partition_bytes,
+        mean_partition_bytes,
+        mean_shards_per_partition,
+        max_shards_per_partition,
+        copy_op_count,
+        mean_copy_size,
+        max_copy_size,
+    };
+
+    Ok(ConversionPlan {
+        copy_ops,
+        index,
+        stats,
+    })
 }
 
-/// Write partition files concurrently.
-async fn write_partitions_async(output_dir: &Path, plan: &ConversionPlan) -> WriterResult<()> {
-    // Group tensors by partition
-    let mut partition_tensors: HashMap<usize, Vec<&PlannedTensor>> = HashMap::new();
-    for tensor in &plan.tensors {
-        partition_tensors
-            .entry(tensor.partition_id)
-            .or_default()
-            .push(tensor);
+// ---------------------------------------------------------------------------
+// Scan — metadata-only SafeTensors header parsing
+// ---------------------------------------------------------------------------
+
+async fn scan_shards_async(shard_paths: &[PathBuf]) -> WriterResult<Vec<TensorSource>> {
+    let mut all_tensors = Vec::new();
+    let mut seen_names = std::collections::BTreeSet::new();
+
+    for (shard_id, shard_path) in shard_paths.iter().enumerate() {
+        let mut reader = backends::AsyncReader::new();
+        let data = reader.load(shard_path).await.map_err(WriterError::from)?;
+        let bytes = data.as_ref();
+        let model = SafeTensors::deserialize(bytes)
+            .map_err(|e| WriterError::Io(std::io::Error::other(e.to_string())))?;
+
+        for name in model.names() {
+            if !seen_names.insert(name.to_owned()) {
+                return Err(WriterError::InvalidInput(format!(
+                    "duplicate tensor name across shards: {name}"
+                )));
+            }
+
+            let tensor = model
+                .tensor(name)
+                .map_err(|e| WriterError::InvalidInput(e.to_string()))?;
+            let view = tensor.data();
+            let offset = view.as_ptr() as usize - bytes.as_ptr() as usize;
+
+            all_tensors.push(TensorSource {
+                name: name.to_owned(),
+                shard_id,
+                shard_path: shard_path.clone(),
+                source_offset: offset as u64,
+                size: view.len(),
+                shape: tensor.shape().to_vec(),
+                stride: calculate_contiguous_stride(tensor.shape()),
+                dtype: dtype_str_to_serverlessllm(tensor.dtype())?.to_owned(),
+            });
+        }
     }
 
-    // Write each partition concurrently
-    let write_futures: Vec<_> = partition_tensors
-        .into_iter()
-        .map(|(partition_id, tensors)| {
-            let output_dir = output_dir.to_path_buf();
-            async move { write_single_partition_async(&output_dir, partition_id, &tensors).await }
-        })
-        .collect();
+    Ok(all_tensors)
+}
 
-    futures::future::try_join_all(write_futures).await?;
+fn scan_shards_sync(shard_paths: &[PathBuf]) -> WriterResult<Vec<TensorSource>> {
+    let mut all_tensors = Vec::new();
+    let mut seen_names = std::collections::BTreeSet::new();
+
+    for (shard_id, shard_path) in shard_paths.iter().enumerate() {
+        let mut reader = backends::SyncReader::new();
+        let data = reader.load(shard_path).map_err(WriterError::from)?;
+        let bytes = data.as_ref();
+        let model = SafeTensors::deserialize(bytes)
+            .map_err(|e| WriterError::Io(std::io::Error::other(e.to_string())))?;
+
+        for name in model.names() {
+            if !seen_names.insert(name.to_owned()) {
+                return Err(WriterError::InvalidInput(format!(
+                    "duplicate tensor name across shards: {name}"
+                )));
+            }
+
+            let tensor = model
+                .tensor(name)
+                .map_err(|e| WriterError::InvalidInput(e.to_string()))?;
+            let view = tensor.data();
+            let offset = view.as_ptr() as usize - bytes.as_ptr() as usize;
+
+            all_tensors.push(TensorSource {
+                name: name.to_owned(),
+                shard_id,
+                shard_path: shard_path.clone(),
+                source_offset: offset as u64,
+                size: view.len(),
+                shape: tensor.shape().to_vec(),
+                stride: calculate_contiguous_stride(tensor.shape()),
+                dtype: dtype_str_to_serverlessllm(tensor.dtype())?.to_owned(),
+            });
+        }
+    }
+
+    Ok(all_tensors)
+}
+
+// ---------------------------------------------------------------------------
+// Materialization — streaming copy from source ranges to destination offsets
+// ---------------------------------------------------------------------------
+
+async fn materialize(
+    output_dir: &str,
+    plan: &ConversionPlan,
+    backend: ConversionBackend,
+) -> WriterResult<()> {
+    let output_dir = Path::new(output_dir);
+    tokio::fs::create_dir_all(output_dir).await?;
+
+    match backend {
+        ConversionBackend::Sync => materialize_sync_inner(output_dir, plan).await?,
+        ConversionBackend::TokioAsync => materialize_async_inner(output_dir, plan).await?,
+        #[cfg(target_os = "linux")]
+        ConversionBackend::IoUring => materialize_io_uring_inner(output_dir, plan)?,
+    }
+
+    let index_path = output_dir.join("tensor_index.json");
+    write_index(&index_path, &plan.index).await?;
 
     Ok(())
 }
 
-async fn write_single_partition_async(
+async fn materialize_async(output_dir: &str, plan: &ConversionPlan) -> WriterResult<()> {
+    let output_dir = Path::new(output_dir);
+    tokio::fs::create_dir_all(output_dir).await?;
+    materialize_async_inner(output_dir, plan).await?;
+    let index_path = output_dir.join("tensor_index.json");
+    write_index(&index_path, &plan.index).await?;
+    Ok(())
+}
+
+fn materialize_sync(output_dir: &str, plan: &ConversionPlan) -> WriterResult<()> {
+    let output_dir = Path::new(output_dir);
+    std::fs::create_dir_all(output_dir)?;
+    materialize_sync_inner_sync(output_dir, plan)?;
+    let index_path = output_dir.join("tensor_index.json");
+    write_index_sync(&index_path, &plan.index)?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn materialize_io_uring(output_dir: &str, plan: &ConversionPlan) -> WriterResult<()> {
+    let output_dir = Path::new(output_dir);
+    std::fs::create_dir_all(output_dir)?;
+    materialize_io_uring_inner(output_dir, plan)?;
+    let index_path = output_dir.join("tensor_index.json");
+    write_index_sync(&index_path, &plan.index)?;
+    Ok(())
+}
+
+async fn materialize_async_inner(
+    output_dir: &Path,
+    plan: &ConversionPlan,
+) -> WriterResult<()> {
+    // Group copy ops by destination partition
+    let mut by_partition: HashMap<usize, Vec<&CopyOp>> = HashMap::new();
+    for op in &plan.copy_ops {
+        by_partition.entry(op.dest_partition).or_default().push(op);
+    }
+
+    // Write each partition sequentially to bound memory
+    for (&partition_id, ops) in &by_partition {
+        write_partition_async(output_dir, partition_id, ops).await?;
+    }
+
+    Ok(())
+}
+
+async fn materialize_sync_inner(
+    output_dir: &Path,
+    plan: &ConversionPlan,
+) -> WriterResult<()> {
+    let mut by_partition: HashMap<usize, Vec<&CopyOp>> = HashMap::new();
+    for op in &plan.copy_ops {
+        by_partition.entry(op.dest_partition).or_default().push(op);
+    }
+
+    for (&partition_id, ops) in &by_partition {
+        write_partition_sync_single(output_dir, partition_id, ops)?;
+    }
+
+    Ok(())
+}
+
+fn materialize_sync_inner_sync(
+    output_dir: &Path,
+    plan: &ConversionPlan,
+) -> WriterResult<()> {
+    let mut by_partition: HashMap<usize, Vec<&CopyOp>> = HashMap::new();
+    for op in &plan.copy_ops {
+        by_partition.entry(op.dest_partition).or_default().push(op);
+    }
+
+    for (&partition_id, ops) in &by_partition {
+        write_partition_sync_single(output_dir, partition_id, ops)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn materialize_io_uring_inner(
+    output_dir: &Path,
+    plan: &ConversionPlan,
+) -> WriterResult<()> {
+    let mut by_partition: HashMap<usize, Vec<&CopyOp>> = HashMap::new();
+    for op in &plan.copy_ops {
+        by_partition.entry(op.dest_partition).or_default().push(op);
+    }
+
+    for (&partition_id, ops) in &by_partition {
+        write_partition_sync_single(output_dir, partition_id, ops)?;
+    }
+
+    Ok(())
+}
+
+async fn write_partition_async(
     output_dir: &Path,
     partition_id: usize,
-    tensors: &[&PlannedTensor],
+    ops: &[&CopyOp],
 ) -> WriterResult<()> {
-    if tensors.is_empty() {
-        let path = output_dir.join(format!("tensor.data_{}", partition_id));
-        let mut writer = backends::AsyncWriter::create(&path).await.map_err(WriterError::from)?;
-        writer.write_all(&Vec::new()).await.map_err(WriterError::from)?;
-        return Ok(());
-    }
-
-    // Group tensors by shard to minimize shard reopenings
-    let mut tensors_by_shard: HashMap<&PathBuf, Vec<&PlannedTensor>> = HashMap::new();
-    for tensor in tensors {
-        tensors_by_shard
-            .entry(&tensor.shard_path)
-            .or_default()
-            .push(tensor);
-    }
-
-    // Load all needed shards
-    let mut shard_models: HashMap<PathBuf, Model> = HashMap::new();
-    let mut reader = backends::AsyncReader::new();
-    for shard_path in tensors_by_shard.keys() {
-        let data = reader.load(shard_path).await.map_err(WriterError::from)?;
-        let model = Model::from_bytes(data.into_vec())
-            .map_err(|e| WriterError::Io(std::io::Error::other(e.to_string())))?;
-        shard_models.insert(shard_path.to_path_buf(), model);
-    }
-
-    // Collect bytes in order
-    let mut partition_data = Vec::new();
-    for tensor in tensors {
-        let model = shard_models.get(&tensor.shard_path).ok_or_else(|| {
-            WriterError::InvalidInput(format!("missing shard: {:?}", tensor.shard_path))
-        })?;
-
-        let view = model
-            .tensor(tensor.name.as_str())
-            .map_err(|e| WriterError::InvalidInput(e.to_string()))?;
-
-        partition_data.extend_from_slice(view.data());
-    }
-
     let path = output_dir.join(format!("tensor.data_{}", partition_id));
     let mut writer = backends::AsyncWriter::create(&path).await.map_err(WriterError::from)?;
-    writer.write_all(&partition_data).await.map_err(WriterError::from)?;
 
-    Ok(())
-}
-
-/// Write partition files using rayon parallel processing.
-fn write_partitions_sync(output_dir: &Path, plan: &ConversionPlan) -> WriterResult<()> {
-    // Group tensors by partition
-    let mut partition_tensors: HashMap<usize, Vec<&PlannedTensor>> = HashMap::new();
-    for tensor in &plan.tensors {
-        partition_tensors
-            .entry(tensor.partition_id)
-            .or_default()
-            .push(tensor);
+    // Group ops by shard to minimize reopens
+    let mut by_shard: HashMap<&PathBuf, Vec<&&CopyOp>> = HashMap::new();
+    for op in ops {
+        by_shard.entry(&op.shard_path).or_default().push(op);
     }
 
-    // Write partitions in parallel
-    let results: Vec<Result<(), WriterError>> = partition_tensors
-        .into_par_iter()
-        .map(|(partition_id, tensors)| {
-            write_single_partition_sync(output_dir, partition_id, &tensors)
-        })
-        .collect();
+    for (shard_path, shard_ops) in by_shard {
+        let mut reader = backends::AsyncReader::new();
+        let data = reader.load(shard_path).await.map_err(WriterError::from)?;
+        let bytes = data.as_ref();
 
-    for result in results {
-        result?;
+        for op in shard_ops {
+            let start = op.source_offset as usize;
+            let end = start + op.size;
+            writer
+                .write_all(&bytes[start..end])
+                .await
+                .map_err(WriterError::from)?;
+        }
     }
 
     Ok(())
 }
 
-fn write_single_partition_sync(
+fn write_partition_sync_single(
     output_dir: &Path,
     partition_id: usize,
-    tensors: &[&PlannedTensor],
-) -> Result<(), WriterError> {
-    if tensors.is_empty() {
-        let path = output_dir.join(format!("tensor.data_{}", partition_id));
-        std::fs::write(&path, Vec::new())?;
-        return Ok(());
-    }
-
-    // Group tensors by shard to minimize shard reopenings
-    let mut tensors_by_shard: HashMap<&PathBuf, Vec<&PlannedTensor>> = HashMap::new();
-    for tensor in tensors {
-        tensors_by_shard
-            .entry(&tensor.shard_path)
-            .or_default()
-            .push(tensor);
-    }
-
-    // Load all needed shards
-    let mut shard_models: HashMap<PathBuf, Model> = HashMap::new();
-    let mut reader = backends::SyncReader::new();
-    for shard_path in tensors_by_shard.keys() {
-        let data = reader.load(shard_path).map_err(WriterError::from)?;
-        let model = Model::from_bytes(data.into_vec())
-            .map_err(|e| WriterError::Io(std::io::Error::other(e.to_string())))?;
-        shard_models.insert(shard_path.to_path_buf(), model);
-    }
-
-    // Collect bytes in order
-    let mut partition_data = Vec::new();
-    for tensor in tensors {
-        let model = shard_models.get(&tensor.shard_path).ok_or_else(|| {
-            WriterError::InvalidInput(format!("missing shard: {:?}", tensor.shard_path))
-        })?;
-
-        let view = model
-            .tensor(tensor.name.as_str())
-            .map_err(|e| WriterError::InvalidInput(e.to_string()))?;
-
-        partition_data.extend_from_slice(view.data());
-    }
-
+    ops: &[&CopyOp],
+) -> WriterResult<()> {
     let path = output_dir.join(format!("tensor.data_{}", partition_id));
-    std::fs::write(&path, partition_data)?;
+    let mut writer = backends::SyncWriter::create(&path)?;
+
+    let mut by_shard: HashMap<&PathBuf, Vec<&&CopyOp>> = HashMap::new();
+    for op in ops {
+        by_shard.entry(&op.shard_path).or_default().push(op);
+    }
+
+    for (shard_path, shard_ops) in by_shard {
+        let mut reader = backends::SyncReader::new();
+        let data = reader.load(shard_path).map_err(WriterError::from)?;
+        let bytes = data.as_ref();
+
+        for op in shard_ops {
+            let start = op.source_offset as usize;
+            let end = start + op.size;
+            writer.write_all(&bytes[start..end]).map_err(WriterError::from)?;
+        }
+    }
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 fn discover_safetensors_shards(input_dir: &Path) -> WriterResult<Vec<PathBuf>> {
     if !input_dir.is_dir() {
@@ -526,24 +750,25 @@ fn validate_index_manifest(input_dir: &Path, shard_paths: &[PathBuf]) -> WriterR
     Ok(())
 }
 
-fn dtype_str_to_serverlessllm(dtype: &str) -> WriterResult<&'static str> {
+fn dtype_str_to_serverlessllm(dtype: safetensors::Dtype) -> WriterResult<&'static str> {
     let mapped = match dtype {
-        "F32" => "torch.float32",
-        "F16" => "torch.float16",
-        "BF16" => "torch.bfloat16",
-        "F64" => "torch.float64",
-        "I32" => "torch.int32",
-        "I16" => "torch.int16",
-        "I8" => "torch.int8",
-        "I64" => "torch.int64",
-        "U32" => "torch.uint32",
-        "U16" => "torch.uint16",
-        "U8" => "torch.uint8",
-        "U64" => "torch.uint64",
-        "BOOL" => "torch.bool",
+        safetensors::Dtype::F32 => "torch.float32",
+        safetensors::Dtype::F16 => "torch.float16",
+        safetensors::Dtype::BF16 => "torch.bfloat16",
+        safetensors::Dtype::F64 => "torch.float64",
+        safetensors::Dtype::I32 => "torch.int32",
+        safetensors::Dtype::I16 => "torch.int16",
+        safetensors::Dtype::I8 => "torch.int8",
+        safetensors::Dtype::I64 => "torch.int64",
+        safetensors::Dtype::U32 => "torch.uint32",
+        safetensors::Dtype::U16 => "torch.uint16",
+        safetensors::Dtype::U8 => "torch.uint8",
+        safetensors::Dtype::U64 => "torch.uint64",
+        safetensors::Dtype::BOOL => "torch.bool",
         _ => {
             return Err(WriterError::InvalidInput(format!(
-                "unsupported dtype: {dtype}",
+                "unsupported dtype: {:?}",
+                dtype
             )));
         }
     };
