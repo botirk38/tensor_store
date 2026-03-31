@@ -7,144 +7,30 @@
 //! Use this directly when you want explicit io_uring behavior on Linux. On other
 //! platforms this module is not available.
 //!
-//! # Example
+//! # Design
 //!
-//! ```ignore
-//! use tensor_store::backends::io_uring::Reader;
-//!
-//! let mut reader = Reader::new();
-//! let data = reader.load("model.bin").await?;
-//! ```
+//! - Single ring, no user-space threading
+//! - Batch reads/writes, keep ring full continuously
+//! - Two explicit paths: buffered/page-cache and direct-I/O
+//! - Direct-I/O only when layout is prevalidated as aligned
+//! - Ring built with SINGLE_ISSUER + COOP_TASKRUN + SUBMIT_ALL for single-threaded saturation
 
-use super::odirect::{
-    OwnedAlignedBuffer, align_to_block, can_use_direct_read,
-    is_block_aligned, open_direct_read_io_uring,
-};
-use super::{
-    BatchRequest, IoResult,
-    batch::FlattenedResult,
-    get_buffer_pool,
-};
+use super::odirect::{is_block_aligned, open_direct_read_sync, alloc_aligned, can_use_direct_read};
+use super::{BatchRequest, IoResult, batch::FlattenedResult, byte::OwnedBytes, get_buffer_pool, calculate_chunks, build_chunk_plan, validate_read_count, MAX_CHUNK_SIZE};
+use io_uring::{opcode, types, IoUring};
+use std::fs::File;
+use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::sync::Arc;
-use tokio_uring::fs::File as UringFile;
 
-const ASYNC_QUEUE_DEPTH: usize = 64;
-const MIN_CHUNK_SIZE: usize = 32 * 1024 * 1024;
-const MAX_SINGLE_READ: usize = 512 * 1024 * 1024;
-const MAX_CHUNK_SIZE: usize = 256 * 1024 * 1024;
+const RING_DEPTH: usize = 32;
 
-#[inline]
-fn calculate_async_chunks(file_size: usize) -> usize {
-    if file_size == 0 {
-        return 1;
-    }
-    let size_based = if file_size > MAX_SINGLE_READ {
-        file_size.div_ceil(64 * 1024 * 1024)
-    } else {
-        1
-    };
-    let queue_chunks = ASYNC_QUEUE_DEPTH.min(file_size.div_ceil(MIN_CHUNK_SIZE));
-    size_based.max(queue_chunks).clamp(1, ASYNC_QUEUE_DEPTH)
-}
-
-#[inline]
-fn statx_file_size(stat: libc::statx) -> IoResult<usize> {
-    usize::try_from(stat.stx_size).map_err(|_| std::io::Error::other("File too large"))
-}
-
-#[inline]
-fn allow_direct_fallback(err: &std::io::Error) -> bool {
-    matches!(err.raw_os_error(), Some(libc::EINVAL | libc::EOPNOTSUPP))
-}
-
-#[inline]
-fn validate_read_count(actual: usize, expected: usize) -> IoResult<()> {
-    if actual < expected {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::UnexpectedEof,
-            format!("Expected to read {expected} bytes, but read {actual}"),
-        ));
-    }
-    Ok(())
-}
-
-fn validate_chunk_size(chunk_size: usize, file_size: usize) -> IoResult<()> {
-    let max_capacity = usize::try_from(isize::MAX)
-        .expect("isize::MAX should always fit in usize on the same platform");
-    if chunk_size > max_capacity {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!(
-                "Chunk size ({chunk_size} bytes) exceeds maximum Vec capacity ({max_capacity} bytes). Increase chunks to at least {} to proceed.",
-                file_size.div_ceil(max_capacity)
-            ),
-        ));
-    }
-    Ok(())
-}
-
-#[inline]
-fn checked_arithmetic<T>(result: Option<T>, operation: &str) -> IoResult<T> {
-    result.ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("chunk calculation {operation}"),
-        )
-    })
-}
-
-#[derive(Clone, Copy)]
-struct ChunkRequest {
-    start: usize,
-    len: usize,
-    padded_len: usize,
-    offset: u64,
-}
-
-fn build_chunk_requests(
-    file_size: usize,
-    chunk_size: usize,
-    chunks: usize,
-) -> IoResult<Vec<ChunkRequest>> {
-    (0..chunks)
-        .map(|i| {
-            let start = checked_arithmetic(i.checked_mul(chunk_size), "overflow")?;
-            if start >= file_size {
-                return Ok(None);
-            }
-
-            let end = std::cmp::min(
-                checked_arithmetic(start.checked_add(chunk_size), "overflow")?,
-                file_size,
-            );
-            let len = checked_arithmetic(end.checked_sub(start), "underflow")?;
-            if len == 0 {
-                return Ok(None);
-            }
-
-            let offset = u64::try_from(start).map_err(|_| {
-                std::io::Error::new(std::io::ErrorKind::InvalidInput, "offset too large")
-            })?;
-            Ok(Some(ChunkRequest {
-                start,
-                len,
-                padded_len: align_to_block(len),
-                offset,
-            }))
-        })
-        .take_while(|result| matches!(result, Ok(Some(_)) | Err(_)))
-        .map(|result| {
-            result.and_then(|opt| {
-                opt.ok_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "unexpected None in chunk request",
-                    )
-                })
-            })
-        })
-        .collect()
+fn build_ring() -> IoResult<IoUring> {
+    IoUring::builder()
+        .setup_single_issuer()
+        .setup_coop_taskrun()
+        .setup_submit_all()
+        .build(RING_DEPTH as u32)
 }
 
 pub struct Reader;
@@ -154,181 +40,348 @@ impl Reader {
         Self
     }
 
-    pub async fn load(&mut self, path: impl AsRef<Path> + Send) -> IoResult<Vec<u8>> {
-        let path_buf = path.as_ref().to_path_buf();
-        let stat = tokio_uring::fs::statx(&path_buf).await?;
-        let file_size = statx_file_size(stat)?;
+    pub fn load(&mut self, path: impl AsRef<Path>) -> IoResult<OwnedBytes> {
+        let file = File::open(path.as_ref())?;
+        let file_size = usize::try_from(file.metadata()?.len())
+            .map_err(|_| std::io::Error::other("file too large"))?;
         if file_size == 0 {
-            return Ok(Vec::new());
-        }
-        self.load_chunked(path_buf, file_size, calculate_async_chunks(file_size)).await
-    }
-
-    async fn load_chunked(&mut self, path: std::path::PathBuf, file_size: usize, chunks: usize) -> IoResult<Vec<u8>> {
-        if chunks == 0 {
-            return Err(std::io::Error::other("chunks must be > 0"));
-        }
-        if file_size == 0 {
-            return Ok(Vec::new());
+            return Ok(OwnedBytes::Shared(Arc::new([])));
         }
 
-        let chunk_size = align_to_block(file_size.div_ceil(chunks));
-        validate_chunk_size(chunk_size, file_size)?;
-        let requests = build_chunk_requests(file_size, chunk_size, chunks)?;
-        let required_capacity = requests
-            .iter()
-            .map(|r| r.start.saturating_add(r.padded_len))
-            .max()
-            .unwrap_or(file_size);
-        let buffer = OwnedAlignedBuffer::new(align_to_block(required_capacity))?;
-
+        let chunk_size = file_size.div_ceil(calculate_chunks(file_size));
         if can_use_direct_read(file_size, chunk_size) {
-            match open_direct_read_io_uring(&path).await {
-                Ok(file) => {
-                    let file_ref = &file;
-                    let read_futures = requests
-                        .iter()
-                        .map(|req| {
-                            let ChunkRequest { start, len, padded_len, offset } = *req;
-                            let chunk = buffer.slice(start, padded_len)?;
-                            Ok(async move {
-                                let (res, _chunk) = file_ref.read_at(chunk, offset).await;
-                                validate_read_count(res?, len)
-                            })
-                        })
-                        .collect::<IoResult<Vec<_>>>()?;
+            return self.load_direct(path.as_ref(), file_size);
+        }
+        self.load_buffered(file, file_size)
+    }
 
-                    for res in futures::future::join_all(read_futures).await {
-                        res?;
+    fn load_buffered(&mut self, file: File, file_size: usize) -> IoResult<OwnedBytes> {
+        let mut buffer = get_buffer_pool().get(file_size);
+        let base_ptr = buffer.as_mut_ptr();
+        let plan = build_chunk_plan(file_size);
+        
+        if plan.is_empty() {
+            return Ok(OwnedBytes::Pooled(buffer));
+        }
+
+        let mut ring = build_ring()?;
+        let fd = file.as_raw_fd();
+        
+        let mut pending = plan.len();
+        let mut next_idx = 0;
+        
+        while pending > 0 {
+            while next_idx < plan.len() && ring.submission().capacity() > 0 {
+                let chunk = &plan[next_idx];
+                let ptr = unsafe { base_ptr.add(chunk.offset as usize) };
+                let sqe = opcode::Read::new(types::Fd(fd), ptr, chunk.len as u32)
+                    .offset(chunk.offset)
+                    .build()
+                    .user_data(next_idx as u64);
+                
+                unsafe {
+                    if ring.submission().push(&sqe).is_err() {
+                        break;
                     }
-                    file.close().await?;
-                    return buffer.into_vec(file_size);
                 }
-                Err(err) if allow_direct_fallback(&err) => {}
-                Err(err) => return Err(err),
+                next_idx += 1;
+            }
+            
+            ring.submit_and_wait(1)?;
+            
+            let cq = ring.completion();
+            for cqe in cq {
+                let idx = cqe.user_data() as usize;
+                if idx >= plan.len() {
+                    continue;
+                }
+                let chunk = &plan[idx];
+                let result = cqe.result();
+                if result < 0 {
+                    return Err(std::io::Error::other(format!(
+                        "read error at chunk {} (offset {}): {}",
+                        idx, chunk.offset, result
+                    )));
+                }
+                let bytes_read = result as usize;
+                if bytes_read < chunk.len {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        format!(
+                            "short read at chunk {}: expected {} bytes, got {}",
+                            idx, chunk.len, bytes_read
+                        ),
+                    ));
+                }
+                pending -= 1;
             }
         }
 
-        let file = UringFile::open(&path).await?;
-        let file_ref = &file;
-        let read_futures = requests
-            .iter()
-            .map(|req| {
-                let ChunkRequest { start, len, padded_len, offset } = *req;
-                let chunk = buffer.slice(start, padded_len)?;
-                Ok(async move {
-                    let (res, _chunk) = file_ref.read_at(chunk, offset).await;
-                    validate_read_count(res?, len)
-                })
-            })
-            .collect::<IoResult<Vec<_>>>()?;
-
-        for res in futures::future::join_all(read_futures).await {
-            res?;
-        }
-        file.close().await?;
-        buffer.into_vec(file_size)
+        drop(file);
+        Ok(OwnedBytes::Pooled(buffer))
     }
 
-    pub async fn load_range(&mut self, path: impl AsRef<Path>, offset: u64, len: usize) -> IoResult<Vec<u8>> {
+    fn load_direct(&mut self, path: &Path, file_size: usize) -> IoResult<OwnedBytes> {
+        let file = open_direct_read_sync(path)?;
+        let mut buffer = alloc_aligned(file_size)?;
+        buffer.set_len(file_size);
+        let base_ptr = buffer.as_mut_ptr();
+        let plan = build_chunk_plan(file_size);
+        
+        if plan.is_empty() {
+            return Ok(OwnedBytes::Aligned(buffer));
+        }
+
+        let mut ring = build_ring()?;
+        let fd = file.as_raw_fd();
+        
+        let mut pending = plan.len();
+        let mut next_idx = 0;
+        
+        while pending > 0 {
+            while next_idx < plan.len() && ring.submission().capacity() > 0 {
+                let chunk = &plan[next_idx];
+                let ptr = unsafe { base_ptr.add(chunk.offset as usize) };
+                let sqe = opcode::Read::new(types::Fd(fd), ptr, chunk.len as u32)
+                    .offset(chunk.offset)
+                    .build()
+                    .user_data(next_idx as u64);
+                
+                unsafe {
+                    if ring.submission().push(&sqe).is_err() {
+                        break;
+                    }
+                }
+                next_idx += 1;
+            }
+            
+            ring.submit_and_wait(1)?;
+            
+            let cq = ring.completion();
+            for cqe in cq {
+                let idx = cqe.user_data() as usize;
+                if idx >= plan.len() {
+                    continue;
+                }
+                let chunk = &plan[idx];
+                let result = cqe.result();
+                if result < 0 {
+                    return Err(std::io::Error::other(format!(
+                        "direct read error at chunk {} (offset {}): {}",
+                        idx, chunk.offset, result
+                    )));
+                }
+                let bytes_read = result as usize;
+                if bytes_read < chunk.len {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        format!(
+                            "short direct read at chunk {}: expected {} bytes, got {}",
+                            idx, chunk.len, bytes_read
+                        ),
+                    ));
+                }
+                pending -= 1;
+            }
+        }
+
+        Ok(OwnedBytes::Aligned(buffer))
+    }
+
+    pub fn load_range(&mut self, path: impl AsRef<Path>, offset: u64, len: usize) -> IoResult<OwnedBytes> {
         if len == 0 {
-            return Ok(Vec::new());
+            return Ok(OwnedBytes::Shared(Arc::new([])));
         }
 
+        let path_ref = path.as_ref();
+        
         if is_block_aligned(offset, len) {
-            match open_direct_read_io_uring(path.as_ref()).await {
-                Ok(file) => {
-                    let padded = align_to_block(len);
-                    let buffer = OwnedAlignedBuffer::new(padded)?;
-                    let chunk = buffer.slice(0, padded)?;
-                    let (res, returned_chunk) = file.read_at(chunk, offset).await;
-                    validate_read_count(res?, len)?;
-                    drop(returned_chunk);
-                    file.close().await?;
-                    return buffer.into_vec(len);
-                }
-                Err(err) if allow_direct_fallback(&err) => {}
-                Err(err) => return Err(err),
-            }
+            let file = open_direct_read_sync(path_ref)?;
+            return self.load_range_direct(file, offset, len);
         }
-
-        let file = UringFile::open(path.as_ref()).await?;
-        let pooled = get_buffer_pool().get(len);
-        let (res, mut buf) = file.read_at(pooled, offset).await;
-        validate_read_count(res?, len)?;
-        buf.truncate(len);
-        file.close().await?;
-        Ok(buf.into_inner())
+        
+        let file = File::open(path_ref)?;
+        self.load_range_buffered(file, offset, len)
     }
 
-    pub async fn load_range_batch(&mut self, requests: &[BatchRequest]) -> IoResult<Vec<FlattenedResult>> {
+    fn load_range_buffered(&mut self, file: File, offset: u64, len: usize) -> IoResult<OwnedBytes> {
+        let mut buffer = get_buffer_pool().get(len);
+        let ptr = buffer.as_mut_ptr();
+
+        let mut ring = build_ring()?;
+        let fd = file.as_raw_fd();
+        
+        let sqe = opcode::Read::new(types::Fd(fd), ptr, len as u32)
+            .offset(offset)
+            .build()
+            .user_data(0);
+
+        unsafe {
+            ring.submission().push(&sqe)
+                .map_err(|_| std::io::Error::other("submission queue is full"))?;
+        }
+        ring.submit_and_wait(1)?;
+
+        let mut cq: io_uring::CompletionQueue<'_> = ring.completion();
+        let cqe = cq
+            .next()
+            .ok_or_else(|| std::io::Error::other("completion queue empty"))?;
+        
+        if cqe.result() < 0 {
+            return Err(std::io::Error::other(format!("read error: {}", cqe.result())));
+        }
+        
+        let bytes_read = cqe.result() as usize;
+        validate_read_count(bytes_read, len)?;
+        
+        drop(file);
+        Ok(OwnedBytes::Pooled(buffer))
+    }
+
+    fn load_range_direct(&mut self, file: File, offset: u64, len: usize) -> IoResult<OwnedBytes> {
+        let mut buffer = alloc_aligned(len)?;
+        let ptr = buffer.as_mut_ptr();
+
+        let mut ring = build_ring()?;
+        let fd = file.as_raw_fd();
+        
+        let sqe = opcode::Read::new(types::Fd(fd), ptr, len as u32)
+            .offset(offset)
+            .build()
+            .user_data(0);
+
+        unsafe {
+            ring.submission().push(&sqe)
+                .map_err(|_| std::io::Error::other("submission queue is full"))?;
+        }
+        ring.submit_and_wait(1)?;
+
+        let mut cq: io_uring::CompletionQueue<'_> = ring.completion();
+        let cqe = cq
+            .next()
+            .ok_or_else(|| std::io::Error::other("completion queue empty"))?;
+        
+        if cqe.result() < 0 {
+            return Err(std::io::Error::other(format!("direct read error: {}", cqe.result())));
+        }
+        
+        let bytes_read = cqe.result() as usize;
+        validate_read_count(bytes_read, len)?;
+        
+        buffer.set_len(bytes_read);
+        drop(file);
+        Ok(OwnedBytes::Aligned(buffer))
+    }
+
+    pub fn load_range_batch(&mut self, requests: &[BatchRequest]) -> IoResult<Vec<FlattenedResult>> {
         use super::batch::group_requests_by_file;
+        use std::collections::HashMap;
 
         if requests.is_empty() {
             return Ok(Vec::new());
         }
 
         let grouped = group_requests_by_file(requests);
-        let mut all_group_futures: Vec<_> = Vec::with_capacity(grouped.len());
+        let mut all_results: Vec<(usize, std::sync::Arc<[u8]>, usize, usize)> =
+            Vec::with_capacity(requests.len());
 
         for (path, reqs) in grouped {
             if reqs.is_empty() {
                 continue;
             }
 
-            let path_clone = path.clone();
-            let reqs_clone: Vec<_> = reqs.to_vec();
+            let file = File::open(&path)?;
+            let fd = file.as_raw_fd();
+            
+            let ring_depth = RING_DEPTH.max(reqs.len());
+            let mut ring = IoUring::builder()
+                .setup_single_issuer()
+                .setup_coop_taskrun()
+                .setup_submit_all()
+                .build(ring_depth as u32)?;
 
-            let group_future = async move {
-                let mut results: Vec<(usize, Arc<[u8]>, usize, usize)> =
-                    Vec::with_capacity(reqs_clone.len());
-
-                let file = UringFile::open(&path_clone).await
-                    .map_err(std::io::Error::other)?;
-
-                let mut pending: Vec<(usize, _, usize)> = Vec::new();
-
-                for req in reqs_clone {
-                    let offset = req.offset;
-                    let len = req.len;
-                    let idx = req.idx;
-
-                    if len == 0 {
-                        results.push((idx, Arc::new([]), 0, 0));
+            struct PendingBuffer {
+                data: zeropool::PooledBuffer,
+                expected_len: usize,
+            }
+            
+            let mut pending_buffers: HashMap<usize, PendingBuffer> = HashMap::new();
+            let mut pending_count = 0;
+            
+            let mut next_idx = 0;
+            let total = reqs.len();
+            
+            while pending_count > 0 || next_idx < total {
+                while next_idx < total && ring.submission().capacity() > 0 {
+                    let req = &reqs[next_idx];
+                    
+                    if req.len == 0 {
+                        all_results.push((req.idx, std::sync::Arc::new([]), 0, 0));
+                        next_idx += 1;
                         continue;
                     }
-
-                    let pooled = get_buffer_pool().get(len);
-                    let future = file.read_at(pooled, offset);
-                    pending.push((idx, future, len));
+                    
+                    let mut buffer = get_buffer_pool().get(req.len);
+                    let ptr = buffer.as_mut_ptr();
+                    
+                    let sqe = opcode::Read::new(types::Fd(fd), ptr, req.len as u32)
+                        .offset(req.offset)
+                        .build()
+                        .user_data(req.idx as u64);
+                    
+                    unsafe {
+                        if ring.submission().push(&sqe).is_err() {
+                            break;
+                        }
+                    }
+                    
+                    pending_buffers.insert(req.idx, PendingBuffer {
+                        data: buffer,
+                        expected_len: req.len,
+                    });
+                    pending_count += 1;
+                    next_idx += 1;
                 }
-
-                for (idx, future, len) in pending {
-                    let (res, mut buf) = future.await;
-                    validate_read_count(res.map_err(std::io::Error::other)?, len)?;
-                    buf.truncate(len);
-                    let data: Vec<u8> = buf.into_inner();
-                    results.push((idx, data.into(), 0, len));
+                
+                if pending_count > 0 && ring.submission().capacity() == 0 {
+                    ring.submit()?;
+                } else if pending_count > 0 {
+                    ring.submit_and_wait(1)?;
+                } else {
+                    break;
                 }
+                
+                let cq: io_uring::CompletionQueue<'_> = ring.completion();
+                for cqe in cq {
+                    let idx = cqe.user_data() as usize;
+                    let result = cqe.result();
+                    
+                    if result < 0 {
+                        return Err(std::io::Error::other(format!(
+                            "batch read error for idx {}: {}",
+                            idx, result
+                        )));
+                    }
+                    
+                    let bytes_read = result as usize;
+                    
+                    if let Some(pending) = pending_buffers.remove(&idx) {
+                        validate_read_count(bytes_read, pending.expected_len)?;
+                        let data: std::sync::Arc<[u8]> = pending.data.into_inner().into();
+                        all_results.push((idx, data, 0, bytes_read));
+                        pending_count -= 1;
+                    }
+                }
+            }
 
-                let _ = file.close().await;
-                ReaderResult::Ok(results)
-            };
-
-            all_group_futures.push(group_future);
+            drop(file);
         }
 
-        let grouped_results = futures::future::join_all(all_group_futures)
-                .await
-                .into_iter()
-                .collect::<Result<Vec<Vec<(usize, Arc<[u8]>, usize, usize)>>, std::io::Error>>()?;
-
-        let mut indexed: Vec<(usize, Arc<[u8]>, usize, usize)> = grouped_results
+        all_results.sort_by_key(|(idx, _, _, _)| *idx);
+        Ok(all_results
             .into_iter()
-            .flatten()
-            .collect();
-        indexed.sort_by_key(|(idx, _, _, _)| *idx);
-        Ok(indexed.into_iter().map(|(_, data, offset, len)| (data, offset, len)).collect())
+            .map(|(_, data, offset, len)| (data, offset, len))
+            .collect())
     }
 }
 
@@ -338,10 +391,8 @@ impl Default for Reader {
     }
 }
 
-type ReaderResult<T> = Result<T, std::io::Error>;
-
 pub struct Writer {
-    file: Option<UringFile>,
+    file: Option<File>,
     path: std::path::PathBuf,
 }
 
@@ -352,60 +403,184 @@ impl std::fmt::Debug for Writer {
 }
 
 impl Writer {
-    pub async fn create(path: &Path) -> IoResult<Self> {
+    pub fn create(path: &Path) -> IoResult<Self> {
         if let Some(parent) = path.parent() && !parent.as_os_str().is_empty() {
-            tokio::fs::create_dir_all(parent).await?;
+            std::fs::create_dir_all(parent)?;
         }
-        let file = UringFile::create(path).await?;
-        Ok(Self { file: Some(file), path: path.to_path_buf() })
+        let file = std::fs::File::create(path)?;
+        Ok(Self {
+            file: Some(file),
+            path: path.to_path_buf(),
+        })
     }
 
-    pub async fn write_all(&mut self, data: Vec<u8>) -> IoResult<()> {
+    pub fn write_all(&mut self, data: &[u8]) -> IoResult<()> {
         let file = self.file.take().ok_or_else(|| std::io::Error::other("writer closed"))?;
-        let _ = file.close().await;
-        
-        // Truncate using std::fs
-        std::fs::File::create(&self.path).map_err(std::io::Error::other)?.set_len(0).map_err(std::io::Error::other)?;
-        
-        let file = UringFile::create(&self.path).await?;
-        
-        let mut offset = 0;
-        while offset < data.len() {
-            let this_chunk = std::cmp::min(MAX_CHUNK_SIZE, data.len() - offset);
-            let chunk = data[offset..offset + this_chunk].to_vec();
-            let (res, _) = file.write_at(chunk, offset as u64).submit().await;
-            let n = res?;
-            if n == 0 {
-                return Err(std::io::Error::new(std::io::ErrorKind::WriteZero, "write returned zero bytes"));
-            }
-            offset += n;
+        drop(file);
+
+        {
+            let file = std::fs::File::create(&self.path)?;
+            file.set_len(0)?;
+            drop(file);
         }
-        
-        file.sync_all().await?;
+
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&self.path)?;
+
+        let fd = file.as_raw_fd();
         self.file = Some(file);
-        Ok(())
-    }
 
-    pub async fn write_at(&mut self, offset: u64, data: Vec<u8>) -> IoResult<()> {
-        let file = self.file.as_mut().ok_or_else(|| std::io::Error::other("writer closed"))?;
-        
-        let mut written = 0usize;
-        while written < data.len() {
-            let this_chunk = std::cmp::min(MAX_CHUNK_SIZE, data.len() - written);
-            let chunk = data[written..written + this_chunk].to_vec();
-            let (res, _) = file.write_at(chunk, offset + written as u64).submit().await;
-            let n = res?;
-            if n == 0 {
-                return Err(std::io::Error::new(std::io::ErrorKind::WriteZero, "write returned zero bytes"));
-            }
-            written += n;
+        let mut ring = IoUring::builder()
+            .setup_single_issuer()
+            .setup_coop_taskrun()
+            .setup_submit_all()
+            .build(RING_DEPTH as u32)?;
+
+        write_chunks(&mut ring, fd, data, 0)?;
+
+        let fsync_e = opcode::Fsync::new(types::Fd(fd))
+            .build()
+            .user_data(u64::MAX);
+
+        unsafe {
+            ring.submission().push(&fsync_e)
+                .map_err(|_| std::io::Error::other("submission queue is full"))?;
         }
-        
+        ring.submit_and_wait(1)?;
+
+        let cq: io_uring::CompletionQueue<'_> = ring.completion();
+        for cqe in cq {
+            if cqe.user_data() == u64::MAX && cqe.result() < 0 {
+                return Err(std::io::Error::other(format!("fsync error: {}", cqe.result())));
+            }
+        }
+
         Ok(())
     }
 
-    pub async fn sync_all(&mut self) -> IoResult<()> {
-        let file = self.file.as_ref().ok_or_else(|| std::io::Error::other("writer closed"))?;
-        file.sync_all().await
+    pub fn write_at(&mut self, offset: u64, data: &[u8]) -> IoResult<()> {
+        let file = self.file.as_mut().ok_or_else(|| std::io::Error::other("writer closed"))?;
+        let fd = file.as_raw_fd();
+
+        let mut ring = IoUring::builder()
+            .setup_single_issuer()
+            .setup_coop_taskrun()
+            .setup_submit_all()
+            .build(RING_DEPTH as u32)?;
+
+        write_chunks(&mut ring, fd, data, offset)?;
+
+        Ok(())
     }
+
+    pub fn sync_all(&mut self) -> IoResult<()> {
+        let file = self.file.as_mut().ok_or_else(|| std::io::Error::other("writer closed"))?;
+        let fd = file.as_raw_fd();
+
+        let mut ring = build_ring()?;
+        let fsync_e = opcode::Fsync::new(types::Fd(fd)).build().user_data(0);
+
+        unsafe {
+            ring.submission().push(&fsync_e)
+                .map_err(|_| std::io::Error::other("submission queue is full"))?;
+        }
+        ring.submit_and_wait(1)?;
+
+        let mut cq: io_uring::CompletionQueue<'_> = ring.completion();
+        let cqe = cq
+            .next()
+            .ok_or_else(|| std::io::Error::other("completion queue empty"))?;
+        if cqe.result() < 0 {
+            return Err(std::io::Error::other(format!("fsync error: {}", cqe.result())));
+        }
+
+        Ok(())
+    }
+}
+
+/// Internal write loop that handles partial writes by resubmitting the unwritten tail.
+fn write_chunks(ring: &mut IoUring, fd: i32, data: &[u8], base_offset: u64) -> IoResult<()> {
+    let mut offset = 0;
+    let mut pending: std::collections::HashMap<u64, (u64, u32)> = std::collections::HashMap::new();
+    let mut completions: Vec<(u64, i32)> = Vec::with_capacity(RING_DEPTH);
+
+    while offset < data.len() || !pending.is_empty() {
+        while offset < data.len() && ring.submission().capacity() > 0 {
+            let chunk_len = (data.len() - offset).min(MAX_CHUNK_SIZE) as u32;
+            let chunk_ptr = data[offset..offset + chunk_len as usize].as_ptr();
+            let file_offset = base_offset + offset as u64;
+
+            let write_e = opcode::Write::new(types::Fd(fd), chunk_ptr, chunk_len)
+                .offset(file_offset)
+                .build()
+                .user_data(file_offset);
+
+            unsafe {
+                if ring.submission().push(&write_e).is_err() {
+                    break;
+                }
+            }
+
+            pending.insert(file_offset, (offset as u64, chunk_len));
+            offset += chunk_len as usize;
+        }
+
+        if !pending.is_empty() && (offset >= data.len() || ring.submission().capacity() == 0) {
+            ring.submit()?;
+        } else if !pending.is_empty() {
+            ring.submit_and_wait(1)?;
+        } else {
+            break;
+        }
+
+        completions.clear();
+        let cq = ring.completion();
+        for cqe in cq {
+            completions.push((cqe.user_data(), cqe.result()));
+        }
+
+        for (file_offset, result) in &completions {
+            if *result < 0 {
+                return Err(std::io::Error::other(format!(
+                    "write error at offset {}: {}",
+                    file_offset, result
+                )));
+            }
+
+            let bytes_written = *result as u32;
+            if let Some(&(start, requested)) = pending.get(file_offset) {
+                if bytes_written < requested {
+                    let unwritten_start = start + bytes_written as u64;
+                    let mut unwritten_len = (requested - bytes_written) as usize;
+                    let mut sub_offset = 0;
+                    while sub_offset < unwritten_len && ring.submission().capacity() > 0 {
+                        let sub_len = unwritten_len.min(MAX_CHUNK_SIZE) as u32;
+                        let data_start = unwritten_start as usize + sub_offset;
+                        let sub_ptr = data[data_start..data_start + sub_len as usize].as_ptr();
+                        let sub_file_offset = base_offset + unwritten_start + sub_offset as u64;
+                        let sub_e = opcode::Write::new(types::Fd(fd), sub_ptr, sub_len)
+                            .offset(sub_file_offset)
+                            .build()
+                            .user_data(sub_file_offset);
+                        unsafe {
+                            if ring.submission().push(&sub_e).is_err() {
+                                break;
+                            }
+                        }
+                        pending.insert(sub_file_offset, (unwritten_start + sub_offset as u64, sub_len));
+                        sub_offset += sub_len as usize;
+                        unwritten_len -= sub_len as usize;
+                    }
+                    if unwritten_len == 0 {
+                        pending.remove(file_offset);
+                    }
+                } else {
+                    pending.remove(file_offset);
+                }
+            }
+        }
+    }
+
+    Ok(())
 }

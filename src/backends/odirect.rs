@@ -1,56 +1,23 @@
 //! O_DIRECT file operations and aligned buffer management for Linux.
 //!
-//! Provides utilities for direct I/O that bypasses the kernel page cache,
-//! enabling true zero-copy operations when combined with io_uring.
-//!
-//! O_DIRECT requires buffers aligned to block boundaries (typically 4KB).
-//! This module provides both the alignment utilities and the I/O operations.
+//! Provides utilities for direct I/O that bypasses the kernel page cache.
 
 use super::IoResult;
-use std::alloc::{Layout, alloc_zeroed};
+use std::alloc::{alloc_zeroed, dealloc, Layout};
 use std::fs::OpenOptions as StdOpenOptions;
 use std::io::{Error as IoError, ErrorKind};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
-use std::sync::Arc;
-use tokio_uring::fs::{File as UringFile, OpenOptions};
+use std::ptr::NonNull;
 
-/// Block size for alignment (4KB - standard disk block size)
 pub const BLOCK_SIZE: usize = 4096;
-
-/// Block size for direct I/O alignment (4KB) as u64.
 pub const BLOCK_SIZE_U64: u64 = 4096;
 
-// ---------------------------------------------------------------------------
-// Alignment helpers
-// ---------------------------------------------------------------------------
-
-/// Rounds up a size to the next block-aligned boundary.
-#[inline]
-pub const fn align_to_block(size: usize) -> usize {
-    if size == 0 {
-        return 0;
-    }
-    let rem = size % BLOCK_SIZE;
-    if rem == 0 {
-        size
-    } else {
-        size + (BLOCK_SIZE - rem)
-    }
-}
-
-/// Check if offset and length are properly aligned for O_DIRECT.
 #[inline]
 pub const fn is_block_aligned(offset: u64, len: usize) -> bool {
     (offset & (BLOCK_SIZE_U64 - 1)) == 0 && len.is_multiple_of(BLOCK_SIZE)
 }
 
-/// Determines whether a direct I/O read is safe for the given layout.
-///
-/// This requires:
-/// - Non-zero file size
-/// - File offset (0) and length block aligned
-/// - Chunk size divides the file so each thread/task reads a whole number of chunks
 #[inline]
 pub const fn can_use_direct_read(file_size: usize, chunk_size: usize) -> bool {
     file_size > 0
@@ -59,424 +26,92 @@ pub const fn can_use_direct_read(file_size: usize, chunk_size: usize) -> bool {
         && file_size.is_multiple_of(chunk_size)
 }
 
-/// Allocates a zeroed, block-aligned buffer.
-///
-/// # Arguments
-///
-/// * `capacity` - Size in bytes (will be allocated with BLOCK_SIZE alignment)
-///
-/// # Returns
-///
-/// An empty `Vec<u8>` with the requested capacity, aligned to BLOCK_SIZE.
-///
-/// # Errors
-///
-/// Returns error if layout is invalid or allocation fails.
-#[inline]
-pub fn alloc_aligned(capacity: usize) -> IoResult<Vec<u8>> {
-    if capacity == 0 {
-        return Ok(Vec::new());
-    }
-
-    let layout = Layout::from_size_align(capacity, BLOCK_SIZE)
-        .map_err(|_| IoError::new(ErrorKind::InvalidInput, "invalid allocation layout"))?;
-
-    // SAFETY: alloc_zeroed is safe to call with a valid Layout. We use zeroed
-    // memory instead of uninitialized to prevent information leaks when buffers
-    // are truncated after I/O (e.g., removing alignment padding).
-    let ptr = unsafe { alloc_zeroed(layout) };
-    if ptr.is_null() {
-        std::alloc::handle_alloc_error(layout);
-    }
-
-    // SAFETY: Vec::from_raw_parts requirements are met:
-    // 1. `ptr` is non-null (checked above) and allocated via the global allocator
-    // 2. `ptr` is valid for reads/writes of `capacity` bytes
-    // 3. `ptr` is aligned to BLOCK_SIZE (guaranteed by layout)
-    // 4. `capacity` matches the actual allocation size
-    // 5. length=0 is always ≤ capacity, so no uninitialized data is exposed
-    // 6. The memory will be freed via Vec's Drop implementation
-    let buf = unsafe { Vec::from_raw_parts(ptr, 0, capacity) };
-    Ok(buf)
-}
-
-// ---------------------------------------------------------------------------
-// Core aligned buffer types
-// ---------------------------------------------------------------------------
-
-/// The actual backing storage for aligned buffers.
-///
-/// Owns a block-aligned `Vec<u8>` and provides safe access to it.
-struct AlignedBacking {
-    buf: Vec<u8>,
-}
-
-impl AlignedBacking {
-    /// Creates a new aligned backing buffer with the specified capacity.
-    fn new(capacity: usize) -> IoResult<Self> {
-        Ok(Self {
-            buf: alloc_aligned(capacity)?,
-        })
-    }
-
-    /// Returns the capacity of the backing buffer.
-    #[inline]
-    const fn capacity(&self) -> usize {
-        self.buf.capacity()
-    }
-
-    /// Returns a mutable pointer to the start of the buffer.
-    ///
-    /// # Safety
-    ///
-    /// Caller must guarantee:
-    /// - Accesses via this pointer stay within [0, capacity) bounds
-    /// - No data races occur (only one mutable alias active at a time)
-    /// - The backing Vec is not moved or deallocated while pointer is in use
-    #[inline]
-    const fn base_ptr(&self) -> *mut u8 {
-        // SAFETY: as_ptr() returns a valid pointer to the Vec's buffer,
-        // and cast_mut() is safe for interior mutability patterns.
-        self.buf.as_ptr().cast_mut()
-    }
-
-    /// Consumes the backing and returns the inner Vec with the specified length.
-    ///
-    /// # Errors
-    ///
-    /// Returns error if requested length exceeds capacity.
-    fn into_vec(mut self, len: usize) -> IoResult<Vec<u8>> {
-        if len > self.capacity() {
-            return Err(IoError::new(
-                ErrorKind::InvalidInput,
-                "requested length exceeds buffer capacity",
-            ));
-        }
-
-        // SAFETY: Vec::set_len requirements are met:
-        // 1. len ≤ capacity (checked above)
-        // 2. All bytes in [0, len) are initialized because:
-        //    - Buffer was allocated with alloc_zeroed, or
-        //    - Bytes were written to via I/O operations
-        // 3. The caller is responsible for ensuring initialization
-        unsafe {
-            self.buf.set_len(len);
-        }
-        Ok(self.buf)
-    }
-}
-
-/// A view into a slice of an aligned buffer for concurrent I/O operations.
-///
-/// Multiple chunks can reference the same backing buffer at different offsets,
-/// enabling true zero-copy parallel reads where each task writes directly to
-/// its designated slice of the final buffer.
-#[derive(Clone)]
-pub struct AlignedChunk {
-    backing: Arc<AlignedBacking>,
-    offset: usize,
+pub struct AlignedBuffer {
+    ptr: NonNull<u8>,
+    layout: Layout,
     len: usize,
-    /// Number of initialized bytes (used by tokio-uring's IoBuf trait)
-    init: usize,
 }
 
-impl AlignedChunk {
-    /// Creates a new chunk view into the backing buffer.
-    ///
-    /// # Arguments
-    ///
-    /// * `backing` - Shared reference to the backing buffer
-    /// * `offset` - Starting offset in bytes from the beginning of the backing buffer
-    /// * `len` - Length of this chunk in bytes
-    ///
-    /// # Errors
-    ///
-    /// Returns error if the chunk would exceed the backing buffer's bounds.
-    fn new(backing: Arc<AlignedBacking>, offset: usize, len: usize) -> IoResult<Self> {
-        let end = offset
-            .checked_add(len)
-            .ok_or_else(|| IoError::other("aligned chunk offset overflow"))?;
+impl AlignedBuffer {
+    pub fn new(capacity: usize) -> IoResult<Self> {
+        if capacity == 0 {
+            return Ok(Self {
+                ptr: NonNull::dangling(),
+                layout: unsafe { Layout::from_size_align_unchecked(1, 1) },
+                len: 0,
+            });
+        }
 
-        if end > backing.capacity() {
-            return Err(IoError::new(
-                ErrorKind::InvalidInput,
-                "aligned chunk out of bounds",
-            ));
+        let layout = Layout::from_size_align(capacity, BLOCK_SIZE)
+            .map_err(|_| IoError::new(ErrorKind::InvalidInput, "invalid allocation layout"))?;
+
+        let ptr = unsafe { alloc_zeroed(layout) };
+        if ptr.is_null() {
+            std::alloc::handle_alloc_error(layout);
         }
 
         Ok(Self {
-            backing,
-            offset,
-            len,
-            init: 0,
+            ptr: NonNull::new(ptr).unwrap(),
+            layout,
+            len: 0,
         })
     }
 
-    /// Returns a mutable pointer to the start of this chunk.
+    pub fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.ptr.as_ptr()
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
+    }
+
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
+    }
+
+    pub fn set_len(&mut self, len: usize) {
+        assert!(len <= self.layout.size());
+        self.len = len;
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.layout.size()
+    }
+
     #[inline]
-    fn ptr(&self) -> *mut u8 {
-        // SAFETY: pointer arithmetic is safe because:
-        // 1. base_ptr() returns a valid pointer to the backing buffer
-        // 2. offset was validated in new() to satisfy: offset + len ≤ capacity
-        // 3. Therefore offset alone is also ≤ capacity
-        // 4. The result pointer is within the same allocated object
-        unsafe { self.backing.base_ptr().add(self.offset) }
-    }
-}
-
-// SAFETY: IoBuf implementation is safe because:
-// 1. The buffer is backed by an Arc<AlignedBacking> which ensures the memory
-//    remains valid for the lifetime of the chunk
-// 2. stable_ptr() returns a pointer to our exclusive region within the backing
-// 3. bytes_init/bytes_total correctly report our slice bounds
-// 4. The underlying memory is properly aligned for O_DIRECT operations
-unsafe impl tokio_uring::buf::IoBuf for AlignedChunk {
-    fn stable_ptr(&self) -> *const u8 {
-        self.ptr()
-    }
-
-    fn bytes_init(&self) -> usize {
-        self.init
-    }
-
-    fn bytes_total(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.len
     }
 }
 
-// SAFETY: IoBufMut implementation is safe because:
-// 1. All IoBuf guarantees above apply
-// 2. stable_mut_ptr() returns a mutable pointer to our exclusive region
-// 3. set_init() only advances the initialization marker (never decreases)
-// 4. The AlignedChunk owns exclusive access to its region of the backing buffer
-unsafe impl tokio_uring::buf::IoBufMut for AlignedChunk {
-    fn stable_mut_ptr(&mut self) -> *mut u8 {
-        self.ptr()
-    }
-
-    unsafe fn set_init(&mut self, pos: usize) {
-        assert!(
-            pos <= self.len,
-            "initialized length cannot exceed chunk length"
-        );
-        if pos > self.init {
-            self.init = pos;
+impl Drop for AlignedBuffer {
+    fn drop(&mut self) {
+        if self.layout.size() > 0 {
+            unsafe { dealloc(self.ptr.as_ptr(), self.layout) }
         }
     }
 }
 
-/// High-level aligned buffer that can be split into chunks for parallel I/O.
-///
-/// This is the main API for creating aligned buffers. It can be:
-/// 1. Used directly for single I/O operations
-/// 2. Split into multiple chunks for concurrent parallel I/O
-/// 3. Consumed to extract the final data as a `Vec<u8>`
-pub struct OwnedAlignedBuffer {
-    backing: Arc<AlignedBacking>,
-}
-
-impl OwnedAlignedBuffer {
-    /// Creates a new aligned buffer with the specified capacity.
-    ///
-    /// # Arguments
-    ///
-    /// * `capacity` - Size in bytes (should be block-aligned for best performance)
-    pub fn new(capacity: usize) -> IoResult<Self> {
-        Ok(Self {
-            backing: Arc::new(AlignedBacking::new(capacity)?),
-        })
-    }
-
-    /// Creates a view into a slice of this buffer.
-    ///
-    /// This is used for parallel I/O where multiple tasks write to different
-    /// offsets of the same buffer concurrently.
-    ///
-    /// # Arguments
-    ///
-    /// * `offset` - Starting byte offset
-    /// * `len` - Length of the slice in bytes
-    #[inline]
-    pub fn slice(&self, offset: usize, len: usize) -> IoResult<AlignedChunk> {
-        AlignedChunk::new(Arc::clone(&self.backing), offset, len)
-    }
-
-    /// Consumes the buffer and returns the inner `Vec<u8>` with the specified length.
-    ///
-    /// This transfers ownership without copying data. The buffer must have no
-    /// outstanding chunk references (all chunks must be dropped first).
-    ///
-    /// # Arguments
-    ///
-    /// * `len` - The actual data length (may be less than capacity due to padding)
-    ///
-    /// # Errors
-    ///
-    /// Returns error if:
-    /// - Length exceeds capacity
-    /// - There are still outstanding chunk references (Arc strong count > 1)
-    pub fn into_vec(self, len: usize) -> IoResult<Vec<u8>> {
-        let backing = Arc::try_unwrap(self.backing).map_err(|arc| {
-            let refs = Arc::strong_count(&arc);
-            IoError::other(format!(
-                "cannot extract Vec: {refs} outstanding chunk reference(s) still exist"
-            ))
-        })?;
-        backing.into_vec(len)
+impl std::fmt::Debug for AlignedBuffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AlignedBuffer")
+            .field("len", &self.len)
+            .field("capacity", &self.capacity())
+            .finish()
     }
 }
 
-// ---------------------------------------------------------------------------
-// Direct I/O file operations
-// ---------------------------------------------------------------------------
+unsafe impl Send for AlignedBuffer {}
 
-/// Open a file for direct reading (O_DIRECT) using tokio-uring.
-///
-/// # Errors
-///
-/// - File does not exist or cannot be opened
 #[inline]
-pub async fn open_direct_read_io_uring(path: &Path) -> IoResult<UringFile> {
-    OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_DIRECT)
-        .open(path)
-        .await
+pub fn alloc_aligned(capacity: usize) -> IoResult<AlignedBuffer> {
+    AlignedBuffer::new(capacity)
 }
 
-/// Open a file for direct reading (O_DIRECT) using std::fs.
-///
-/// # Errors
-///
-/// - File does not exist or cannot be opened
 #[inline]
 pub fn open_direct_read_sync(path: &Path) -> IoResult<std::fs::File> {
     StdOpenOptions::new()
         .read(true)
         .custom_flags(libc::O_DIRECT)
         .open(path)
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        BLOCK_SIZE, BLOCK_SIZE_U64, OwnedAlignedBuffer, align_to_block, alloc_aligned,
-        can_use_direct_read, is_block_aligned,
-    };
-    use tokio_uring::buf::IoBuf;
-
-    #[test]
-    fn test_align_to_block() {
-        assert_eq!(align_to_block(0), 0);
-        assert_eq!(align_to_block(1), BLOCK_SIZE);
-        assert_eq!(align_to_block(BLOCK_SIZE), BLOCK_SIZE);
-        assert_eq!(align_to_block(BLOCK_SIZE + 1), BLOCK_SIZE * 2);
-    }
-
-    #[test]
-    fn test_alloc_aligned_empty() {
-        let buf = alloc_aligned(0).unwrap();
-        assert_eq!(buf.len(), 0);
-        assert_eq!(buf.capacity(), 0);
-    }
-
-    #[test]
-    fn test_alloc_aligned_basic() {
-        let capacity = BLOCK_SIZE * 2;
-        let buf = alloc_aligned(capacity).unwrap();
-        assert_eq!(buf.len(), 0);
-        assert_eq!(buf.capacity(), capacity);
-        // Verify alignment - addr() gives us the address as usize
-        assert_eq!(buf.as_ptr().addr() % BLOCK_SIZE, 0);
-    }
-
-    #[test]
-    fn test_owned_aligned_buffer_basic() {
-        let buffer = OwnedAlignedBuffer::new(BLOCK_SIZE).unwrap();
-        let data_len = 100;
-        let vec = buffer.into_vec(data_len).unwrap();
-        assert_eq!(vec.len(), data_len);
-    }
-
-    #[test]
-    fn test_owned_aligned_buffer_slice() {
-        let buffer = OwnedAlignedBuffer::new(BLOCK_SIZE * 2).unwrap();
-        let chunk1 = buffer.slice(0, BLOCK_SIZE).unwrap();
-        let chunk2 = buffer.slice(BLOCK_SIZE, BLOCK_SIZE).unwrap();
-
-        // Both chunks should be valid
-        assert_eq!(chunk1.bytes_total(), BLOCK_SIZE);
-        assert_eq!(chunk2.bytes_total(), BLOCK_SIZE);
-    }
-
-    #[test]
-    fn test_owned_aligned_buffer_outstanding_refs() {
-        let buffer = OwnedAlignedBuffer::new(BLOCK_SIZE).unwrap();
-        let _chunk = buffer.slice(0, BLOCK_SIZE).unwrap();
-
-        // Should fail because chunk still holds a reference
-        let result = buffer.into_vec(100);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_align_to_block_large_sizes() {
-        assert_eq!(align_to_block(BLOCK_SIZE * 100), BLOCK_SIZE * 100);
-        assert_eq!(align_to_block(BLOCK_SIZE * 100 + 1), BLOCK_SIZE * 101);
-        assert_eq!(align_to_block(BLOCK_SIZE * 100 - 1), BLOCK_SIZE * 100);
-    }
-
-    #[test]
-    fn test_is_block_aligned_edge_cases() {
-        assert!(is_block_aligned(0, 0));
-        assert!(is_block_aligned(0, BLOCK_SIZE));
-        assert!(is_block_aligned(BLOCK_SIZE_U64, BLOCK_SIZE));
-        assert!(!is_block_aligned(1, BLOCK_SIZE));
-        assert!(!is_block_aligned(0, 1));
-        assert!(!is_block_aligned(BLOCK_SIZE_U64, BLOCK_SIZE + 1));
-    }
-
-    #[test]
-    fn test_can_use_direct_read_aligned() {
-        assert!(can_use_direct_read(BLOCK_SIZE, BLOCK_SIZE));
-        assert!(can_use_direct_read(BLOCK_SIZE * 2, BLOCK_SIZE));
-        assert!(can_use_direct_read(BLOCK_SIZE * 4, BLOCK_SIZE * 2));
-    }
-
-    #[test]
-    fn test_can_use_direct_read_unaligned() {
-        assert!(!can_use_direct_read(0, BLOCK_SIZE));
-        assert!(!can_use_direct_read(BLOCK_SIZE, BLOCK_SIZE + 1));
-        assert!(!can_use_direct_read(BLOCK_SIZE + 1, BLOCK_SIZE));
-        assert!(!can_use_direct_read(BLOCK_SIZE * 3, BLOCK_SIZE * 2));
-    }
-
-    #[test]
-    fn test_alloc_aligned_large() {
-        let capacity = BLOCK_SIZE * 1024;
-        let buf = alloc_aligned(capacity).unwrap();
-        assert_eq!(buf.len(), 0);
-        assert_eq!(buf.capacity(), capacity);
-        assert_eq!(buf.as_ptr().addr() % BLOCK_SIZE, 0);
-    }
-
-    #[test]
-    fn test_owned_aligned_buffer_into_vec_exceeds_capacity() {
-        let buffer = OwnedAlignedBuffer::new(BLOCK_SIZE).unwrap();
-        let result = buffer.into_vec(BLOCK_SIZE * 2);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_aligned_chunk_out_of_bounds() {
-        let buffer = OwnedAlignedBuffer::new(BLOCK_SIZE).unwrap();
-        let result = buffer.slice(0, BLOCK_SIZE * 2);
-        assert!(result.is_err());
-        let result = buffer.slice(BLOCK_SIZE, 1);
-        assert!(result.is_err());
-    }
 }

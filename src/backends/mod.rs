@@ -44,13 +44,14 @@
 //! {
 //!     use tensor_store::backends::io_uring::Reader as IoUringReader;
 //!     let mut reader = IoUringReader::new();
-//!     let data = reader.load(Path::new("model.safetensors")).await?;
+//!     let data = reader.load(Path::new("model.safetensors"))?;
 //! }
 //! ```
 
 mod async_io;
 pub mod batch;
 pub mod buffer_slice;
+pub mod byte;
 pub mod io_uring;
 pub mod mmap;
 #[cfg(target_os = "linux")]
@@ -64,6 +65,67 @@ const CHECKPOINT_NUM_SHARDS: usize = 8;
 const CHECKPOINT_TLS_CACHE_SIZE: usize = 4;
 const CHECKPOINT_MAX_BUFFERS_PER_SHARD: usize = 32;
 const CHECKPOINT_MIN_BUFFER_SIZE: usize = 1024 * 1024;
+
+pub const MAX_SINGLE_READ: usize = 512 * 1024 * 1024;
+pub const MAX_CHUNK_SIZE: usize = 128 * 1024 * 1024;
+pub const MIN_CHUNK_SIZE: usize = 32 * 1024 * 1024;
+
+#[inline]
+pub fn calculate_chunks(file_size: usize) -> usize {
+    if file_size == 0 {
+        return 1;
+    }
+    file_size.div_ceil(MAX_CHUNK_SIZE).max(1)
+}
+
+/// Desired parallelism for submitting chunked I/O.
+/// This is separate from chunk sizing, which is governed by MAX_CHUNK_SIZE.
+#[inline]
+pub fn chunk_budget() -> usize {
+    std::thread::available_parallelism()
+        .map(|p| p.get())
+        .unwrap_or(4)
+        .max(1)
+}
+
+pub struct ChunkPlan {
+    pub offset: u64,
+    pub len: usize,
+}
+
+pub fn build_chunk_plan(file_size: usize) -> Vec<ChunkPlan> {
+    let chunks = calculate_chunks(file_size);
+    let chunk_size = file_size.div_ceil(chunks);
+    let mut plan = Vec::with_capacity(chunks);
+    
+    for i in 0..chunks {
+        let start = i * chunk_size;
+        if start >= file_size {
+            break;
+        }
+        let end = std::cmp::min(start + chunk_size, file_size);
+        let len = end - start;
+        if len == 0 {
+            break;
+        }
+        plan.push(ChunkPlan {
+            offset: start as u64,
+            len,
+        });
+    }
+    plan
+}
+
+#[inline]
+pub fn validate_read_count(actual: usize, expected: usize) -> IoResult<()> {
+    if actual < expected {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            format!("Expected to read {expected} bytes, but read {actual}"),
+        ));
+    }
+    Ok(())
+}
 
 static BUFFER_POOL: std::sync::OnceLock<BufferPool> = std::sync::OnceLock::new();
 
@@ -92,11 +154,11 @@ impl AsyncReader {
         Self { inner: async_io::TokioReader::new() }
     }
 
-    pub async fn load(&mut self, path: impl AsRef<std::path::Path> + Send) -> IoResult<Vec<u8>> {
+    pub async fn load(&mut self, path: impl AsRef<std::path::Path> + Send) -> IoResult<byte::OwnedBytes> {
         self.inner.load(path).await
     }
 
-    pub async fn load_range(&mut self, path: impl AsRef<std::path::Path> + Send, offset: u64, len: usize) -> IoResult<Vec<u8>> {
+    pub async fn load_range(&mut self, path: impl AsRef<std::path::Path> + Send, offset: u64, len: usize) -> IoResult<byte::OwnedBytes> {
         self.inner.load_range(path, offset, len).await
     }
 
@@ -120,11 +182,11 @@ impl SyncReader {
         Self { inner: sync_io::SyncReaderEngine::new() }
     }
 
-    pub fn load(&mut self, path: impl AsRef<std::path::Path>) -> IoResult<Vec<u8>> {
+    pub fn load(&mut self, path: impl AsRef<std::path::Path>) -> IoResult<byte::OwnedBytes> {
         self.inner.load(path)
     }
 
-    pub fn load_range(&mut self, path: impl AsRef<std::path::Path>, offset: u64, len: usize) -> IoResult<Vec<u8>> {
+    pub fn load_range(&mut self, path: impl AsRef<std::path::Path>, offset: u64, len: usize) -> IoResult<byte::OwnedBytes> {
         self.inner.load_range(path, offset, len)
     }
 
@@ -149,11 +211,11 @@ impl AsyncWriter {
         Ok(Self { inner })
     }
 
-    pub async fn write_all(&mut self, data: Vec<u8>) -> IoResult<()> {
+    pub async fn write_all(&mut self, data: &[u8]) -> IoResult<()> {
         self.inner.write_all(data).await
     }
 
-    pub async fn write_at(&mut self, offset: u64, data: Vec<u8>) -> IoResult<()> {
+    pub async fn write_at(&mut self, offset: u64, data: &[u8]) -> IoResult<()> {
         self.inner.write_at(offset, data).await
     }
 
@@ -208,7 +270,7 @@ pub(crate) fn bounded_async_concurrency(item_count: usize, total_bytes: u64, max
         .unwrap_or(4)
         .max(2);
 
-    let min_floor = item_count.clamp(2, 4);
+    let min_floor = item_count.clamp(2, 4).min(cpu_count);
 
     (unbounded as usize)
         .min(cpu_count)

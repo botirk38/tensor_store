@@ -224,12 +224,53 @@ fn profile_load_async(config: &ProfileConfig, default: bool) -> ProfileResult {
     Ok(())
 }
 
+fn profile_load_io_uring(config: &ProfileConfig) -> ProfileResult {
+    let fixtures = fixtures(config)?;
+    for (fixture, dir) in fixtures {
+        let iterations = config.normalized_iterations();
+        let cache_label = if config.cold_cache { "cold" } else { "warm" };
+        let mut durations = Vec::with_capacity(iterations);
+
+        println!(
+            "Running io-uring serverlessllm load for '{}' ({iterations}x {cache_label})",
+            fixture
+        );
+        for i in 0..iterations {
+            if config.cold_cache && i == 0 {
+                drop_page_cache_for_dir(&dir);
+            }
+            let start = Instant::now();
+            let model = serverlessllm::Model::load_io_uring(&dir)?;
+            let elapsed = start.elapsed();
+            durations.push(elapsed);
+            let bytes: usize = (&model).into_iter().map(|(_, t)| t.data().len()).sum();
+            println!(
+                "  iteration {}: {} tensors, {} bytes, {:.2}ms",
+                i + 1,
+                model.len(),
+                bytes,
+                elapsed.as_secs_f64() * 1000.0
+            );
+            black_box((model.len(), bytes));
+        }
+
+        if let Some(summary) = summarize(&durations) {
+            println!(
+                "  summary: mean {:.2}ms | min {:.2}ms | max {:.2}ms",
+                summary.mean_ms, summary.min_ms, summary.max_ms
+            );
+        }
+    }
+    Ok(())
+}
+
 pub fn run(case: &str, config: &ProfileConfig) -> ProfileResult {
     match case {
         "default" => profile_load_async(config, true),
         "sync" => profile_load_sync(config),
         "async" => profile_load_async(config, false),
         "mmap" => profile_load_mmap(config),
+        "io-uring" => profile_load_io_uring(config),
         other => Err(ProfileError::new(format!("Unknown serverlessllm case '{}'", other)).into()),
     }
 }

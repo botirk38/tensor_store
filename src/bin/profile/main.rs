@@ -65,6 +65,8 @@ enum SafeTensorsCase {
     Async,
     /// Memory-mapped open
     Mmap,
+    /// Explicit io_uring backend (Linux only)
+    IoUring,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -77,6 +79,8 @@ enum ServerlessLLMCase {
     Async,
     /// Memory-mapped open
     Mmap,
+    /// Explicit io_uring backend (Linux only)
+    IoUring,
 }
 
 impl SafeTensorsCase {
@@ -86,6 +90,7 @@ impl SafeTensorsCase {
             Self::Sync => "sync",
             Self::Async => "async",
             Self::Mmap => "mmap",
+            Self::IoUring => "io-uring",
         }
     }
 }
@@ -97,6 +102,7 @@ impl ServerlessLLMCase {
             Self::Sync => "sync",
             Self::Async => "async",
             Self::Mmap => "mmap",
+            Self::IoUring => "io-uring",
         }
     }
 }

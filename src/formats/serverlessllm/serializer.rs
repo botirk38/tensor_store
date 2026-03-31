@@ -1,4 +1,4 @@
-//! `ServerlessLLM` format writer.
+//! `ServerlessLLM` format serializer.
 //!
 //! This module provides functionality to write `ServerlessLLM` tensor index files
 //! and partition binary data files.
@@ -19,6 +19,7 @@
 
 use crate::backends;
 use crate::formats::error::{WriterError, WriterResult};
+use crate::formats::traits::{AsyncSerializer, SyncSerializer};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -48,97 +49,97 @@ impl From<&TensorDescriptor> for TensorWriteEntry {
     }
 }
 
-/// Write `tensor_index.json` asynchronously.
-///
-/// # Arguments
-///
-/// * `output_path` - Path where the index file will be written
-/// * `tensors` - `HashMap` of tensor names to their metadata entries
-///
-/// # Errors
-///
-/// Returns an error if the file cannot be written or if serialization fails.
+/// Input data for writing a ServerlessLLM model.
+#[derive(Debug, Clone)]
+pub struct WriteInput {
+    pub index: HashMap<String, TensorWriteEntry>,
+    pub partitions: Vec<Vec<u8>>,
+}
+
+/// Stateful writer for the ServerlessLLM format.
+#[derive(Debug, Default)]
+pub struct Writer;
+
+impl Writer {
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl AsyncSerializer for Writer {
+    type Input = WriteInput;
+
+    async fn write(path: &Path, data: &Self::Input) -> WriterResult<()> {
+        write_model_to_dir(path, &data.index, &data.partitions).await
+    }
+}
+
+impl SyncSerializer for Writer {
+    type Input = WriteInput;
+
+    fn write_sync(path: &Path, data: &Self::Input) -> WriterResult<()> {
+        write_model_to_dir_sync(path, &data.index, &data.partitions)
+    }
+}
+
+async fn write_model_to_dir(
+    directory: &Path,
+    index: &HashMap<String, TensorWriteEntry>,
+    partitions: &[Vec<u8>],
+) -> WriterResult<()> {
+    tokio::fs::create_dir_all(directory).await?;
+    let index_path = directory.join("tensor_index.json");
+    write_index(&index_path, index).await?;
+    for (i, data) in partitions.iter().enumerate() {
+        let part_path = directory.join(format!("tensor.data_{}", i));
+        write_partition(&part_path, data).await?;
+    }
+    Ok(())
+}
+
+fn write_model_to_dir_sync(
+    directory: &Path,
+    index: &HashMap<String, TensorWriteEntry>,
+    partitions: &[Vec<u8>],
+) -> WriterResult<()> {
+    std::fs::create_dir_all(directory)?;
+    let index_path = directory.join("tensor_index.json");
+    write_index_sync(&index_path, index)?;
+    for (i, data) in partitions.iter().enumerate() {
+        let part_path = directory.join(format!("tensor.data_{}", i));
+        write_partition_sync(&part_path, data)?;
+    }
+    Ok(())
+}
+
 pub async fn write_index(
     output_path: impl AsRef<Path>,
     tensors: &HashMap<String, TensorWriteEntry>,
 ) -> WriterResult<()> {
     let path = output_path.as_ref();
     ensure_parent_dir_async(path).await?;
-
     let json = serialize_index(tensors)?;
     let mut writer = backends::AsyncWriter::create(path).await.map_err(WriterError::from)?;
-    writer.write_all(json).await.map_err(WriterError::from)
+    writer.write_all(&json).await.map_err(WriterError::from)
 }
 
-/// Write a partition file (`tensor.data_N`) asynchronously.
-///
-/// # Arguments
-///
-/// * `output_path` - Path where the partition file will be written
-/// * `data` - Binary tensor data to write
-///
-/// # Errors
-///
-/// Returns an error if the file cannot be written.
-#[inline]
-pub async fn write_partition(
-    output_path: impl AsRef<Path>,
-    data: impl Into<Vec<u8>>,
-) -> WriterResult<()> {
-    let path = output_path.as_ref();
-    ensure_parent_dir_async(path).await?;
-    let bytes = data.into();
-    let mut writer = backends::AsyncWriter::create(path).await.map_err(WriterError::from)?;
-    writer.write_all(bytes).await.map_err(WriterError::from)
-}
-
-/// Write `tensor_index.json` synchronously.
-///
-/// # Arguments
-///
-/// * `output_path` - Path where the index file will be written
-/// * `tensors` - `HashMap` of tensor names to their metadata entries
-///
-/// # Errors
-///
-/// Returns an error if the file cannot be written or if serialization fails.
-#[inline]
 pub fn write_index_sync(
     output_path: impl AsRef<Path>,
     tensors: &HashMap<String, TensorWriteEntry>,
 ) -> WriterResult<()> {
     let path = output_path.as_ref();
     ensure_parent_dir_sync(path)?;
-
     let json = serialize_index(tensors)?;
-    std::fs::write(path, json).map_err(WriterError::from)
+    let mut writer = backends::SyncWriter::create(path)?;
+    writer.write_all(&json).map_err(WriterError::from)
 }
 
-/// Write a partition file synchronously.
-///
-/// # Arguments
-///
-/// * `output_path` - Path where the partition file will be written
-/// * `data` - Binary tensor data to write
-///
-/// # Errors
-///
-/// Returns an error if the file cannot be written.
-#[inline]
-pub fn write_partition_sync(output_path: impl AsRef<Path>, data: &[u8]) -> WriterResult<()> {
-    let path = output_path.as_ref();
-    ensure_parent_dir_sync(path)?;
-    std::fs::write(path, data).map_err(WriterError::from)
-}
-
-// Helper function to serialize tensors to JSON format
 fn serialize_index(tensors: &HashMap<String, TensorWriteEntry>) -> WriterResult<Vec<u8>> {
     if tensors.is_empty() {
         return Err(WriterError::InvalidInput(
             "Cannot write empty tensor index".to_owned(),
         ));
     }
-
     let mut map = serde_json::Map::with_capacity(tensors.len());
     for (name, entry) in tensors {
         let value = serde_json::json!([
@@ -151,11 +152,23 @@ fn serialize_index(tensors: &HashMap<String, TensorWriteEntry>) -> WriterResult<
         ]);
         map.insert(name.clone(), value);
     }
-
     serde_json::to_vec_pretty(&map).map_err(WriterError::from)
 }
 
-// Helper function to ensure parent directory exists (async)
+pub async fn write_partition(output_path: impl AsRef<Path>, data: &[u8]) -> WriterResult<()> {
+    let path = output_path.as_ref();
+    ensure_parent_dir_async(path).await?;
+    let mut writer = backends::AsyncWriter::create(path).await?;
+    writer.write_all(data).await.map_err(WriterError::from)
+}
+
+pub fn write_partition_sync(output_path: impl AsRef<Path>, data: &[u8]) -> WriterResult<()> {
+    let path = output_path.as_ref();
+    ensure_parent_dir_sync(path)?;
+    let mut writer = backends::SyncWriter::create(path)?;
+    writer.write_all(data).map_err(WriterError::from)
+}
+
 async fn ensure_parent_dir_async(path: &Path) -> WriterResult<()> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
@@ -165,7 +178,6 @@ async fn ensure_parent_dir_async(path: &Path) -> WriterResult<()> {
     Ok(())
 }
 
-// Helper function to ensure parent directory exists (sync)
 fn ensure_parent_dir_sync(path: &Path) -> WriterResult<()> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
@@ -183,7 +195,7 @@ fn ensure_parent_dir_sync(path: &Path) -> WriterResult<()> {
 mod tests {
     use super::TensorWriteEntry;
     use crate::formats::error::WriterError;
-    use crate::formats::serverlessllm::writer::{
+    use crate::formats::serverlessllm::serializer::{
         serialize_index, write_index, write_index_sync, write_partition, write_partition_sync,
     };
     use serde_json::Value;
@@ -237,7 +249,7 @@ mod tests {
             write_index(&index_path, &sample_entries())
                 .await
                 .expect("write index async");
-            write_partition(&part_path, b"xyz".to_vec())
+            write_partition(&part_path, b"xyz")
                 .await
                 .expect("write partition async");
         });

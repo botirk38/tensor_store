@@ -1,4 +1,4 @@
-//! `SafeTensors` writer helpers.
+//! `SafeTensors` format serializer.
 //!
 //! This module intentionally keeps things simple by wrapping the public
 //! `safetensors` crate APIs. It provides ergonomic names and re-exports so
@@ -27,6 +27,7 @@
 
 use crate::backends;
 use crate::formats::error::{WriterError, WriterResult};
+use crate::formats::traits::{AsyncSerializer, SyncSerializer};
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::path::Path;
@@ -78,10 +79,9 @@ impl Writer {
         safetensors::serialize(tensors, metadata).map_err(Into::into)
     }
 
-    /// Serialize tensors into an owned byte buffer using the `SafeTensors` format (asynchronous).
+    /// Serialize tensors into an owned byte buffer using the `SafeTensors` format.
     ///
-    /// This is identical to the sync version since serialization is CPU-bound.
-    /// Use this for consistency in async contexts.
+    /// This method is synchronous since serialization is CPU-bound.
     ///
     /// # Arguments
     ///
@@ -175,7 +175,86 @@ impl Writer {
         }
         let buffer = safetensors::serialize(tensors, metadata)?;
         let mut writer = backends::AsyncWriter::create(path_ref).await.map_err(|e| std::io::Error::other(e.to_string()))?;
-        writer.write_all(buffer).await.map_err(WriterError::from)
+        writer.write_all(&buffer).await.map_err(WriterError::from)
+    }
+}
+
+/// Input data for writing a SafeTensors model.
+#[derive(Debug, Clone)]
+pub struct TensorWriteData {
+    pub name: String,
+    pub data: Vec<u8>,
+    pub shape: Vec<usize>,
+    pub dtype: String,
+}
+
+/// Input data for writing a SafeTensors model.
+#[derive(Debug, Clone)]
+pub struct WriteInput {
+    pub tensors: Vec<TensorWriteData>,
+    pub metadata: Option<MetadataMap>,
+}
+
+impl AsyncSerializer for Writer {
+    type Input = WriteInput;
+
+    async fn write(path: &Path, data: &Self::Input) -> WriterResult<()> {
+        let views: Vec<_> = data
+            .tensors
+            .iter()
+            .map(|t| {
+                let dtype = dtype_from_str(&t.dtype).map_err(WriterError::InvalidInput)?;
+                let view = TensorView::new(
+                    dtype,
+                    t.shape.clone(),
+                    t.data.as_slice(),
+                ).map_err(|e| WriterError::InvalidInput(e.to_string()))?;
+                Ok::<_, WriterError>((t.name.as_str(), view))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let writer = Writer::new();
+        writer.write_to_file_async(views, data.metadata.clone(), path).await
+    }
+}
+
+impl SyncSerializer for Writer {
+    type Input = WriteInput;
+
+    fn write_sync(path: &Path, data: &Self::Input) -> WriterResult<()> {
+        let views: Vec<_> = data
+            .tensors
+            .iter()
+            .map(|t| {
+                let dtype = dtype_from_str(&t.dtype).map_err(WriterError::InvalidInput)?;
+                let view = TensorView::new(
+                    dtype,
+                    t.shape.clone(),
+                    t.data.as_slice(),
+                ).map_err(|e| WriterError::InvalidInput(e.to_string()))?;
+                Ok::<_, WriterError>((t.name.as_str(), view))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let writer = Writer::new();
+        writer.write_to_file(views, data.metadata.clone(), path)
+    }
+}
+
+fn dtype_from_str(s: &str) -> Result<Dtype, String> {
+    match s.to_uppercase().as_str() {
+        "BOOL" | "B" => Ok(Dtype::BOOL),
+        "U8" => Ok(Dtype::U8),
+        "I8" => Ok(Dtype::I8),
+        "I16" => Ok(Dtype::I16),
+        "U16" => Ok(Dtype::U16),
+        "F16" => Ok(Dtype::F16),
+        "F32" | "F" => Ok(Dtype::F32),
+        "F64" | "D" => Ok(Dtype::F64),
+        "I32" => Ok(Dtype::I32),
+        "I64" => Ok(Dtype::I64),
+        "U32" => Ok(Dtype::U32),
+        "U64" => Ok(Dtype::U64),
+        "BF16" => Ok(Dtype::BF16),
+        _ => Err(format!("unknown dtype: {}", s)),
     }
 }
 

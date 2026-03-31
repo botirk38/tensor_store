@@ -13,7 +13,7 @@
 use crate::backends;
 use crate::formats::error::{WriterError, WriterResult};
 use crate::formats::safetensors::Model;
-use crate::formats::serverlessllm::{write_index, write_index_sync, writer::TensorWriteEntry};
+use crate::formats::serverlessllm::serializer::{write_index, write_index_sync, TensorWriteEntry};
 use crate::formats::traits::TensorView;
 use rayon::prelude::*;
 use std::collections::{BTreeSet, HashMap};
@@ -131,7 +131,7 @@ async fn collect_tensor_metadata_async(shard_paths: &[PathBuf]) -> WriterResult<
         let mut reader = backends::AsyncReader::new();
         let shard = reader.load(shard_path).await.map_err(WriterError::from)?;
 
-        let model = Model::from_bytes(shard)
+        let model = Model::from_bytes(shard.into_vec())
             .map_err(|e| WriterError::Io(std::io::Error::other(e.to_string())))?;
 
         for name in model.tensor_names() {
@@ -173,7 +173,7 @@ fn collect_tensor_metadata_sync(shard_paths: &[PathBuf]) -> WriterResult<Vec<Ten
             let mut reader = backends::SyncReader::new();
             let shard = reader.load(path).map_err(WriterError::from)?;
 
-            let model = Model::from_bytes(shard)
+            let model = Model::from_bytes(shard.into_vec())
                 .map_err(|e| WriterError::Io(std::io::Error::other(e.to_string())))?;
 
             let mut metadata = Vec::new();
@@ -310,7 +310,7 @@ async fn write_single_partition_async(
     if tensors.is_empty() {
         let path = output_dir.join(format!("tensor.data_{}", partition_id));
         let mut writer = backends::AsyncWriter::create(&path).await.map_err(WriterError::from)?;
-        writer.write_all(Vec::new()).await.map_err(WriterError::from)?;
+        writer.write_all(&Vec::new()).await.map_err(WriterError::from)?;
         return Ok(());
     }
 
@@ -328,7 +328,7 @@ async fn write_single_partition_async(
     let mut reader = backends::AsyncReader::new();
     for shard_path in tensors_by_shard.keys() {
         let data = reader.load(shard_path).await.map_err(WriterError::from)?;
-        let model = Model::from_bytes(data)
+        let model = Model::from_bytes(data.into_vec())
             .map_err(|e| WriterError::Io(std::io::Error::other(e.to_string())))?;
         shard_models.insert(shard_path.to_path_buf(), model);
     }
@@ -349,7 +349,7 @@ async fn write_single_partition_async(
 
     let path = output_dir.join(format!("tensor.data_{}", partition_id));
     let mut writer = backends::AsyncWriter::create(&path).await.map_err(WriterError::from)?;
-    writer.write_all(partition_data).await.map_err(WriterError::from)?;
+    writer.write_all(&partition_data).await.map_err(WriterError::from)?;
 
     Ok(())
 }
@@ -405,7 +405,7 @@ fn write_single_partition_sync(
     let mut reader = backends::SyncReader::new();
     for shard_path in tensors_by_shard.keys() {
         let data = reader.load(shard_path).map_err(WriterError::from)?;
-        let model = Model::from_bytes(data)
+        let model = Model::from_bytes(data.into_vec())
             .map_err(|e| WriterError::Io(std::io::Error::other(e.to_string())))?;
         shard_models.insert(shard_path.to_path_buf(), model);
     }

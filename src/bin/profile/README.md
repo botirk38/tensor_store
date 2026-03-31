@@ -1,10 +1,6 @@
 # profile
 
-Profiling harness for measuring tensor_store loader performance without Criterion overhead.
-
-## Overview
-
-This binary provides a lightweight profiling tool for benchmarking different tensor loading strategies. It's designed to work with profiling tools like `perf` and offers fine-grained control over profiling scenarios.
+Profiling harness for measuring tensor_store loader performance.
 
 ## Usage
 
@@ -21,15 +17,11 @@ cargo run --bin profile -- safetensors <CASE> [--fixture <NAME>] [--iterations <
 ```
 
 **Available Cases:**
-- `io-uring-load` - io_uring async load (Linux only)
-- `io-uring-parallel` - io_uring parallel load (Linux only)
-- `io-uring-prewarmed` - io_uring prewarmed load (Linux only)
-- `tokio-load` - Tokio async load
-- `tokio-parallel` - Tokio parallel load
-- `tokio-prewarmed` - Tokio prewarmed load
-- `sync` - Synchronous load
-- `mmap` - Memory-mapped load
-- `original` - Original safetensors crate load
+- `default` - Heuristic default (picks best backend based on cost model)
+- `sync` - Synchronous blocking I/O with thread-per-chunk parallelism
+- `async` - Tokio async I/O
+- `mmap` - Memory-mapped file access
+- `io-uring` - Explicit io_uring backend (Linux only)
 
 ### ServerlessLLM Profiling
 
@@ -38,128 +30,56 @@ cargo run --bin profile -- serverlessllm <CASE> [--fixture <NAME>] [--iterations
 ```
 
 **Available Cases:**
-- `async-load` - Async load
-- `sync-load` - Synchronous load
-- `mmap-load` - Memory-mapped load
+- `default` - Heuristic default
+- `sync` - Synchronous load
+- `async` - Tokio async load
+- `mmap` - Memory-mapped access
+- `io-uring` - Explicit io_uring backend (Linux only)
 
 ## Options
 
-- `-f, --fixture <NAME>` - Specify a fixture name (e.g., qwen2-0.5b, mistral-7b)
+- `-f, --fixture <NAME>` - Specify a fixture name (e.g., gpt2, qwen-qwen2-0.5b, eleutherai-pythia-1.4b-deduped)
 - `-i, --iterations <N>` - Number of iterations to run (default: 1)
-- `--cold-cache` - Attempt a cold-cache run on the first iteration using `posix_fadvise(DONTNEED)` on Unix
-
-### Notes
-
-- SafeTensors profiling discovers all `*.safetensors` files in each fixture directory.
-- If a fixture has shard files, they are profiled in lexicographic order and aggregated into one result.
+- `--cold-cache` - Drop page cache before first iteration via `posix_fadvise(DONTNEED)`
 
 ## Examples
 
-Profile io_uring async load:
+Profile with heuristic default:
 ```bash
-cargo run --bin profile -- safetensors io-uring-load
+cargo run --bin profile -- safetensors default --fixture gpt2
 ```
 
-Profile with perf:
+Profile sync backend:
 ```bash
-cargo build --release --bin profile
-perf record -g target/release/profile safetensors io-uring-load --fixture qwen2-0.5b
-perf report
+cargo run --bin profile -- safetensors sync --fixture gpt2
 ```
 
-Profile with multiple iterations:
+Profile io_uring backend:
 ```bash
-cargo run --bin profile -- serverlessllm async-load --iterations 10
+cargo run --bin profile -- safetensors io-uring --fixture gpt2
 ```
 
-Compare different loaders:
-```bash
-cargo run --release --bin profile -- safetensors original --fixture mistral-7b
-cargo run --release --bin profile -- safetensors io-uring-load --fixture mistral-7b
-```
-
-## Purpose
-
-Use this tool for:
-- Performance profiling with external tools (perf, flamegraph)
-- Comparing loader implementation performance
-- Identifying performance bottlenecks
-- Measuring impact of optimizations
-- Generating profiling data without benchmark framework overhead
-
-## Flamegraph Generation
-
-Generate visual flamegraphs to identify hotspots:
-
-```bash
-# Install flamegraph
-cargo install flamegraph
-
-# Generate flamegraph for io_uring load
-cargo flamegraph --bin profile -- safetensors io-uring-load --fixture qwen-qwen2-0.5b
-
-# Output: flamegraph.svg (open in browser)
-```
-
-For more detailed instructions, see [profiling/README.md](../../../profiling/README.md).
-
-## Interpreting Results
-
-### Sample Output
-```
-=== SafeTensors io_uring Load Profile ===
-Fixture: fixtures/qwen-qwen2-0.5b/model.safetensors
-File size: 494.03 MB
-Backend: io_uring
-
-Iteration 1: 52.341ms (9.44 GB/s)
-Iteration 2: 51.892ms (9.52 GB/s)
-Iteration 3: 52.103ms (9.48 GB/s)
-
-Average: 52.112ms (9.48 GB/s)
-Std Dev: 0.225ms
-```
-
-### Performance Baseline Reference
-
-| Loader | Typical Speed | Notes |
-|--------|---------------|-------|
-| `io-uring-load` | 9-10 GB/s | Best on Linux NVMe |
-| `tokio-load` | 8-9 GB/s | Cross-platform |
-| `sync` | 7-8 GB/s | Baseline |
-| `mmap` | Variable | Depends on access pattern |
-| `original` | 6-7 GB/s | safetensors crate reference |
-
-## Advanced Profiling
-
-### With perf stat (CPU counters)
+Profile with perf stat:
 ```bash
 cargo build --release --bin profile
-perf stat ./target/release/profile safetensors io-uring-load --iterations 10
+perf stat -e cycles,instructions,cache-references,cache-misses ./target/release/profile safetensors sync --fixture gpt2
 ```
 
-### With perf record (sampling)
+Profile all fixtures:
 ```bash
-perf record -g ./target/release/profile safetensors io-uring-load --iterations 5
-perf report
+cargo run --bin profile -- safetensors default
 ```
 
-### With Valgrind (memory analysis)
-```bash
-valgrind --tool=cachegrind ./target/release/profile safetensors sync --iterations 3
-```
+## Performance Notes
+
+- `sync` is typically fastest for local file access due to intra-shard thread parallelism
+- `async` (Tokio) is useful for concurrent I/O scenarios
+- `io-uring` is available as an explicit backend but sync is usually faster due to better parallelism
+- `mmap` is fastest for repeated access to large files that fit in memory
 
 ## Fixture Setup
 
-Download test fixtures before profiling:
-
-```bash
-cd scripts
-uv run python download_models.py Qwen/Qwen2-0.5B --convert --verify
-```
-
-## See Also
-
-- [Profiling Suite](../../../profiling/README.md) - Comprehensive profiling guide
-- [Benchmarks](../../../benches/README.md) - Criterion-based benchmarks
-- [Demo Binary](../demo/README.md) - Interactive demonstrations
+Test fixtures should be placed in the `fixtures/` directory:
+- `fixtures/gpt2/` - GPT-2 model (548MB)
+- `fixtures/qwen-qwen2-0.5b/` - Qwen2-0.5B model (988MB)
+- `fixtures/eleutherai-pythia-1.4b-deduped/` - Pythia-1.4B (5.6GB, 2 shards)

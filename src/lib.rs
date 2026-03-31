@@ -11,7 +11,7 @@ pub use formats::error::{ReaderError, ReaderResult};
 pub use formats::error::{WriterError, WriterResult};
 
 // Traits
-pub use formats::traits::{AsyncWriter, SyncWriter, TensorMetadata, TensorView};
+pub use formats::traits::{AsyncSerializer, Model, SyncSerializer, TensorView};
 
 // SafeTensors types (aliased to avoid conflict with ServerlessLLM)
 pub use formats::safetensors::MmapModel as SafeTensorsMmapModel;
@@ -21,7 +21,7 @@ pub use formats::safetensors::serialize;
 
 // ServerlessLLM types
 pub use formats::serverlessllm::{
-    Index, MmapModel, Model, RECOMMENDED_PARTITION_TARGET_BYTES, Tensor, TensorMmap,
+    Index, MmapModel as ServerlessLLMMmapModel, Model as ServerlessLLMModel, RECOMMENDED_PARTITION_TARGET_BYTES, Tensor, TensorMmap,
     recommended_partition_count,
 };
 

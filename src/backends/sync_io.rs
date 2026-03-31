@@ -15,7 +15,7 @@ type IndexedLoadResult = (usize, std::sync::Arc<[u8]>, usize, usize);
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::super::{get_buffer_pool, buffer_slice::BufferSlice, IoResult, batch::group_requests_by_file};
+    use super::super::{get_buffer_pool, buffer_slice::BufferSlice, IoResult, batch::group_requests_by_file, byte::OwnedBytes};
     use super::IndexedLoadResult;
     use std::fs::File;
     use std::io::{Read, Seek, SeekFrom};
@@ -23,56 +23,34 @@ mod linux {
     use std::sync::Arc;
     use std::thread;
 
-    const MAX_SINGLE_READ: usize = 512 * 1024 * 1024;
-    const MAX_CHUNK_SIZE: usize = 128 * 1024 * 1024;
-    const MIN_CHUNK_SIZE: usize = 32 * 1024 * 1024;
-
-    #[inline]
-    fn sync_parallel_chunk_budget() -> usize {
-        std::thread::available_parallelism()
-            .map(|p| p.get())
-            .unwrap_or(4)
-            .max(1)
-    }
-
-    #[inline]
-    fn calculate_sync_chunks(file_size: usize) -> usize {
-        if file_size <= MAX_SINGLE_READ {
-            return 1;
-        }
-        let budget = sync_parallel_chunk_budget();
-        let min_chunks = file_size.div_ceil(MAX_CHUNK_SIZE);
-        let max_chunks = file_size.div_ceil(MIN_CHUNK_SIZE);
-        min_chunks.max(1).clamp(1, max_chunks.min(budget))
-    }
-
     #[inline]
     const fn div_ceil(a: usize, b: usize) -> usize {
         a.div_ceil(b)
     }
 
-    pub fn load(path: &Path) -> IoResult<Vec<u8>> {
-        use super::super::odirect::{alloc_aligned, can_use_direct_read, open_direct_read_sync};
+    pub fn load(path: &Path) -> IoResult<OwnedBytes> {
+        use super::super::odirect::{alloc_aligned as alloc_aligned_buf, can_use_direct_read, open_direct_read_sync};
+        use super::super::{calculate_chunks, MAX_SINGLE_READ};
 
         let mut file = File::open(path)?;
         let len = usize::try_from(file.metadata()?.len())
             .map_err(|_| std::io::Error::other("file too large"))?;
 
         if len == 0 {
-            return Ok(Vec::new());
+            return Ok(OwnedBytes::Shared(Arc::new([])));
         }
 
         if len > MAX_SINGLE_READ {
-            return load_chunked(path, calculate_sync_chunks(len));
+            return load_chunked(path, calculate_chunks(len));
         }
 
         if can_use_direct_read(len, len) {
             match open_direct_read_sync(path) {
                 Ok(mut direct_file) => {
-                    let mut buf = alloc_aligned(len)?;
-                    buf.resize(len, 0);
-                    direct_file.read_exact(&mut buf[..])?;
-                    return Ok(buf);
+                    let mut buf = alloc_aligned_buf(len)?;
+                    buf.set_len(len);
+                    direct_file.read_exact(buf.as_mut_slice())?;
+                    return Ok(OwnedBytes::Aligned(buf));
                 }
                 Err(err) if err.raw_os_error() == Some(libc::EINVAL) => {}
                 Err(err) => return Err(err),
@@ -81,11 +59,11 @@ mod linux {
 
         let mut buf = get_buffer_pool().get(len);
         file.read_exact(&mut buf[..])?;
-        Ok(buf.into_inner())
+        Ok(OwnedBytes::Pooled(buf))
     }
 
-    fn load_chunked(path: &Path, chunks: usize) -> IoResult<Vec<u8>> {
-        use super::super::odirect::{alloc_aligned, can_use_direct_read, open_direct_read_sync};
+    fn load_chunked(path: &Path, chunks: usize) -> IoResult<OwnedBytes> {
+        use super::super::odirect::{alloc_aligned as alloc_aligned_buf, can_use_direct_read, open_direct_read_sync};
 
         if chunks == 0 {
             return Err(std::io::Error::other("chunks must be > 0"));
@@ -100,8 +78,8 @@ mod linux {
             match open_direct_read_sync(path) {
                 Ok(_) => {
                     drop(file);
-                    let mut final_buf = alloc_aligned(file_size)?;
-                    final_buf.resize(file_size, 0);
+                    let mut final_buf = alloc_aligned_buf(file_size)?;
+                    final_buf.set_len(file_size);
 
                     let handles: Vec<_> = (0..chunks)
                         .map(|i| {
@@ -126,7 +104,7 @@ mod linux {
                     for h in handles.into_iter().flatten() {
                         h.join().map_err(|_| std::io::Error::other("thread panicked"))??;
                     }
-                    return Ok(final_buf);
+                    return Ok(OwnedBytes::Aligned(final_buf));
                 }
                 Err(err) if err.raw_os_error() == Some(libc::EINVAL) => {}
                 Err(err) => return Err(err),
@@ -158,24 +136,24 @@ mod linux {
             h.join().map_err(|_| std::io::Error::other("thread panicked"))??;
         }
         final_buf.truncate(file_size);
-        Ok(final_buf.into_inner())
+        Ok(OwnedBytes::Pooled(final_buf))
     }
 
-    pub fn load_range(path: &Path, offset: u64, len: usize) -> IoResult<Vec<u8>> {
-        use super::super::odirect::{alloc_aligned, is_block_aligned, open_direct_read_sync};
+    pub fn load_range(path: &Path, offset: u64, len: usize) -> IoResult<OwnedBytes> {
+        use super::super::odirect::{alloc_aligned as alloc_aligned_buf, is_block_aligned, open_direct_read_sync};
 
         if len == 0 {
-            return Ok(Vec::new());
+            return Ok(OwnedBytes::Shared(Arc::new([])));
         }
 
         if is_block_aligned(offset, len) {
             match open_direct_read_sync(path) {
                 Ok(mut file) => {
-                    let mut buf = alloc_aligned(len)?;
-                    buf.resize(len, 0);
+                    let mut buf = alloc_aligned_buf(len)?;
+                    buf.set_len(len);
                     file.seek(SeekFrom::Start(offset))?;
-                    file.read_exact(&mut buf[..])?;
-                    return Ok(buf);
+                    file.read_exact(buf.as_mut_slice())?;
+                    return Ok(OwnedBytes::Aligned(buf));
                 }
                 Err(err) if err.raw_os_error() == Some(libc::EINVAL) => {}
                 Err(err) => return Err(err),
@@ -186,7 +164,7 @@ mod linux {
         file.seek(SeekFrom::Start(offset))?;
         let mut buf = get_buffer_pool().get(len);
         file.read_exact(&mut buf[..])?;
-        Ok(buf.into_inner())
+        Ok(OwnedBytes::Pooled(buf))
     }
 
     pub fn load_range_batch(requests: &[(PathBuf, u64, usize)]) -> IoResult<Vec<IndexedLoadResult>> {
@@ -205,7 +183,7 @@ mod linux {
                     .map(|req| {
                         let path = path.clone();
                         let data = load_range(&path, req.offset, req.len)?;
-                        Ok((req.idx, Arc::from(data), 0, req.len))
+                        Ok((req.idx, data.into_shared(), 0, req.len))
                     })
                     .collect::<Result<Vec<_>, std::io::Error>>()
             })
@@ -225,33 +203,35 @@ mod linux {
 mod portable {
     use super::super::get_buffer_pool;
     use super::super::batch::group_requests_by_file;
+    use super::super::byte::OwnedBytes;
     use super::IndexedLoadResult;
     use super::IoResult;
     use std::fs::File;
     use std::io::{Read, Seek, SeekFrom};
     use std::path::{Path, PathBuf};
+    use std::sync::Arc;
 
-    pub fn load(path: &Path) -> IoResult<Vec<u8>> {
+    pub fn load(path: &Path) -> IoResult<OwnedBytes> {
         let mut file = File::open(path)?;
         let len = usize::try_from(file.metadata()?.len())
             .map_err(|_| std::io::Error::other("file too large"))?;
         if len == 0 {
-            return Ok(Vec::new());
+            return Ok(OwnedBytes::Shared(Arc::new([])));
         }
         let mut buf = get_buffer_pool().get(len);
         file.read_exact(&mut buf[..])?;
-        Ok(buf.into_inner())
+        Ok(OwnedBytes::Pooled(buf))
     }
 
-    pub fn load_range(path: &Path, offset: u64, len: usize) -> IoResult<Vec<u8>> {
+    pub fn load_range(path: &Path, offset: u64, len: usize) -> IoResult<OwnedBytes> {
         if len == 0 {
-            return Ok(Vec::new());
+            return Ok(OwnedBytes::Shared(Arc::new([])));
         }
         let mut file = File::open(path)?;
         file.seek(SeekFrom::Start(offset))?;
         let mut buf = get_buffer_pool().get(len);
         file.read_exact(&mut buf[..])?;
-        Ok(buf.into_inner())
+        Ok(OwnedBytes::Pooled(buf))
     }
 
     pub fn load_range_batch(requests: &[(PathBuf, u64, usize)]) -> IoResult<Vec<IndexedLoadResult>> {
@@ -265,7 +245,7 @@ mod portable {
         for (path, reqs) in grouped {
             for req in reqs {
                 let data = load_range(&path, req.offset, req.len)?;
-                indexed.push((req.idx, data.into(), 0, req.len));
+                indexed.push((req.idx, data.into_shared(), 0, req.len));
             }
         }
 
@@ -285,7 +265,7 @@ impl SyncReaderEngine {
         Self
     }
 
-    pub(crate) fn load(&mut self, path: impl AsRef<Path>) -> IoResult<Vec<u8>> {
+    pub(crate) fn load(&mut self, path: impl AsRef<Path>) -> IoResult<super::byte::OwnedBytes> {
         #[cfg(target_os = "linux")]
         {
             linux::load(path.as_ref())
@@ -296,7 +276,7 @@ impl SyncReaderEngine {
         }
     }
 
-    pub(crate) fn load_range(&mut self, path: impl AsRef<Path>, offset: u64, len: usize) -> IoResult<Vec<u8>> {
+    pub(crate) fn load_range(&mut self, path: impl AsRef<Path>, offset: u64, len: usize) -> IoResult<super::byte::OwnedBytes> {
         #[cfg(target_os = "linux")]
         {
             linux::load_range(path.as_ref(), offset, len)

@@ -4,7 +4,6 @@
 
 use crate::backends;
 use crate::formats::error::{ReaderError, ReaderResult};
-use crate::formats::traits::TensorMetadata;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -55,6 +54,13 @@ impl Index {
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&Arc<TensorDescriptor>> {
         self.tensors.get(name)
+    }
+
+    /// Returns true if a tensor with the given name exists.
+    #[inline]
+    #[must_use]
+    pub fn contains(&self, name: &str) -> bool {
+        self.tensors.contains_key(name)
     }
 
     /// Returns the number of tensors tracked by this index.
@@ -209,23 +215,6 @@ impl Index {
     pub fn load_sync(path: impl AsRef<Path>) -> ReaderResult<Self> {
         let data = std::fs::read(path.as_ref())?;
         Self::from_bytes(&data)
-    }
-}
-
-impl TensorMetadata for Index {
-    #[inline]
-    fn len(&self) -> usize {
-        self.tensors.len()
-    }
-
-    #[inline]
-    fn contains(&self, name: &str) -> bool {
-        self.tensors.contains_key(name)
-    }
-
-    #[inline]
-    fn tensor_names(&self) -> &[std::sync::Arc<str>] {
-        Index::tensor_names(self)
     }
 }
 

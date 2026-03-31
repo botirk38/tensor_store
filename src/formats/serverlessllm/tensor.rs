@@ -89,6 +89,23 @@ impl TensorView for Tensor {
     }
 }
 
+impl TensorView for &Tensor {
+    #[inline]
+    fn shape(&self) -> &[usize] {
+        (**self).shape()
+    }
+
+    #[inline]
+    fn dtype(&self) -> &str {
+        (**self).dtype()
+    }
+
+    #[inline]
+    fn data(&self) -> &[u8] {
+        (**self).data()
+    }
+}
+
 /// View into a memory-mapped tensor with metadata access (lazy loading).
 #[derive(Debug)]
 pub struct TensorMmap {

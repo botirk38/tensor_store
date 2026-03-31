@@ -1,6 +1,6 @@
 //! Portable async I/O backend using Tokio (non-Linux platforms).
 
-use super::{BatchRequest, IoResult, batch::{FlattenedResult, group_requests_by_file}, get_buffer_pool};
+use super::{BatchRequest, IoResult, batch::{FlattenedResult, group_requests_by_file}, byte::OwnedBytes, get_buffer_pool};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -11,7 +11,7 @@ impl TokioReader {
         Self
     }
 
-    pub(crate) async fn load(&mut self, path: impl AsRef<Path> + Send) -> IoResult<Vec<u8>> {
+    pub(crate) async fn load(&mut self, path: impl AsRef<Path> + Send) -> IoResult<OwnedBytes> {
         let path_buf = path.as_ref().to_path_buf();
         tokio::task::spawn_blocking(move || {
             use std::fs::File;
@@ -20,19 +20,19 @@ impl TokioReader {
             let len = usize::try_from(file.metadata()?.len())
                 .map_err(|_| std::io::Error::other("file too large"))?;
             if len == 0 {
-                return Ok(Vec::new());
+                return Ok(OwnedBytes::Shared(Arc::new([])));
             }
             let mut buf = get_buffer_pool().get(len);
             file.read_exact(&mut buf[..])?;
-            Ok(buf.into_inner())
+            Ok(OwnedBytes::Pooled(buf))
         })
         .await
         .map_err(|_| std::io::Error::other("spawn_blocking panicked"))?
     }
 
-    pub(crate) async fn load_range(&mut self, path: impl AsRef<Path> + Send, offset: u64, len: usize) -> IoResult<Vec<u8>> {
+    pub(crate) async fn load_range(&mut self, path: impl AsRef<Path> + Send, offset: u64, len: usize) -> IoResult<OwnedBytes> {
         if len == 0 {
-            return Ok(Vec::new());
+            return Ok(OwnedBytes::Shared(Arc::new([])));
         }
         let path_buf = path.as_ref().to_path_buf();
         tokio::task::spawn_blocking(move || {
@@ -42,7 +42,7 @@ impl TokioReader {
             file.seek(SeekFrom::Start(offset))?;
             let mut buf = get_buffer_pool().get(len);
             file.read_exact(&mut buf[..])?;
-            Ok(buf.into_inner())
+            Ok(OwnedBytes::Pooled(buf))
         })
         .await
         .map_err(|_| std::io::Error::other("spawn_blocking panicked"))?
@@ -106,17 +106,17 @@ impl TokioWriter {
         Ok(Self { file })
     }
 
-    pub(crate) async fn write_all(&mut self, data: Vec<u8>) -> IoResult<()> {
+    pub(crate) async fn write_all(&mut self, data: &[u8]) -> IoResult<()> {
         use tokio::io::{AsyncSeekExt, AsyncWriteExt};
         self.file.set_len(0).await?;
         self.file.seek(std::io::SeekFrom::Start(0)).await?;
-        self.file.write_all(&data).await
+        self.file.write_all(data).await
     }
 
-    pub(crate) async fn write_at(&mut self, offset: u64, data: Vec<u8>) -> IoResult<()> {
+    pub(crate) async fn write_at(&mut self, offset: u64, data: &[u8]) -> IoResult<()> {
         use tokio::io::{AsyncSeekExt, AsyncWriteExt};
         self.file.seek(std::io::SeekFrom::Start(offset)).await?;
-        self.file.write_all(&data).await
+        self.file.write_all(data).await
     }
 
     pub(crate) async fn sync_all(&mut self) -> IoResult<()> {

@@ -2,13 +2,13 @@
 //!
 //! This module provides reading and writing support for the SafeTensors format.
 
-pub mod reader;
-pub mod writer;
+pub mod model;
+pub mod serializer;
 
 pub use safetensors::serialize;
 
-// Re-export reader types
-pub use reader::{Dtype, MmapModel, Model, SafeTensorError, Tensor};
+// Re-export model types
+pub use model::{Dtype, MmapModel, Model, SafeTensorError, Tensor};
 
-// Re-export writer types
-pub use writer::{MetadataMap, TensorView, View, Writer};
+// Re-export serializer types
+pub use serializer::{MetadataMap, TensorView, View, Writer};

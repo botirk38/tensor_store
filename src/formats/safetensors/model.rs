@@ -1,11 +1,11 @@
-//! `SafeTensors` format reader.
+//! `SafeTensors` format model.
 //!
 //! Public loading is directory-based. Single-file models are supported only when
 //! they live in a one-file directory. File-path inputs are rejected.
 
 use crate::backends;
 use crate::formats::error::{ReaderError, ReaderResult};
-use crate::formats::traits::{TensorMetadata, TensorView};
+use crate::formats::traits::{Model as ModelTrait, TensorView};
 use futures::future::try_join_all;
 use rayon::prelude::*;
 pub use safetensors::SafeTensorError;
@@ -101,11 +101,18 @@ struct LoadStats {
 }
 
 const SYNC_BASE_COST_NS: f64 = 180_000.0;
-const ASYNC_BASE_COST_NS: f64 = 650_000.0;
+const ASYNC_BASE_COST_NS: f64 = 2_000_000.0;
 const SYNC_PER_SHARD_COST_NS: f64 = 35_000.0;
-const ASYNC_PER_SHARD_COST_NS: f64 = 95_000.0;
+const ASYNC_PER_SHARD_COST_NS: f64 = 150_000_000.0;
 const THROUGHPUT_BPS: f64 = 7.5 * 1024.0 * 1024.0 * 1024.0;
 const PARALLELISM_TARGET_BYTES: f64 = 128.0 * 1024.0 * 1024.0;
+
+#[cfg(target_os = "linux")]
+const IO_URING_BASE_COST_NS: f64 = 500_000.0;
+#[cfg(target_os = "linux")]
+const IO_URING_THROUGHPUT_BPS: f64 = 2.0 * 1024.0 * 1024.0 * 1024.0;
+#[cfg(target_os = "linux")]
+const IO_URING_PER_SHARD_COST_NS: f64 = 50_000.0;
 
 fn bytes_to_ns(bytes: u64, throughput_bps: f64) -> f64 {
     (bytes as f64 / throughput_bps) * 1_000_000_000.0
@@ -141,32 +148,71 @@ fn estimate_async_cost(stats: &LoadStats) -> f64 {
         + ASYNC_PER_SHARD_COST_NS * stats.shard_count as f64
 }
 
-fn choose_load_backend(stats: &LoadStats) -> bool {
-    if stats.shard_count <= 1 {
-        return false;
+#[cfg(target_os = "linux")]
+fn estimate_io_uring_cost(stats: &LoadStats) -> f64 {
+    IO_URING_BASE_COST_NS
+        + bytes_to_ns(stats.total_bytes, IO_URING_THROUGHPUT_BPS)
+        + IO_URING_PER_SHARD_COST_NS * stats.shard_count as f64
+}
+
+enum LoadBackend {
+    Sync,
+    TokioAsync,
+    #[cfg(target_os = "linux")]
+    IoUring,
+}
+
+fn choose_load_backend(stats: &LoadStats) -> LoadBackend {
+    #[cfg(target_os = "linux")]
+    {
+        if stats.shard_count <= 1 {
+            let sync_cost = estimate_sync_cost(stats);
+            let io_uring_cost = estimate_io_uring_cost(stats);
+            if io_uring_cost < sync_cost {
+                return LoadBackend::IoUring;
+            }
+            return LoadBackend::Sync;
+        }
+        let sync_cost = estimate_sync_cost(stats);
+        let async_cost = estimate_async_cost(stats);
+        let io_uring_cost = estimate_io_uring_cost(stats);
+        if io_uring_cost < sync_cost && io_uring_cost < async_cost {
+            return LoadBackend::IoUring;
+        }
+        if async_cost < sync_cost {
+            return LoadBackend::TokioAsync;
+        }
+        LoadBackend::Sync
     }
-    estimate_async_cost(stats) < estimate_sync_cost(stats)
+    #[cfg(not(target_os = "linux"))]
+    {
+        if stats.shard_count <= 1 {
+            return LoadBackend::Sync;
+        }
+        if estimate_async_cost(stats) < estimate_sync_cost(stats) {
+            LoadBackend::TokioAsync
+        } else {
+            LoadBackend::Sync
+        }
+    }
 }
 
 #[derive(Debug)]
 struct OwnedShard {
     tensors: SafeTensors<'static>,
-    buffer: Box<[u8]>,
+    buffer: backends::byte::OwnedBytes,
 }
 
 impl OwnedShard {
-    fn from_bytes(bytes: Vec<u8>) -> ReaderResult<Self> {
-        let buffer = bytes.into_boxed_slice();
+    fn from_owned(buffer: backends::byte::OwnedBytes) -> ReaderResult<Self> {
         let slice: &[u8] = &buffer;
         let static_slice: &'static [u8] = unsafe { std::mem::transmute(slice) };
         let tensors = SafeTensors::deserialize(static_slice)?;
         Ok(Self { tensors, buffer })
     }
-}
 
-impl Clone for OwnedShard {
-    fn clone(&self) -> Self {
-        Self::from_bytes(self.buffer.to_vec()).expect("valid safetensors data")
+    fn from_bytes(bytes: Vec<u8>) -> ReaderResult<Self> {
+        Self::from_owned(backends::byte::OwnedBytes::Shared(bytes.into()))
     }
 }
 
@@ -217,13 +263,19 @@ fn build_tensor_index<'a>(
     Ok((tensor_shards, tensor_names.into()))
 }
 
-async fn load_bytes_async(path: &Path) -> ReaderResult<Vec<u8>> {
+async fn load_bytes_async(path: &Path) -> ReaderResult<backends::byte::OwnedBytes> {
     let mut reader = backends::AsyncReader::new();
     reader.load(path).await.map_err(Into::into)
 }
 
-fn load_bytes_sync(path: &Path) -> ReaderResult<Vec<u8>> {
+fn load_bytes_sync(path: &Path) -> ReaderResult<backends::byte::OwnedBytes> {
     let mut reader = backends::SyncReader::new();
+    reader.load(path).map_err(Into::into)
+}
+
+#[cfg(target_os = "linux")]
+fn load_bytes_io_uring(path: &Path) -> ReaderResult<backends::byte::OwnedBytes> {
+    let mut reader = backends::io_uring::Reader::new();
     reader.load(path).map_err(Into::into)
 }
 
@@ -254,6 +306,10 @@ impl OwnedSingleModel {
 
     fn from_bytes(bytes: Vec<u8>) -> ReaderResult<Self> {
         Ok(Self::from_shard(OwnedShard::from_bytes(bytes)?))
+    }
+
+    fn from_owned(buffer: backends::byte::OwnedBytes) -> ReaderResult<Self> {
+        Ok(Self::from_shard(OwnedShard::from_owned(buffer)?))
     }
 
     fn tensor(&self, name: &str) -> ReaderResult<Tensor<'static>> {
@@ -355,18 +411,39 @@ impl Model {
 
     pub async fn load(path: impl AsRef<Path>) -> ReaderResult<Self> {
         let stats = Self::directory_stats(&path)?;
-        if choose_load_backend(&stats) {
-            Self::load_async(path).await
-        } else {
-            Self::load_sync(path)
+        match choose_load_backend(&stats) {
+            #[cfg(target_os = "linux")]
+            LoadBackend::IoUring => Self::load_io_uring(path),
+            LoadBackend::TokioAsync => Self::load_async(path).await,
+            LoadBackend::Sync => Self::load_sync(path),
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn load_io_uring(path: impl AsRef<Path>) -> ReaderResult<Self> {
+        let shard_paths = normalize_directory(path)?;
+        if shard_paths.len() == 1 {
+            return Ok(Self {
+                storage: ModelStorage::Single(OwnedSingleModel::from_owned(
+                    load_bytes_io_uring(&shard_paths[0])?,
+                )?),
+            });
+        }
+
+        let shards: ReaderResult<Vec<_>> = shard_paths
+            .into_iter()
+            .map(|shard_path| OwnedShard::from_owned(load_bytes_io_uring(&shard_path)?))
+            .collect();
+        Ok(Self {
+            storage: ModelStorage::Sharded(OwnedShardedModel::from_shards(shards?)?),
+        })
     }
 
     pub async fn load_async(path: impl AsRef<Path>) -> ReaderResult<Self> {
         let shard_paths = normalize_directory(path)?;
         if shard_paths.len() == 1 {
             return Ok(Self {
-                storage: ModelStorage::Single(OwnedSingleModel::from_bytes(
+                storage: ModelStorage::Single(OwnedSingleModel::from_owned(
                     load_bytes_async(&shard_paths[0]).await?,
                 )?),
             });
@@ -386,7 +463,7 @@ impl Model {
             total_bytes,
             max_shard_bytes,
         );
-        let mut shard_bytes: Vec<Vec<u8>> = Vec::new();
+        let mut shard_bytes: Vec<backends::byte::OwnedBytes> = Vec::new();
 
         for chunk in shard_paths.chunks(limit) {
             let chunk_results = try_join_all(
@@ -400,7 +477,7 @@ impl Model {
 
         let shards: ReaderResult<Vec<_>> = shard_bytes
             .into_par_iter()
-            .map(OwnedShard::from_bytes)
+            .map(OwnedShard::from_owned)
             .collect();
         Ok(Self {
             storage: ModelStorage::Sharded(OwnedShardedModel::from_shards(shards?)?),
@@ -411,7 +488,7 @@ impl Model {
         let shard_paths = normalize_directory(path)?;
         if shard_paths.len() == 1 {
             return Ok(Self {
-                storage: ModelStorage::Single(OwnedSingleModel::from_bytes(load_bytes_sync(
+                storage: ModelStorage::Single(OwnedSingleModel::from_owned(load_bytes_sync(
                     &shard_paths[0],
                 )?)?),
             });
@@ -419,7 +496,7 @@ impl Model {
 
         let shards: ReaderResult<Vec<_>> = shard_paths
             .into_par_iter()
-            .map(|shard_path| OwnedShard::from_bytes(load_bytes_sync(&shard_path)?))
+            .map(|shard_path| OwnedShard::from_owned(load_bytes_sync(&shard_path)?))
             .collect();
         Ok(Self {
             storage: ModelStorage::Sharded(OwnedShardedModel::from_shards(shards?)?),
@@ -498,7 +575,9 @@ impl Clone for Model {
     }
 }
 
-impl TensorMetadata for Model {
+impl ModelTrait for Model {
+    type Tensor<'a> = Tensor<'a> where Self: 'a;
+
     fn len(&self) -> usize {
         Model::len(self)
     }
@@ -509,6 +588,10 @@ impl TensorMetadata for Model {
 
     fn tensor_names(&self) -> &[Arc<str>] {
         Model::tensor_names(self)
+    }
+
+    fn tensor(&self, name: &str) -> Option<Self::Tensor<'_>> {
+        Model::tensor(self, name).ok()
     }
 }
 
@@ -664,7 +747,9 @@ impl MmapModel {
     }
 }
 
-impl TensorMetadata for MmapModel {
+impl ModelTrait for MmapModel {
+    type Tensor<'a> = Tensor<'a> where Self: 'a;
+
     fn len(&self) -> usize {
         MmapModel::len(self)
     }
@@ -675,6 +760,10 @@ impl TensorMetadata for MmapModel {
 
     fn tensor_names(&self) -> &[Arc<str>] {
         MmapModel::tensor_names(self)
+    }
+
+    fn tensor(&self, name: &str) -> Option<Self::Tensor<'_>> {
+        MmapModel::tensor(self, name).ok()
     }
 }
 
@@ -787,17 +876,25 @@ mod tests {
             max_shard_bytes: 2 * 1024 * 1024 * 1024,
         };
 
-        assert!(!choose_load_backend(&stats));
+        match choose_load_backend(&stats) {
+            LoadBackend::Sync | LoadBackend::IoUring => {}
+            LoadBackend::TokioAsync => panic!("expected Sync or IoUring, got TokioAsync"),
+        }
     }
 
     #[test]
-    fn choose_async_for_many_small_shards() {
+    fn choose_sync_for_many_small_shards() {
         let stats = LoadStats {
             shard_count: 16,
             total_bytes: 256 * 1024 * 1024,
             max_shard_bytes: 32 * 1024 * 1024,
         };
 
-        assert!(choose_load_backend(&stats));
+        match choose_load_backend(&stats) {
+            LoadBackend::Sync => {}
+            LoadBackend::TokioAsync => panic!("expected Sync, got TokioAsync"),
+            #[cfg(target_os = "linux")]
+            LoadBackend::IoUring => panic!("expected Sync, got IoUring"),
+        }
     }
 }
