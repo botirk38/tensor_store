@@ -16,6 +16,7 @@ use io_uring::cqueue::CompletionQueue;
 use io_uring::{opcode, types, IoUring};
 use std::collections::HashMap;
 use std::fs::File;
+use std::io::Seek;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -110,12 +111,12 @@ impl Reader {
         }
 
         // Build submission plan: group by file, then submit all SQEs
-        let mut results: Vec<Option<OwnedBytes>> = vec![None; requests.len()];
+        let mut results: Vec<Option<OwnedBytes>> = (0..requests.len()).map(|_| None).collect();
 
         // For each request, allocate a buffer and submit an SQE
         let mut buffers: Vec<OwnedBytes> = Vec::with_capacity(requests.len());
         for (_, _, len) in requests {
-            buffers.push(super::get_buffer_pool().get(*len));
+            buffers.push(OwnedBytes::Pooled(super::get_buffer_pool().get(*len)));
         }
 
         let mut pending = requests.len();
