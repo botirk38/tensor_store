@@ -590,7 +590,7 @@ async fn write_partition_async(
                 .await
                 .map_err(WriterError::from)?;
             writer
-                .write_at(op.dest_offset as u64, data.as_ref())
+                .write_at(op.dest_offset, data.as_ref())
                 .await
                 .map_err(WriterError::from)?;
         }
@@ -625,7 +625,7 @@ fn write_partition_sync_single(
             let data =
                 reader.load_range(shard_path.clone(), op.source_offset, op.size)
                     .map_err(WriterError::from)?;
-            writer.write_at(op.dest_offset as u64, data.as_ref())
+            writer.write_at(op.dest_offset, data.as_ref())
                 .map_err(WriterError::from)?;
         }
     }
