@@ -14,7 +14,13 @@ fn discover_fixtures() -> Vec<(String, PathBuf)> {
                 && file_type.is_dir()
             {
                 let model_dir = entry.path().join("model_serverlessllm");
-                if model_dir.exists() && model_dir.is_dir() {
+                let index_path = model_dir.join("tensor_index.json");
+                let first_partition = model_dir.join("tensor.data_0");
+                if model_dir.exists()
+                    && model_dir.is_dir()
+                    && index_path.exists()
+                    && first_partition.exists()
+                {
                     fixtures.push((entry.file_name().to_string_lossy().to_string(), model_dir));
                 }
             }

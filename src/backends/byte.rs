@@ -25,6 +25,17 @@ pub enum OwnedBytes {
 
 impl OwnedBytes {
     #[inline]
+    pub fn from_pooled(buf: PooledBuffer) -> Self {
+        Self::Pooled(buf)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[inline]
+    pub fn from_aligned(buf: AlignedBuffer) -> Self {
+        Self::Aligned(buf)
+    }
+
+    #[inline]
     pub fn len(&self) -> usize {
         match self {
             Self::Pooled(b) => b.len(),

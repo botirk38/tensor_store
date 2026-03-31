@@ -7,9 +7,9 @@
 //! - Full CQ draining per wakeup
 //! - Alignment-aware direct I/O with buffered fallback
 
-use super::batch::FlattenedResult;
+use super::batch::{BatchResult, FlattenedResult, flatten_results};
 use super::byte::OwnedBytes;
-use super::odirect::{can_use_direct_read, is_block_aligned, open_direct_read_sync};
+use super::odirect::{alloc_aligned, can_use_direct_read, is_block_aligned, open_direct_read_sync};
 use super::{BatchRequest, IoResult, MAX_CHUNK_SIZE, batch::group_requests_by_file};
 use io_uring::cqueue::CompletionQueue;
 use io_uring::{opcode, types, IoUring};
@@ -28,6 +28,8 @@ const IO_URING_MIN_BATCH_BYTES: usize = 4 * 1024 * 1024; // 4 MiB
 
 /// Small-read threshold below which sync is faster than io_uring setup.
 const SMALL_READ_THRESHOLD: usize = 1024 * 1024; // 1 MiB
+
+const WAIT_FOR_COMPLETIONS: usize = 32;
 
 /// A persistent io_uring reader that reuses a single ring across operations.
 pub struct Reader {
@@ -119,29 +121,38 @@ impl Reader {
             }
         }
 
+        let mut planned = Vec::with_capacity(requests.len());
+        for (path, mut reqs) in grouped {
+            reqs.sort_unstable_by_key(|req| req.offset);
+            for req in reqs {
+                planned.push((path.clone(), req));
+            }
+        }
+
         // Allocate buffers for each request
         let mut buffers: Vec<OwnedBytes> = Vec::with_capacity(requests.len());
         for (_, _, len) in requests {
             buffers.push(OwnedBytes::from_vec(vec![0u8; *len]));
         }
 
-        let mut pending = requests.len();
+        let mut pending = planned.len();
         let mut submitted = 0;
+        let mut grouped_results: Vec<Vec<BatchResult>> = vec![Vec::new()];
 
         while pending > 0 {
             // Fill submission queue
-            while submitted < requests.len() && self.ring.submission().capacity() > 0 {
-                let (path, offset, len) = &requests[submitted];
+            while submitted < planned.len() && self.ring.submission().capacity() > 0 {
+                let (path, req) = &planned[submitted];
                 let file = self.files.get(path).ok_or_else(|| {
                     std::io::Error::other(format!("file not found: {:?}", path))
                 })?;
                 let fd = file.as_raw_fd();
-                let ptr = buffers[submitted].as_mut_ptr();
+                let ptr = buffers[req.idx].as_mut_ptr();
 
-                let sqe = opcode::Read::new(types::Fd(fd), ptr, *len as u32)
-                    .offset(*offset)
+                let sqe = opcode::Read::new(types::Fd(fd), ptr, req.len as u32)
+                    .offset(req.offset)
                     .build()
-                    .user_data(submitted as u64);
+                    .user_data(req.idx as u64);
 
                 unsafe {
                     if self.ring.submission().push(&sqe).is_err() {
@@ -151,8 +162,12 @@ impl Reader {
                 submitted += 1;
             }
 
-            // Submit and wait
-            self.ring.submit_and_wait(1)?;
+            if submitted == 0 {
+                break;
+            }
+
+            let wait_for = pending.clamp(1, WAIT_FOR_COMPLETIONS);
+            self.ring.submit_and_wait(wait_for)?;
 
             // Drain all completions
             let cq: CompletionQueue<'_, io_uring::cqueue::Entry> = self.ring.completion();
@@ -178,19 +193,12 @@ impl Reader {
                         ),
                     ));
                 }
+                grouped_results[0].push((idx, buffers[idx].as_ref().into(), 0, expected));
                 pending -= 1;
             }
         }
 
-        // Convert to FlattenedResult: (Arc<[u8]>, offset, len)
-        Ok(buffers
-            .into_iter()
-            .enumerate()
-            .map(|(idx, buf)| {
-                let (_, offset, len) = &requests[idx];
-                (buf.into_shared(), *offset as usize, *len)
-            })
-            .collect())
+        Ok(flatten_results(grouped_results))
     }
 
     fn load_sync(&self, path: &Path, file_size: usize) -> IoResult<OwnedBytes> {
@@ -234,7 +242,8 @@ impl Reader {
                 submitted += 1;
             }
 
-            self.ring.submit_and_wait(1)?;
+            let wait_for = pending.clamp(1, WAIT_FOR_COMPLETIONS);
+            self.ring.submit_and_wait(wait_for)?;
 
             let cq: CompletionQueue<'_, io_uring::cqueue::Entry> = self.ring.completion();
             for cqe in cq {
@@ -269,7 +278,9 @@ impl Reader {
 
     fn load_direct(&mut self, path: &Path, file_size: usize) -> IoResult<OwnedBytes> {
         let file = open_direct_read_sync(path)?;
-        let mut buffer = OwnedBytes::from_vec(vec![0u8; file_size]);
+        let mut aligned = alloc_aligned(file_size)?;
+        aligned.set_len(file_size);
+        let mut buffer = OwnedBytes::from_aligned(aligned);
         let base_ptr = buffer.as_mut_ptr();
         let fd = file.as_raw_fd();
 
@@ -302,7 +313,8 @@ impl Reader {
                 submitted += 1;
             }
 
-            self.ring.submit_and_wait(1)?;
+            let wait_for = pending.clamp(1, WAIT_FOR_COMPLETIONS);
+            self.ring.submit_and_wait(wait_for)?;
 
             let cq: CompletionQueue<'_, io_uring::cqueue::Entry> = self.ring.completion();
             for cqe in cq {
@@ -343,7 +355,9 @@ impl Reader {
     }
 
     fn load_range_buffered(&mut self, file: File, offset: u64, len: usize) -> IoResult<OwnedBytes> {
-        let mut buffer = OwnedBytes::from_vec(vec![0u8; len]);
+        let mut aligned = alloc_aligned(len)?;
+        aligned.set_len(len);
+        let mut buffer = OwnedBytes::from_aligned(aligned);
         let ptr = buffer.as_mut_ptr();
         let fd = file.as_raw_fd();
 

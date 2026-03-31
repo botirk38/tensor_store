@@ -2,7 +2,14 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// Intermediate per-request batch result.
+///
+/// Layout is `(original_request_index, bytes, logical_offset, logical_len)`.
 pub type BatchResult = (usize, Arc<[u8]>, usize, usize);
+/// Final per-request normalized batch result.
+///
+/// Layout is `(bytes, logical_offset, logical_len)`.
+/// Backends should normalize request-local buffers so `logical_offset` is usually `0`.
 pub type FlattenedResult = (Arc<[u8]>, usize, usize);
 
 #[derive(Debug, Clone)]
@@ -44,7 +51,7 @@ pub fn flatten_results(results: Vec<Vec<BatchResult>>) -> Vec<FlattenedResult> {
 
 #[cfg(test)]
 mod tests {
-    use super::{BatchResult, flatten_results, group_requests_by_file};
+    use super::{flatten_results, group_requests_by_file, BatchResult};
     use std::path::Path;
     use std::sync::Arc;
 

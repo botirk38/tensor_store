@@ -1,6 +1,11 @@
 //! Portable async I/O backend using Tokio (non-Linux platforms).
 
-use super::{BatchRequest, IoResult, batch::{FlattenedResult, group_requests_by_file}, byte::OwnedBytes, get_buffer_pool};
+use super::{
+    BatchRequest, IoResult,
+    batch::{BatchResult, FlattenedResult, flatten_results, group_requests_by_file},
+    byte::OwnedBytes,
+    get_buffer_pool,
+};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -48,42 +53,44 @@ impl TokioReader {
         .map_err(|_| std::io::Error::other("spawn_blocking panicked"))?
     }
 
-    pub(crate) async fn load_range_batch(&mut self, requests: &[BatchRequest]) -> IoResult<Vec<FlattenedResult>> {
+    pub(crate) async fn load_range_batch(
+        &mut self,
+        requests: &[BatchRequest],
+    ) -> IoResult<Vec<FlattenedResult>> {
         if requests.is_empty() {
             return Ok(Vec::new());
         }
 
         let grouped = group_requests_by_file(requests);
-        let mut handles: Vec<_> = Vec::with_capacity(requests.len());
+        let mut handles: Vec<_> = Vec::with_capacity(grouped.len());
 
-        for (path, reqs) in grouped {
-            for req in reqs {
-                let path_buf = path.clone();
-                let handle = tokio::task::spawn_blocking(move || -> std::io::Result<(usize, Arc<[u8]>, usize, usize)> {
-                    let mut file = std::fs::File::open(&path_buf)?;
-                    use std::io::{Read, Seek};
+        for (path, mut reqs) in grouped {
+            reqs.sort_unstable_by_key(|req| req.offset);
+            let path_buf = path.clone();
+            let handle = tokio::task::spawn_blocking(move || -> std::io::Result<Vec<BatchResult>> {
+                use std::io::{Read, Seek};
+                let mut file = std::fs::File::open(&path_buf)?;
+                let mut results = Vec::with_capacity(reqs.len());
+                for req in reqs {
                     file.seek(std::io::SeekFrom::Start(req.offset))?;
                     let mut buf = get_buffer_pool().get(req.len);
                     Read::read_exact(&mut file, &mut buf[..])?;
-                    let idx = req.idx;
-                    let len = req.len;
-                    let data: Arc<[u8]> = buf.into_inner().into();
-                    Ok((idx, data, 0, len))
-                });
-                handles.push(handle);
-            }
+                    results.push((req.idx, buf.into_inner().into(), 0, req.len));
+                }
+                Ok(results)
+            });
+            handles.push(handle);
         }
 
-        let mut indexed: Vec<(usize, Arc<[u8]>, usize, usize)> = Vec::with_capacity(requests.len());
+        let mut grouped_results: Vec<Vec<BatchResult>> = Vec::with_capacity(handles.len());
         for handle in handles {
-            let result = handle
+            let results = handle
                 .await
                 .map_err(|_| std::io::Error::other("spawn_blocking panicked"))??;
-            indexed.push(result);
+            grouped_results.push(results);
         }
 
-        indexed.sort_by_key(|(idx, _, _, _)| *idx);
-        Ok(indexed.into_iter().map(|(_, data, offset, len)| (data, offset, len)).collect())
+        Ok(flatten_results(grouped_results))
     }
 }
 
