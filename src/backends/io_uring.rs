@@ -462,10 +462,10 @@ impl Reader {
             }
         }
 
-        // Allocate buffers for each request
-        let mut buffers: Vec<OwnedBytes> = Vec::with_capacity(requests.len());
+        // Allocate raw buffers for each request (use Vec<u8> for mutability)
+        let mut buffers: Vec<Vec<u8>> = Vec::with_capacity(requests.len());
         for (_, _, len) in requests {
-            buffers.push(OwnedBytes::Pooled(super::get_buffer_pool().get(*len)));
+            buffers.push(vec![0u8; *len]);
         }
 
         let mut pending = requests.len();
@@ -531,7 +531,7 @@ impl Reader {
             .enumerate()
             .map(|(idx, buf)| {
                 let (_, offset, len) = &requests[idx];
-                (buf.into_shared(), *offset as usize, *len)
+                (Arc::from(buf), *offset as usize, *len)
             })
             .collect())
     }
