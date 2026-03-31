@@ -387,58 +387,28 @@ fn build_plan_from_tensors(
 }
 
 // ---------------------------------------------------------------------------
-// Scan — metadata-only SafeTensors header parsing
+// Scan — metadata-only SafeTensors header parsing via mmap
 // ---------------------------------------------------------------------------
 
 async fn scan_shards_async(shard_paths: &[PathBuf]) -> WriterResult<Vec<TensorSource>> {
-    let mut all_tensors = Vec::new();
-    let mut seen_names = std::collections::BTreeSet::new();
-
-    for (shard_id, shard_path) in shard_paths.iter().enumerate() {
-        let mut reader = backends::AsyncReader::new();
-        let data = reader.load(shard_path).await.map_err(WriterError::from)?;
-        let bytes = data.as_ref();
-        let model = SafeTensors::deserialize(bytes)
-            .map_err(|e| WriterError::Io(std::io::Error::other(e.to_string())))?;
-
-        for name in model.names() {
-            if !seen_names.insert(name.to_owned()) {
-                return Err(WriterError::InvalidInput(format!(
-                    "duplicate tensor name across shards: {name}"
-                )));
-            }
-
-            let tensor = model
-                .tensor(name)
-                .map_err(|e| WriterError::InvalidInput(e.to_string()))?;
-            let view = tensor.data();
-            let offset = view.as_ptr() as usize - bytes.as_ptr() as usize;
-
-            all_tensors.push(TensorSource {
-                name: name.to_owned(),
-                shard_id,
-                shard_path: shard_path.clone(),
-                source_offset: offset as u64,
-                size: view.len(),
-                shape: tensor.shape().to_vec(),
-                stride: calculate_contiguous_stride(tensor.shape()),
-                dtype: dtype_str_to_serverlessllm(tensor.dtype())?.to_owned(),
-            });
-        }
-    }
-
-    Ok(all_tensors)
+    scan_shards_mmap(shard_paths)
 }
 
 fn scan_shards_sync(shard_paths: &[PathBuf]) -> WriterResult<Vec<TensorSource>> {
+    scan_shards_mmap(shard_paths)
+}
+
+fn scan_shards_mmap(shard_paths: &[PathBuf]) -> WriterResult<Vec<TensorSource>> {
+    use memmap2::Mmap;
+    use std::fs::File;
+
     let mut all_tensors = Vec::new();
     let mut seen_names = std::collections::BTreeSet::new();
 
     for (shard_id, shard_path) in shard_paths.iter().enumerate() {
-        let mut reader = backends::SyncReader::new();
-        let data = reader.load(shard_path).map_err(WriterError::from)?;
-        let bytes = data.as_ref();
-        let model = SafeTensors::deserialize(bytes)
+        let file = File::open(shard_path).map_err(WriterError::from)?;
+        let mmap = unsafe { Mmap::map(&file).map_err(WriterError::from)? };
+        let model = SafeTensors::deserialize(&mmap)
             .map_err(|e| WriterError::Io(std::io::Error::other(e.to_string())))?;
 
         for name in model.names() {
@@ -452,7 +422,7 @@ fn scan_shards_sync(shard_paths: &[PathBuf]) -> WriterResult<Vec<TensorSource>> 
                 .tensor(name)
                 .map_err(|e| WriterError::InvalidInput(e.to_string()))?;
             let view = tensor.data();
-            let offset = view.as_ptr() as usize - bytes.as_ptr() as usize;
+            let offset = view.as_ptr() as usize - mmap.as_ptr() as usize;
 
             all_tensors.push(TensorSource {
                 name: name.to_owned(),
@@ -606,14 +576,13 @@ async fn write_partition_async(
 
     for (shard_path, shard_ops) in by_shard {
         let mut reader = backends::AsyncReader::new();
-        let data = reader.load(shard_path).await.map_err(WriterError::from)?;
-        let bytes = data.as_ref();
-
         for op in shard_ops {
-            let start = op.source_offset as usize;
-            let end = start + op.size;
+            let data = reader
+                .load_range(shard_path, op.source_offset, op.size)
+                .await
+                .map_err(WriterError::from)?;
             writer
-                .write_all(&bytes[start..end])
+                .write_all(data.as_ref())
                 .await
                 .map_err(WriterError::from)?;
         }
@@ -629,6 +598,7 @@ fn write_partition_sync_single(
 ) -> WriterResult<()> {
     let path = output_dir.join(format!("tensor.data_{}", partition_id));
     let mut writer = backends::SyncWriter::create(&path)?;
+    let mut reader = backends::SyncReader::new();
 
     let mut by_shard: HashMap<&PathBuf, Vec<&&CopyOp>> = HashMap::new();
     for op in ops {
@@ -636,14 +606,11 @@ fn write_partition_sync_single(
     }
 
     for (shard_path, shard_ops) in by_shard {
-        let mut reader = backends::SyncReader::new();
-        let data = reader.load(shard_path).map_err(WriterError::from)?;
-        let bytes = data.as_ref();
-
         for op in shard_ops {
-            let start = op.source_offset as usize;
-            let end = start + op.size;
-            writer.write_all(&bytes[start..end]).map_err(WriterError::from)?;
+            let data =
+                reader.load_range(shard_path.clone(), op.source_offset, op.size)
+                    .map_err(WriterError::from)?;
+            writer.write_all(data.as_ref()).map_err(WriterError::from)?;
         }
     }
 
