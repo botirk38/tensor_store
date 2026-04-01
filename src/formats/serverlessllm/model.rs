@@ -53,7 +53,16 @@ impl LoadPlan {
 
 #[derive(Debug, Clone, Copy)]
 struct LoadStats {
+    partition_count: usize,
     total_bytes: u64,
+}
+
+impl LoadStats {
+    #[cfg(target_os = "linux")]
+    fn avg_partition_bytes(self) -> u64 {
+        self.total_bytes
+            .div_ceil(self.partition_count.max(1) as u64)
+    }
 }
 
 fn load_stats(index: &Index) -> LoadStats {
@@ -61,7 +70,10 @@ fn load_stats(index: &Index) -> LoadStats {
     for plan in index.partitions().values() {
         total_bytes = total_bytes.saturating_add(plan.max_required_size);
     }
-    LoadStats { total_bytes }
+    LoadStats {
+        partition_count: index.partition_ids().len(),
+        total_bytes,
+    }
 }
 
 enum LoadBackend {
@@ -73,20 +85,23 @@ enum LoadBackend {
 /// Backend selection for ServerlessLLM on Linux.
 ///
 /// Based on repeated cold-cache measurements on H100 with multi-worker io_uring:
-/// - Small models (< ~4 GB): async wins (coalesced range batching, low overhead)
-/// - Medium+ models (>= ~4 GB): io_uring wins (parallel coalesced reads scale well)
-/// - sync: consistently slowest for range-heavy partition loads
+/// - Low-partition range workloads: io_uring wins on Linux
+/// - Mid-sized many-partition range workloads: async wins
+/// - Large range workloads: io_uring wins again once total bytes dominate
 fn choose_load_backend(stats: &LoadStats) -> LoadBackend {
     #[cfg(target_os = "linux")]
     {
-        if stats.total_bytes >= 4 * 1024 * 1024 * 1024 {
+        if stats.partition_count <= 4 && stats.avg_partition_bytes() >= 256 * 1024 * 1024 {
+            return LoadBackend::IoUring;
+        }
+        if stats.total_bytes >= 12 * 1024 * 1024 * 1024 {
             return LoadBackend::IoUring;
         }
         LoadBackend::TokioAsync
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = stats.total_bytes;
+        let _ = (stats.partition_count, stats.total_bytes);
         LoadBackend::TokioAsync
     }
 }
@@ -596,23 +611,23 @@ mod tests {
     }
 
     #[test]
-    fn choose_async_for_small_model() {
+    fn choose_io_uring_for_low_partition_count_model() {
         let stats = LoadStats {
+            partition_count: 3,
             total_bytes: 2 * 1024 * 1024 * 1024,
         };
         match choose_load_backend(&stats) {
             #[cfg(target_os = "linux")]
-            LoadBackend::TokioAsync => {}
+            LoadBackend::IoUring => {}
             #[cfg(not(target_os = "linux"))]
             LoadBackend::TokioAsync => {}
-            #[cfg(target_os = "linux")]
-            LoadBackend::IoUring => {}
         }
     }
 
     #[test]
     fn choose_io_uring_for_large_model() {
         let stats = LoadStats {
+            partition_count: 16,
             total_bytes: 16 * 1024 * 1024 * 1024,
         };
         match choose_load_backend(&stats) {
@@ -626,6 +641,7 @@ mod tests {
     #[test]
     fn choose_async_for_medium_small_model() {
         let stats = LoadStats {
+            partition_count: 12,
             total_bytes: 524 * 1024 * 1024,
         };
         match choose_load_backend(&stats) {

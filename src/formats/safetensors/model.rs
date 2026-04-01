@@ -98,6 +98,13 @@ struct LoadStats {
     total_bytes: u64,
 }
 
+impl LoadStats {
+    #[cfg(target_os = "linux")]
+    fn avg_shard_bytes(self) -> u64 {
+        self.total_bytes.div_ceil(self.shard_count.max(1) as u64)
+    }
+}
+
 enum LoadBackend {
     Sync,
     #[cfg(target_os = "linux")]
@@ -108,15 +115,15 @@ enum LoadBackend {
 ///
 /// Based on repeated cold-cache measurements on H100 with multi-worker io_uring:
 /// - Single-shard models: sync wins (io_uring ring overhead dominates)
-/// - Multi-shard >= ~4 GB: io_uring wins (parallel shard reads scale well)
-/// - Multi-shard < ~4 GB: sync wins (small enough that ring setup cost outweighs gains)
+/// - Small two-shard eager loads: sync remains better
+/// - Larger multi-shard eager loads with enough shard fanout: io_uring wins
 fn choose_load_backend(stats: &LoadStats) -> LoadBackend {
     #[cfg(target_os = "linux")]
     {
         if stats.shard_count <= 1 {
             return LoadBackend::Sync;
         }
-        if stats.total_bytes >= 4 * 1024 * 1024 * 1024 {
+        if stats.shard_count >= 4 && stats.avg_shard_bytes() >= 2 * 1024 * 1024 * 1024 {
             return LoadBackend::IoUring;
         }
         LoadBackend::Sync
