@@ -113,13 +113,12 @@ The primary backend for Linux systems, using the io_uring kernel interface for m
 
 **Requirements**:
 - Linux kernel 5.1+
-- `tokio-uring` runtime
+- low-level `io-uring` crate support
 
 **Performance characteristics**:
-- Best for large files (>10MB)
-- Scales well with parallel chunks
-- ~5% faster than Tokio for sequential reads
-- Up to 70% faster with buffer pooling
+- Best for larger eager loads when ring fanout is high enough
+- Performance depends strongly on ring topology and workload shape
+- Use profiling results, not old static assumptions, to choose defaults
 
 ### Tokio Backend (`async_io.rs`)
 

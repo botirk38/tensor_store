@@ -3,11 +3,11 @@
 use pyo3::exceptions::PyFileNotFoundError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use std::future::Future;
 use std::path::{Path, PathBuf};
 
 use tensor_store::formats::serverlessllm::{MmapModel, Model};
 
+use super::run_async;
 use crate::convert::{convert_tensor, TensorData};
 use crate::errors::{map_reader_error, tensor_not_found};
 
@@ -19,23 +19,6 @@ fn validate_path_exists(path: &Path) -> PyResult<()> {
         )));
     }
     Ok(())
-}
-
-fn run_async<T>(
-    future: impl Future<Output = tensor_store::ReaderResult<T>>,
-) -> tensor_store::ReaderResult<T> {
-    #[cfg(target_os = "linux")]
-    {
-        tokio_uring::start(future)
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        tokio::runtime::Runtime::new()
-            .map_err(|e| {
-                tensor_store::ReaderError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
-            })?
-            .block_on(future)
-    }
 }
 
 #[pyclass]

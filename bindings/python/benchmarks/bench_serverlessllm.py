@@ -1,8 +1,9 @@
 """ServerlessLLM benchmarks for real models.
 
-Benchmarks tensor_store ServerlessLLM loading with different backends (default, sync, mmap).
-Partition count uses the shared size-based heuristic.
+Benchmarks tensor_store ServerlessLLM loading with different eager backends plus
+the lazy open/get_tensor path. Partition count uses the shared size-based heuristic.
 """
+
 
 from benchmarks.fixtures import touch_tensor
 from tensor_store_py._tensor_store_rust import (
@@ -18,6 +19,18 @@ def test_load_async(benchmark, serverlessllm_dir):
 
     def run():
         result = load_serverlessllm_async(serverlessllm_dir)
+        sum(touch_tensor(t) for t in result.values())
+        return result
+
+    result = benchmark(run)
+    assert len(result) > 0
+
+
+def test_load_sync(benchmark, serverlessllm_dir):
+    """Benchmark load_serverlessllm_sync."""
+
+    def run():
+        result = load_serverlessllm_sync(serverlessllm_dir)
         sum(touch_tensor(t) for t in result.values())
         return result
 

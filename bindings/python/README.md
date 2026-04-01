@@ -96,8 +96,9 @@ weights = tf_load_file("model.safetensors", device="/CPU:0")
 
 ## Backends
 
-- **async** (no suffix): native async I/O (Tokio; io_uring on Linux), returns an awaitable
-- **sync** (`_sync` suffix): blocking read into memory
-- **mmap** (`_mmap` suffix): memory-mapped, zero-copy on CPU
+- **default** (no suffix): eager load through the Rust selector; on Linux this may choose `io_uring`, `async`, or `sync`
+- **async** (`_async` suffix): explicit Tokio async eager load
+- **sync** (`_sync` suffix): explicit blocking eager load
+- **open** (`open_*`): mmap-backed lazy handle when supported
 
 The GIL is released during I/O and parsing where applicable.

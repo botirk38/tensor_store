@@ -17,7 +17,7 @@ cargo run --bin profile -- safetensors <CASE> [--fixture <NAME>] [--iterations <
 ```
 
 **Available Cases:**
-- `default` - Heuristic default (picks best backend based on cost model)
+- `default` - Measured default policy for the current workload regime
 - `sync` - Synchronous blocking I/O with thread-per-chunk parallelism
 - `async` - Tokio async I/O
 - `mmap` - Memory-mapped file access
@@ -81,9 +81,9 @@ echo 3 > /proc/sys/vm/drop_caches
 
 ## Performance Notes
 
-- `sync` is typically fastest for local file access due to intra-shard thread parallelism
-- `async` (Tokio) is useful for concurrent I/O scenarios
-- `io-uring` is available as an explicit backend but sync is usually faster due to better parallelism
+- `sync` remains a strong baseline for smaller whole-file eager loads
+- `async` is often competitive for smaller range-heavy `ServerlessLLM` loads
+- multi-worker `io-uring` can win on medium and large eager loads; validate with profiling on your target machine
 - `mmap` is fastest for repeated access to large files that fit in memory
 
 ## Fixture Setup

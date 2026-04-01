@@ -28,8 +28,8 @@ uv run pytest benchmarks/bench_vllm.py -v --model-id gpt2
 
 | File | Description |
 |------|-------------|
-| `bench_safetensors.py` | SafeTensors loading: native vs tensor_store (sync, mmap, default) |
-| `bench_serverlessllm.py` | ServerlessLLM loading (sync, mmap, default) |
+| `bench_safetensors.py` | SafeTensors loading: native vs tensor_store (`sync`, `async`, `default`, `open_*`) |
+| `bench_serverlessllm.py` | ServerlessLLM loading (`sync`, `async`, `default`, `open_*`) |
 | `bench_vllm.py` | vLLM integration: init, TTFT, steady-state decode |
 
 ## SafeTensors Benchmarks
@@ -37,8 +37,9 @@ uv run pytest benchmarks/bench_vllm.py -v --model-id gpt2
 **Backends:**
 - `native` - `safetensors.torch.load_file`
 - `tensor_store sync` - `tensor_store.load_safetensors_sync`
-- `tensor_store mmap` - `tensor_store.load_safetensors_mmap`
+- `tensor_store async` - `tensor_store.load_safetensors_async`
 - `tensor_store default` - `tensor_store.load_safetensors`
+- `tensor_store open` - `tensor_store.open_safetensors`
 
 **Cache modes:** `warm`, `cold`
 
@@ -48,8 +49,9 @@ Uses the shared size-based heuristic for partition count: `max(1, ceil(total_byt
 
 **Backends:**
 - `sync`
-- `mmap`
+- `async`
 - `default`
+- `open`
 
 **Cache modes:** `warm`, `cold`
 
@@ -79,7 +81,8 @@ arguments if you need a different layout.
 ## Default backend policy
 
 - `open_*` defaults to `mmap`.
-- `load_*` defaults to eager loading and chooses between async and sync backends.
+- `load_*` defaults to eager loading and chooses between internal Rust backends.
+- On Linux, `default` may select `io_uring` internally when it wins for the workload.
 - `load_*` does not auto-select `mmap`.
 
 ## Recommended Models (H100 Box)

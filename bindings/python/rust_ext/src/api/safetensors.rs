@@ -11,27 +11,11 @@ use tensor_store::formats::safetensors::{Dtype, MmapModel, Model};
 use tensor_store::serialize;
 use tensor_store::TensorView;
 
+use super::run_async;
 use crate::convert::{convert_tensor, extract_tensor_raw, TensorData};
 use crate::errors::map_reader_error;
 
 type TensorTuple = (String, Vec<usize>, Dtype, Vec<u8>);
-
-fn run_async<T>(
-    future: impl std::future::Future<Output = tensor_store::ReaderResult<T>>,
-) -> tensor_store::ReaderResult<T> {
-    #[cfg(target_os = "linux")]
-    {
-        tokio_uring::start(future)
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        tokio::runtime::Runtime::new()
-            .map_err(|e| {
-                tensor_store::ReaderError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
-            })?
-            .block_on(future)
-    }
-}
 
 fn validate_directory(path: &Path) -> PyResult<()> {
     if !path.exists() {
