@@ -67,7 +67,8 @@ def run_benchmark(
     llm_kwargs = {
         "model": model_id,
         "tensor_parallel_size": 1,
-        "gpu_memory_utilization": 0.5,
+        "gpu_memory_utilization": 0.95,
+        "max_model_len": 16384,
     }
 
     if config is not None:
