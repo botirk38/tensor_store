@@ -12,7 +12,9 @@ use tensor_store::serialize;
 use tensor_store::TensorView;
 
 use super::run_async;
-use crate::convert::{convert_tensor, extract_tensor_raw, TensorData};
+use crate::convert::{
+    convert_tensor, convert_tensor_with_context, extract_tensor_raw, TensorData, TorchContext,
+};
 use crate::errors::map_reader_error;
 
 type TensorTuple = (String, Vec<usize>, Dtype, Vec<u8>);
@@ -86,9 +88,14 @@ fn load_dict_from_model(
     device: &str,
 ) -> PyResult<PyObject> {
     let dict = PyDict::new(py);
+    let mut torch_context = if framework == "torch" {
+        Some(TorchContext::new(py)?)
+    } else {
+        None
+    };
     for name in model.tensor_names() {
         let view = model.tensor(name).map_err(map_reader_error)?;
-        let tensor = convert_tensor(
+        let tensor = convert_tensor_with_context(
             py,
             framework,
             TensorData {
@@ -97,6 +104,7 @@ fn load_dict_from_model(
                 data: view.data(),
             },
             device,
+            torch_context.as_mut(),
         )?;
         dict.set_item(name.as_ref(), tensor)?;
     }

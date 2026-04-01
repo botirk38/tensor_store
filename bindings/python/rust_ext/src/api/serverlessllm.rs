@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use tensor_store::formats::serverlessllm::{MmapModel, Model};
 
 use super::run_async;
-use crate::convert::{convert_tensor, TensorData};
+use crate::convert::{convert_tensor, convert_tensor_with_context, TensorData, TorchContext};
 use crate::errors::{map_reader_error, tensor_not_found};
 
 fn validate_path_exists(path: &Path) -> PyResult<()> {
@@ -77,11 +77,16 @@ fn load_into_dict(
     device: &str,
 ) -> PyResult<PyObject> {
     let dict = PyDict::new(py);
+    let mut torch_context = if framework == "torch" {
+        Some(TorchContext::new(py)?)
+    } else {
+        None
+    };
     for name in model.tensor_names() {
         let tensor = model
             .tensor(name)
             .ok_or_else(|| tensor_not_found(name.as_ref()))?;
-        let value = convert_tensor(
+        let value = convert_tensor_with_context(
             py,
             framework,
             TensorData {
@@ -90,6 +95,7 @@ fn load_into_dict(
                 data: tensor.data(),
             },
             device,
+            torch_context.as_mut(),
         )?;
         dict.set_item(name.as_ref(), value)?;
     }

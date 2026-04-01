@@ -5,6 +5,9 @@ mod safetensors;
 mod serverlessllm;
 
 use std::future::Future;
+use std::sync::OnceLock;
+
+use tokio::runtime::Runtime;
 
 pub use convert::convert_safetensors_to_serverlessllm;
 pub use safetensors::{
@@ -19,11 +22,17 @@ pub use serverlessllm::{
 fn run_async<T>(
     future: impl Future<Output = tensor_store::ReaderResult<T>>,
 ) -> tensor_store::ReaderResult<T> {
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| {
-            tensor_store::ReaderError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
-        })?
+    static RUNTIME: OnceLock<Result<Runtime, std::io::Error>> = OnceLock::new();
+
+    let runtime = RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+    });
+
+    runtime
+        .as_ref()
+        .map_err(|e| tensor_store::ReaderError::Io(std::io::Error::new(e.kind(), e.to_string())))?
         .block_on(future)
 }

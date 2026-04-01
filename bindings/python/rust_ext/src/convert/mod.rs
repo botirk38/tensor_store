@@ -7,7 +7,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 pub use tensorflow::{raw_to_tensorflow_tensor, tf_tensor_to_raw};
-pub use torch::{raw_to_torch_tensor, torch_tensor_to_raw};
+pub use torch::{raw_to_torch_tensor, torch_tensor_to_raw, TorchContext};
 
 pub struct TensorData<'a> {
     pub shape: &'a [usize],
@@ -21,14 +21,32 @@ pub fn convert_tensor<'a>(
     tensor_data: TensorData<'a>,
     device: &str,
 ) -> PyResult<PyObject> {
+    convert_tensor_with_context(py, framework, tensor_data, device, None)
+}
+
+pub fn convert_tensor_with_context<'py, 'a>(
+    py: Python<'py>,
+    framework: &str,
+    tensor_data: TensorData<'a>,
+    device: &str,
+    torch_context: Option<&mut TorchContext<'py>>,
+) -> PyResult<PyObject> {
     match framework {
-        "torch" => raw_to_torch_tensor(
-            py,
-            tensor_data.shape,
-            tensor_data.dtype,
-            tensor_data.data,
-            device,
-        ),
+        "torch" => match torch_context {
+            Some(context) => context.raw_to_torch_tensor(
+                tensor_data.shape,
+                tensor_data.dtype,
+                tensor_data.data,
+                device,
+            ),
+            None => raw_to_torch_tensor(
+                py,
+                tensor_data.shape,
+                tensor_data.dtype,
+                tensor_data.data,
+                device,
+            ),
+        },
         "tensorflow" | "tf" => raw_to_tensorflow_tensor(
             py,
             tensor_data.shape,
