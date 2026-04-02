@@ -1061,3 +1061,91 @@ fn range_worker_count(groups: &[CoalescedRequestGroup], total_bytes: usize) -> u
 
     chunk_budget().clamp(1, 8).min(file_count).max(1)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backends::SyncReader;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn write_file(path: &Path, len: usize, seed: u8) {
+        let data: Vec<u8> = (0..len)
+            .map(|i| seed.wrapping_add((i % 251) as u8))
+            .collect();
+        fs::write(path, data).unwrap();
+    }
+
+    #[test]
+    fn load_matches_sync_reader_for_large_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("large.bin");
+        write_file(&path, 5 * 1024 * 1024, 7);
+
+        let mut sync = SyncReader::new();
+        let expected = sync.load(&path).unwrap();
+
+        let mut uring = Reader::new().with_sqpoll(false);
+        let actual = uring.load(&path).unwrap();
+
+        assert_eq!(actual.as_ref(), expected.as_ref());
+    }
+
+    #[test]
+    fn load_batch_preserves_order_and_bytes() {
+        let dir = TempDir::new().unwrap();
+        let path_a = dir.path().join("a.bin");
+        let path_b = dir.path().join("b.bin");
+        write_file(&path_a, 5 * 1024 * 1024, 3);
+        write_file(&path_b, 6 * 1024 * 1024, 9);
+
+        let mut sync = SyncReader::new();
+        let expected_a = sync.load(&path_a).unwrap();
+        let expected_b = sync.load(&path_b).unwrap();
+
+        let mut uring = Reader::new().with_sqpoll(false);
+        let results = uring.load_batch(&[path_a.clone(), path_b.clone()]).unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].as_ref(), expected_a.as_ref());
+        assert_eq!(results[1].as_ref(), expected_b.as_ref());
+    }
+
+    #[test]
+    fn load_range_batch_matches_sync_reader() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("ranges.bin");
+        write_file(&path, 6 * 1024 * 1024, 13);
+
+        let requests = vec![
+            (path.clone(), 0, 512 * 1024),
+            (path.clone(), 520 * 1024, 256 * 1024),
+            (path.clone(), 2 * 1024 * 1024, 768 * 1024),
+        ];
+
+        let mut sync = SyncReader::new();
+        let expected = sync.load_range_batch(&requests).unwrap();
+
+        let mut uring = Reader::new().with_sqpoll(false);
+        let actual = uring.load_range_batch(&requests).unwrap();
+
+        assert_eq!(actual.len(), expected.len());
+        for (actual_item, expected_item) in actual.iter().zip(expected.iter()) {
+            assert_eq!(actual_item.1, expected_item.1);
+            assert_eq!(actual_item.2, expected_item.2);
+            assert_eq!(actual_item.0.as_ref(), expected_item.0.as_ref());
+        }
+    }
+
+    #[test]
+    fn manual_ring_overrides_are_clamped() {
+        let reader = Reader::new()
+            .with_ring_depth(1)
+            .with_cq_depth(u32::MAX)
+            .with_sqpoll_idle_ms(0);
+
+        assert_eq!(reader.ring_depth_override, Some(MIN_RING_DEPTH));
+        assert_eq!(reader.cq_depth_override, Some(MAX_RING_DEPTH * 2));
+        assert_eq!(reader.sqpoll_idle_ms, 1);
+    }
+}

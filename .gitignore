@@ -3,6 +3,7 @@
 **/target/
 **/*.rs.bk
 *.pdb
+bindings/python/rust_ext/Cargo.lock
 
 # Debug symbols
 debug/

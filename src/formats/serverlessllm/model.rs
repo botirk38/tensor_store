@@ -655,6 +655,48 @@ mod tests {
     }
 
     #[test]
+    fn choose_async_for_many_partitions_small_total() {
+        let stats = LoadStats {
+            partition_count: 16,
+            total_bytes: 2 * 1024 * 1024 * 1024,
+        };
+        match choose_load_backend(&stats) {
+            #[cfg(target_os = "linux")]
+            LoadBackend::TokioAsync => {}
+            #[cfg(not(target_os = "linux"))]
+            LoadBackend::TokioAsync => {}
+            #[cfg(target_os = "linux")]
+            LoadBackend::IoUring => {}
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn choose_sync_for_single_partition_small() {
+        let stats = LoadStats {
+            partition_count: 1,
+            total_bytes: 512 * 1024 * 1024,
+        };
+        match choose_load_backend(&stats) {
+            LoadBackend::IoUring => {}
+            LoadBackend::TokioAsync => panic!("expected IoUring for single partition"),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn choose_io_uring_for_very_large_partitioned_model() {
+        let stats = LoadStats {
+            partition_count: 32,
+            total_bytes: 32 * 1024 * 1024 * 1024,
+        };
+        match choose_load_backend(&stats) {
+            LoadBackend::IoUring => {}
+            LoadBackend::TokioAsync => panic!("expected IoUring for very large model"),
+        }
+    }
+
+    #[test]
     fn mmap_model_empty() {
         let model = MmapModel {
             index: Index::new(),

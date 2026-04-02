@@ -766,3 +766,134 @@ fn calculate_contiguous_stride(shape: &[usize]) -> Vec<usize> {
 
     stride
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use safetensors::serialize;
+    use safetensors::tensor::TensorView as StTensorView;
+    use tempfile::TempDir;
+
+    fn write_shard(path: &Path, tensors: Vec<(&str, StTensorView<'_>)>) {
+        let bytes = serialize(tensors, None).expect("serialize shard");
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    fn make_small_model_dir(tmp: &TempDir) -> PathBuf {
+        let shard = tmp.path().join("model.safetensors");
+        let data = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
+        let view = StTensorView::new(safetensors::Dtype::F32, vec![2], &data).unwrap();
+        write_shard(&shard, vec![("weight", view)]);
+        tmp.path().to_path_buf()
+    }
+
+    #[test]
+    fn convert_rejects_zero_partitions() {
+        let tmp = TempDir::new().unwrap();
+        let out = tmp.path().join("out");
+        let err = convert_safetensors_to_serverlessllm_sync(
+            tmp.path().to_str().unwrap(),
+            out.to_str().unwrap(),
+            0,
+        )
+        .unwrap_err();
+        assert!(matches!(err, WriterError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn convert_rejects_empty_directory() {
+        let tmp = TempDir::new().unwrap();
+        let out = tmp.path().join("out");
+        let err = convert_safetensors_to_serverlessllm_sync(
+            tmp.path().to_str().unwrap(),
+            out.to_str().unwrap(),
+            2,
+        )
+        .unwrap_err();
+        assert!(matches!(err, WriterError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn convert_single_shard_roundtrip() {
+        let tmp = TempDir::new().unwrap();
+        let src = make_small_model_dir(&tmp);
+        let out = tmp.path().join("out");
+
+        convert_safetensors_to_serverlessllm_sync(
+            src.to_str().unwrap(),
+            out.to_str().unwrap(),
+            2,
+        )
+        .expect("convert");
+
+        assert!(out.exists());
+        assert!(out.join("tensor_index.json").exists());
+        assert!(out.join("tensor.data_0").exists());
+
+        let index_bytes = std::fs::read(out.join("tensor_index.json")).unwrap();
+        let index: serde_json::Value = serde_json::from_slice(&index_bytes).unwrap();
+        let tensors = index.as_object().unwrap();
+        assert!(tensors.contains_key("weight"));
+    }
+
+    #[test]
+    fn convert_multi_shard_roundtrip() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path();
+        let shard1 = src.join("model-00001-of-00002.safetensors");
+        let shard2 = src.join("model-00002-of-00002.safetensors");
+
+        let data1 = vec![0u8; 16];
+        let data2 = vec![1u8; 32];
+        let view1 = StTensorView::new(safetensors::Dtype::F32, vec![4], &data1).unwrap();
+        let view2 = StTensorView::new(safetensors::Dtype::F32, vec![8], &data2).unwrap();
+        write_shard(&shard1, vec![("a", view1)]);
+        write_shard(&shard2, vec![("b", view2)]);
+
+        let out = tmp.path().join("out");
+        convert_safetensors_to_serverlessllm_sync(
+            src.to_str().unwrap(),
+            out.to_str().unwrap(),
+            4,
+        )
+        .expect("convert multi-shard");
+
+        let index_bytes = std::fs::read(out.join("tensor_index.json")).unwrap();
+        let index: serde_json::Value = serde_json::from_slice(&index_bytes).unwrap();
+        let tensors = index.as_object().unwrap();
+        assert!(tensors.contains_key("a"));
+        assert!(tensors.contains_key("b"));
+        assert_eq!(tensors.len(), 2);
+    }
+
+    #[test]
+    fn calculate_contiguous_stride_basic() {
+        assert_eq!(calculate_contiguous_stride(&[2, 3, 4]), vec![12, 4, 1]);
+        assert_eq!(calculate_contiguous_stride(&[5]), vec![1]);
+        assert_eq!(calculate_contiguous_stride(&[]), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn dtype_mapping_covers_common_types() {
+        assert_eq!(
+            dtype_str_to_serverlessllm(safetensors::Dtype::F32).unwrap(),
+            "torch.float32"
+        );
+        assert_eq!(
+            dtype_str_to_serverlessllm(safetensors::Dtype::F16).unwrap(),
+            "torch.float16"
+        );
+        assert_eq!(
+            dtype_str_to_serverlessllm(safetensors::Dtype::BF16).unwrap(),
+            "torch.bfloat16"
+        );
+        assert_eq!(
+            dtype_str_to_serverlessllm(safetensors::Dtype::I64).unwrap(),
+            "torch.int64"
+        );
+        assert_eq!(
+            dtype_str_to_serverlessllm(safetensors::Dtype::U8).unwrap(),
+            "torch.uint8"
+        );
+    }
+}

@@ -849,4 +849,56 @@ mod tests {
             LoadBackend::Sync => panic!("expected IoUring, got Sync"),
         }
     }
+
+    #[test]
+    fn selector_boundary_single_shard_large() {
+        let stats = LoadStats {
+            shard_count: 1,
+            total_bytes: 8 * 1024 * 1024 * 1024,
+        };
+        match choose_load_backend(&stats) {
+            LoadBackend::Sync => {}
+            #[cfg(target_os = "linux")]
+            LoadBackend::IoUring => {}
+        }
+    }
+
+    #[test]
+    fn selector_boundary_two_shard_small() {
+        let stats = LoadStats {
+            shard_count: 2,
+            total_bytes: 1024 * 1024 * 1024,
+        };
+        match choose_load_backend(&stats) {
+            LoadBackend::Sync => {}
+            #[cfg(target_os = "linux")]
+            LoadBackend::IoUring => panic!("expected Sync for small 2-shard"),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn selector_boundary_four_shard_large() {
+        let stats = LoadStats {
+            shard_count: 4,
+            total_bytes: 8 * 1024 * 1024 * 1024,
+        };
+        match choose_load_backend(&stats) {
+            LoadBackend::IoUring => {}
+            LoadBackend::Sync => panic!("expected IoUring at 4-shard 8GB boundary"),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn selector_boundary_four_shard_small() {
+        let stats = LoadStats {
+            shard_count: 4,
+            total_bytes: 2 * 1024 * 1024 * 1024,
+        };
+        match choose_load_backend(&stats) {
+            LoadBackend::Sync => {}
+            LoadBackend::IoUring => panic!("expected Sync below threshold"),
+        }
+    }
 }

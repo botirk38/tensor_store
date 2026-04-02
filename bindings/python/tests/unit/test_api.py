@@ -1,6 +1,7 @@
 """API contract and export regression tests."""
 
 import importlib
+import platform
 
 import pytest
 
@@ -91,3 +92,36 @@ def test_rust_extension_is_importable():
     mod = importlib.import_module("tensor_store_py._tensor_store_rust")
     assert hasattr(mod, "__version__")
     assert hasattr(mod, "load_safetensors_sync")
+
+
+@pytest.mark.skipif(platform.system() != "Linux", reason="io_uring is Linux-only")
+def test_io_uring_functions_exist_on_linux():
+    from tensor_store_py._tensor_store_rust import (
+        load_safetensors_io_uring,
+        load_serverlessllm_io_uring,
+    )
+
+    assert callable(load_safetensors_io_uring)
+    assert callable(load_serverlessllm_io_uring)
+
+
+@pytest.mark.skipif(platform.system() != "Linux", reason="io_uring is Linux-only")
+def test_io_uring_safetensors_load_works(tmp_path):
+    torch = pytest.importorskip("torch")
+    from tensor_store_py._tensor_store_rust import load_safetensors_io_uring
+
+    safetensors_path = write_safetensors_dir({"x": torch.zeros(1)}, tmp_path / "t")
+    result = load_safetensors_io_uring(str(safetensors_path))
+    assert isinstance(result, dict)
+    assert "x" in result
+
+
+@pytest.mark.skipif(platform.system() != "Linux", reason="io_uring is Linux-only")
+def test_io_uring_serverlessllm_load_works(tmp_path):
+    torch = pytest.importorskip("torch")
+    from tensor_store_py._tensor_store_rust import load_serverlessllm_io_uring
+
+    serverless_path = write_serverlessllm_dir({"x": torch.zeros(1)}, tmp_path / "s")
+    result = load_serverlessllm_io_uring(str(serverless_path))
+    assert isinstance(result, dict)
+    assert "x" in result

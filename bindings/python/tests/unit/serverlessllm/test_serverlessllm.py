@@ -4,6 +4,8 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
+import tensor_store_py._tensor_store_rust as rust_ext
+
 from tensor_store_py._tensor_store_rust import (
     load_serverlessllm_sync,
     open_serverlessllm,
@@ -28,6 +30,17 @@ def test_load_file_smoke(tmp_path):
     tensors = {"a": torch.zeros(1, 2), "b": torch.ones(3, 4)}
     out_dir = write_serverlessllm_dir(tensors, tmp_path / "model")
     d = load_serverlessllm_sync(str(out_dir))
+    assert "a" in d and "b" in d
+    assert d["a"].shape == (1, 2)
+    assert d["b"].shape == (3, 4)
+
+
+@pytest.mark.skipif(not hasattr(rust_ext, "load_serverlessllm_io_uring"), reason="io_uring binding is Linux-only")
+def test_load_file_io_uring_smoke(tmp_path):
+    load_serverlessllm_io_uring = rust_ext.load_serverlessllm_io_uring
+    tensors = {"a": torch.zeros(1, 2), "b": torch.ones(3, 4)}
+    out_dir = write_serverlessllm_dir(tensors, tmp_path / "model_io_uring")
+    d = load_serverlessllm_io_uring(str(out_dir))
     assert "a" in d and "b" in d
     assert d["a"].shape == (1, 2)
     assert d["b"].shape == (3, 4)

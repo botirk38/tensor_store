@@ -4,6 +4,8 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
+import tensor_store_py._tensor_store_rust as rust_ext
+
 from tensor_store_py._tensor_store_rust import (
     load_safetensors,
     load_safetensors_async,
@@ -41,6 +43,19 @@ def test_load_directory_smoke(tmp_path):
     model_dir.mkdir()
     write_safetensors(tensors, model_dir / "model.safetensors")
     d = load_safetensors(str(model_dir))
+    assert "a" in d and "b" in d
+    assert d["a"].shape == (1, 2)
+    assert d["b"].shape == (3, 4)
+
+
+@pytest.mark.skipif(not hasattr(rust_ext, "load_safetensors_io_uring"), reason="io_uring binding is Linux-only")
+def test_load_directory_io_uring_smoke(tmp_path):
+    load_safetensors_io_uring = rust_ext.load_safetensors_io_uring
+    tensors = {"a": torch.zeros(1, 2), "b": torch.ones(3, 4)}
+    model_dir = tmp_path / "test_dir_io_uring"
+    model_dir.mkdir()
+    write_safetensors(tensors, model_dir / "model.safetensors")
+    d = load_safetensors_io_uring(str(model_dir))
     assert "a" in d and "b" in d
     assert d["a"].shape == (1, 2)
     assert d["b"].shape == (3, 4)
