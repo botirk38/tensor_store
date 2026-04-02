@@ -56,14 +56,14 @@ The vLLM loader path reuses vLLM's normal checkpoint-preparation logic and subst
 The final codebase is structured around a small number of high-value modules rather than a large number of benchmark-specific fragments.
 
 \begin{itemize}
-\item \texttt{src/backends/} --- core eager-loading implementations and shared planning logic
-\item \texttt{src/formats/safetensors/} --- SafeTensors loaders and serializer
-\item \texttt{src/formats/serverlessllm/} --- ServerlessLLM loaders, index, serializer, and helpers
-\item \texttt{src/converters/} --- format conversion logic
-\item \texttt{src/bin/convert/} --- conversion CLI
-\item \texttt{src/bin/profile/} --- profiling CLI used for the Rust benchmark matrices
-\item \texttt{bindings/python/rust\_ext/} --- PyO3 binding layer
-\item \texttt{bindings/python/benchmarks/} --- Python and vLLM benchmark harnesses
+\item \texttt{src/backends/}: core eager-loading implementations and shared planning logic
+\item \texttt{src/formats/safetensors/}: SafeTensors loaders and serializer
+\item \texttt{src/formats/serverlessllm/}: ServerlessLLM loaders, index, serializer, and helpers
+\item \texttt{src/converters/}: format conversion logic
+\item \texttt{src/bin/convert/}: conversion CLI
+\item \texttt{src/bin/profile/}: profiling CLI used for the Rust benchmark matrices
+\item \texttt{bindings/python/rust\_ext/}: PyO3 binding layer
+\item \texttt{bindings/python/benchmarks/}: Python and vLLM benchmark harnesses
 \end{itemize}
 
 This structure matters to the software-engineering story of the project. One of the later cleanup phases removed many one-off scripts and stale interfaces so that the final submission would reflect the actual completed experiment flow rather than every intermediate iteration.

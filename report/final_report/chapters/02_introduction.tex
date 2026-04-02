@@ -31,7 +31,7 @@ Python bindings are provided to enable integration testing within representative
 
 \section{Contributions}
 
-This project makes three concrete contributions. The first is a reproducible evaluation framework, TensorStore, that isolates backend effects from checkpoint parsing and layout by generating comparable loading workloads across backends. The second is a systematic experimental comparison of synchronous, async, and io\_uring loading across real LLM checkpoints and two checkpoint formats, quantifying where each backend is strongest and where it is not. The third is an analysis of how backend choice interacts with checkpoint layout, model size, Python binding overhead, and vLLM integration, leading to a practical adaptive heuristic for checkpoint loading --- in broad terms, sync for smaller models and io\_uring for larger ones, with format-specific nuances around that rule.
+This project makes three concrete contributions. The first is a reproducible evaluation framework, TensorStore, that isolates backend effects from checkpoint parsing and layout by generating comparable loading workloads across backends. The second is a systematic experimental comparison of synchronous, async, and io\_uring loading across real LLM checkpoints and two checkpoint formats, quantifying where each backend is strongest and where it is not. The third is an analysis of how backend choice interacts with checkpoint layout, model size, Python binding overhead, and vLLM integration, leading to a practical adaptive heuristic for checkpoint loading. In broad terms, the result is sync for smaller models and io\_uring for larger ones, with format-specific nuances around that rule.
 
 \section{Report Structure}
 

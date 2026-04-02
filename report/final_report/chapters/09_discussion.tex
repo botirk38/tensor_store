@@ -5,7 +5,7 @@
 
 The final result of this project is best understood as an adaptive-heuristic result. Backend performance depends on workload shape, checkpoint layout, and integration layer, which means checkpoint loading should be driven by workload-aware selection rather than by one fixed backend.
 
-This is the most important correction to the early narrative. The project began with the hope that a single backend --- ideally \texttt{io\_uring} on Linux --- might dominate across the board. The final evidence does not support that conclusion. At the Rust layer, \texttt{SafeTensors} and \texttt{ServerlessLLM} prefer different backends in different size regimes. At the Python layer, binding overhead changes the practical ordering. At the vLLM layer, model initialisation dominates while steady-state decode is largely insensitive to the loading backend.
+This is the most important correction to the early narrative. The project began with the hope that a single backend, ideally \texttt{io\_uring} on Linux, might dominate across the board. The final evidence does not support that conclusion. At the Rust layer, \texttt{SafeTensors} and \texttt{ServerlessLLM} prefer different backends in different size regimes. At the Python layer, binding overhead changes the practical ordering. At the vLLM layer, model initialisation dominates while steady-state decode is largely insensitive to the loading backend.
 
 That is why the final system is organised around an adaptive \texttt{default} policy. In the clearest high-level form, the heuristic is sync for smaller eager loads and io\_uring for larger ones, with format-specific refinements where the access pattern changes.
 

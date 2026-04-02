@@ -225,6 +225,27 @@ ymajorgrids=true,
 
 Two observations stand out. First, the best vLLM loader is usually from the \texttt{SafeTensors} family rather than the \texttt{ServerlessLLM} family. Second, the explicit \texttt{io\_uring} path becomes valuable again at the larger end of the ladder. It is the best \texttt{load\_only} choice for Qwen3-14B and Qwen3-32B, albeit by a narrow margin over the adaptive \texttt{default} path (0.09\% on 14B and 0.04\% on 32B). For smaller models, the best loader is usually \texttt{sync} or \texttt{default}, which mirrors the core Rust heuristic story.
 
+To ground the vLLM story more concretely, Table~\ref{tab:vllm-qwen8b-all} shows the full cold comparison for Qwen3-8B across all available loaders. The table makes two points visible at once. First, the strongest load-time loaders are all from the \texttt{SafeTensors} family. Second, the spread is large for model initialisation but tiny for steady-state decode.
+
+\begin{table}[h]
+\caption{Cold vLLM comparison for Qwen3-8B across all loaders.}
+\label{tab:vllm-qwen8b-all}
+\centering
+\begin{tabular}{lrrr}
+\toprule
+Loader & Load-only (ms) & TTFT (ms) & Decode (ms) \\
+\midrule
+native & 56639.48 & 50991.28 & 58.18 \\
+ts\_safetensors\_default & 35555.79 & 35099.84 & 58.33 \\
+ts\_safetensors\_sync & 36524.10 & 35639.24 & 58.23 \\
+ts\_safetensors\_io\_uring & 35889.70 & 35381.76 & 58.44 \\
+ts\_serverlessllm\_default & 42549.58 & 42175.42 & 58.14 \\
+ts\_serverlessllm\_sync & 44371.01 & 43629.93 & 58.13 \\
+ts\_serverlessllm\_io\_uring & 42343.08 & 42129.63 & 58.10 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
 \subsection{TTFT and Steady-State Decode}
 
 The backend effect is strongest for initialisation and TTFT, and much weaker for steady-state decode. Table~\ref{tab:vllm-ttft} shows the best cold TTFT result per model and the margin to the second-best loader.
@@ -249,7 +270,7 @@ Qwen3-32B & 88550.77 & 0.83\% & ts\_safetensors\_default \\
 
 For cold TTFT, \texttt{ts\_safetensors\_default} is strongest on four of the six models, while \texttt{ts\_safetensors\_sync} is strongest on the two smallest models. The margins are small but consistent, which is exactly what one would expect once model loading is only one component of the overall TTFT path.
 
-The steady-state decode results tell a different story. Table~\ref{tab:vllm-decode} summarises the best cold decode result per model. The differences are tiny: the best-vs-second-best margin never exceeds 0.67\% and is usually much smaller.
+The steady-state decode results tell a different story. Table~\ref{tab:vllm-decode} summarises the best cold decode result per model. The differences are tiny: the gap between the best and second-best loader never exceeds 0.67\% and is usually much smaller.
 
 \begin{table}[h]
 \caption{Best cold steady-state decode result by model.}
