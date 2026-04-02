@@ -114,7 +114,7 @@ Table~\ref{tab:design_decisions} documents the primary architectural decisions, 
 \toprule
 \textbf{Decision} & \textbf{Alternative} & \textbf{Rationale} \\
 \midrule
-Rust core engine & Python or C++ & Rust provides memory safety without garbage collector overhead, direct access to io\_uring via tokio-uring, and PyO3 bindings with minimal overhead. Python's GIL limits true parallelism; C++ lacks memory safety guarantees. \\
+Rust core engine & Python or C++ & Rust provides memory safety without garbage collector overhead, direct access to low-level Linux \texttt{io\_uring}, and PyO3 bindings with minimal overhead. Python's GIL limits true parallelism; C++ lacks memory safety guarantees. \\
 \midrule
 Normalised request interface & Backend-specific APIs & A common interface enables fair backend comparison. Without it, each backend would expose a different API and converting between them would introduce measurement artefacts. \\
 \midrule

@@ -11,7 +11,7 @@ The format layer for SafeTensors reads the header from the checkpoint file, pars
 
 The format layer for the ServerlessLLM-style layout reads the index file to build a mapping from tensor names to partition files and offsets. It then produces the same file-offset-length triples as the SafeTensors format, but with the additional constraint that each request may reference a different partition file.
 
-The io\_uring backend uses the \texttt{tokio-uring} crate to interact with io\_uring. On each call, the backend submits a batch of read requests and then polls for completions. Fixed buffers are pre-allocated from a buffer pool and registered with the kernel at startup. This reduces per-request overhead significantly.
+The final io\_uring backend uses the low-level \texttt{io-uring} crate rather than \texttt{tokio-uring}. The shipping design is also different from the early prototype: instead of one shared ring and one issuer thread, the final backend uses multiple worker-owned rings with dynamic planning for chunk size, queue depth, and batching. This reduces the single-thread bottleneck that appeared in the earlier implementation.
 
 The synchronous backend uses standard \texttt{std::fs::File::read\_at} for positional reads. The memory-mapped backend uses the \texttt{MemMap} crate for portable mmap support.
 
@@ -100,9 +100,9 @@ The project was developed on Linux with kernel 6.x, which fully supports io\_uri
 
 The benchmark suite is located in \texttt{bindings/python/benchmarks/}. It uses pytest and pytest-benchmark to run reproducible performance tests.
 
-The fixture system creates synthetic GPT-2-like checkpoints for controlled testing. For real-model testing, the \texttt{download\_model\_if\_missing} fixture downloads checkpoints from HuggingFace on demand and caches them locally.
+The fixture system downloads real HuggingFace checkpoints on demand and caches them locally. The final experiment ladder uses Qwen3 and SmolLM3 checkpoints rather than the earlier small-model development fixtures.
 
-Cache control is implemented using \texttt{os.posix\_fadvise} with \texttt{POSIX\_FADV\_DONTNEED} to drop pages from the Linux page cache before cold-start runs. This ensures that each cold measurement run loads data from disk rather than from cache.
+Cold-cache control in the final experiment flow is handled outside the code using \texttt{sync} followed by \texttt{echo 3 > /proc/sys/vm/drop\_caches}. The earlier in-code cache eviction path based on \texttt{posix\_fadvise} was removed from the final measurement harness.
 
 The vLLM integration benchmarks use a subprocess runner in \texttt{vllm\_runner.py} that spawns vLLM with the custom TensorStore loader and records timing metrics. Three benchmark kinds are supported: load-only measures the time to initialise the model and load its weights; TTFT measures time-to-first-token for a single generated token; steady-state decode measures per-token latency during continued generation.
 
@@ -126,7 +126,7 @@ Early benchmark runs had inadvertently measured warm-cache performance because t
 
 The issue was identified by examining iostat output during benchmark runs and noticing that the storage device was largely idle during supposedly cold runs. The disk utilisation was consistently below 5 percent, which is inconsistent with loading a multi-gigabyte checkpoint from cold storage. This indicated that the data was being served from the page cache rather than from the disk.
 
-The fix was to call \texttt{posix\_fadvise} with \texttt{DONTNEED} on all checkpoint files before each cold measurement run, and to verify using iostat that actual disk activity occurred during the measurement phase. After this fix, disk utilisation during cold runs increased to the expected level, and the performance differences between backends became apparent.
+The final fix was to remove in-code cache eviction and perform cold-cache control manually from the Linux shell using \texttt{sync} and \texttt{drop\_caches}. After this change, cold runs consistently showed real storage activity and the backend differences became interpretable again.
 
 A second issue involved the async vLLM loader path. Initial design documents described an async integration with vLLM that would allow the model loader to issue non-blocking reads. However, investigation of the vLLM source code revealed that the \texttt{DefaultModelLoader} class is entirely synchronous: it yields weights through a generator, and each weight must be fully loaded and returned before the next is requested. There is no async variant of this interface, and no hook that allows the loader to return a coroutine instead of a concrete value.
 
