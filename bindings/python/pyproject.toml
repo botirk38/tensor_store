@@ -2,7 +2,7 @@
 name = "tensor-store-py"
 version = "0.1.0"
 description = "Python bindings for tensor_store (PyTorch-first)"
-requires-python = ">=3.9,<3.13"
+requires-python = ">=3.12"
 readme = "README.md"
 license = "Apache-2.0"
 authors = [{ name = "tensor_store contributors" }]

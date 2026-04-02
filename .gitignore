@@ -1,7 +1,6 @@
 # Rust build artifacts
 /target/
 **/target/
-Cargo.lock
 **/*.rs.bk
 *.pdb
 
@@ -61,7 +60,6 @@ doc/
 *.tmp
 *.bak
 *.swp
-*.log
 
 # Test fixtures (large files)
 fixtures/**
@@ -80,7 +78,29 @@ bindings/python/fixtures/**
 *.svg
 !assets/**/*.svg
 
-vllm/
-!results/h100/vllm
+# Python virtual environments
 bindings/python/.venv/
 bindings/python/benchmarks/.cache/
+scripts/.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Generated Python binding artifacts
+bindings/python/tensor_store_py/*.so
+bindings/python/tensor_store_py/*.pyd
+
+# LaTeX build intermediates (keep only source + final PDF)
+report/final_report/*.aux
+report/final_report/*.blg
+report/final_report/*.out
+report/final_report/*.toc
+report/final_report/*.fdb_latexmk
+report/final_report/*.fls
+report/final_report/*.synctex.gz
+report/final_report/*.log
+
+# vLLM raw benchmark logs (too large for git)
+results/h100/vllm/raw/
