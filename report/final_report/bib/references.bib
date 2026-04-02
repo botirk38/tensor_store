@@ -127,11 +127,57 @@
   url = {https://arxiv.org/abs/2105.13894}
 }
 
-@misc{vllm,
-  title = {vLLM: Easy, Fast, and Cheap LLM Serving with PagedAttention},
-  author = {vLLM Team},
+@inproceedings{pagedattention,
+  author = {Woosuk Kwon and Zhuohan Li and Siyuan Zhuang and Ying Sheng and Lianmin Zheng and Cody Hao Yu and Joseph E. Gonzalez and Hao Zhang and Ion Stoica},
+  title = {Efficient Memory Management for Large Language Model Serving with {PagedAttention}},
+  booktitle = {Proceedings of the 29th ACM Symposium on Operating Systems Principles (SOSP 2023)},
+  year = {2023},
+  publisher = {ACM},
+  doi = {10.1145/3600006.3613165},
+  url = {https://arxiv.org/abs/2309.06180}
+}
+
+@misc{vllm_repo,
+  title = {vLLM Project Repository},
+  author = {vLLM Contributors},
   year = {2024},
-  howpublished = {\url{https://github.com/vllm-project/vllm}}
+  howpublished = {\url{https://github.com/vllm-project/vllm}},
+  note = {GitHub repository}
+}
+
+@inproceedings{orca,
+  author = {Gyeong-In Yu and Joo Seong Jeong and Geon-Woo Kim and Soojeong Kim and Byung-Gon Chun},
+  title = {Orca: A Distributed Serving System for Transformer-Based Generative Models},
+  booktitle = {16th USENIX Symposium on Operating Systems Design and Implementation (OSDI 22)},
+  year = {2022},
+  publisher = {USENIX Association},
+  pages = {521--538},
+  url = {https://www.usenix.org/conference/osdi22/presentation/yu}
+}
+
+@article{tokio_docs,
+  author = {Tokio Contributors},
+  title = {Tokio Documentation},
+  year = {2025},
+  journal = {Docs.rs},
+  url = {https://docs.rs/tokio/latest/tokio/},
+  note = {Core async runtime dependency used by the project}
+}
+
+@misc{io_uring_crate,
+  author = {Tokio Project and io-uring Contributors},
+  title = {io-uring Rust Crate Documentation},
+  year = {2025},
+  howpublished = {\url{https://docs.rs/io-uring/latest/io_uring/}},
+  note = {Implementation reference for the low-level Linux backend}
+}
+
+@misc{tokio_repo,
+  author = {Tokio Contributors},
+  title = {Tokio Project Repository},
+  year = {2025},
+  howpublished = {\url{https://github.com/tokio-rs/tokio}},
+  note = {Implementation ecosystem reference}
 }
 
 @misc{IOURING_DATABASE_GUIDELINES,

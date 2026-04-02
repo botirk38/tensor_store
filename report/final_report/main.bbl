@@ -21,6 +21,18 @@ ServerlessLLM Contributors.
 \newblock \url{https://github.com/ServerlessLLM/ServerlessLLM}, 2024.
 \newblock GitHub repository.
 
+\bibitem{tokio_docs}
+Tokio Contributors.
+\newblock Tokio documentation.
+\newblock {\em Docs.rs}, 2025.
+\newblock Core async runtime dependency used by the project.
+
+\bibitem{tokio_repo}
+Tokio Contributors.
+\newblock Tokio project repository.
+\newblock \url{https://github.com/tokio-rs/tokio}, 2025.
+\newblock Implementation ecosystem reference.
+
 \bibitem{safetensors_docs}
 Hugging Face.
 \newblock Safetensors documentation.
@@ -48,10 +60,24 @@ Michael Kerrisk and contributors.
 Michael Kerrisk and contributors.
 \newblock {\em io\_uring(7) Linux Manual Page}, 2024.
 
+\bibitem{pagedattention}
+Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody~Hao Yu,
+  Joseph~E. Gonzalez, Hao Zhang, and Ion Stoica.
+\newblock Efficient memory management for large language model serving with
+  {PagedAttention}.
+\newblock In {\em Proceedings of the 29th ACM Symposium on Operating Systems
+  Principles (SOSP 2023)}. ACM, 2023.
+
 \bibitem{NVME_SPEC}
 NVM~Express Organization.
 \newblock Nvm express specifications.
 \newblock \url{https://nvmexpress.org/specifications/}, 2024.
+
+\bibitem{io_uring_crate}
+Tokio Project and io-uring Contributors.
+\newblock io-uring rust crate documentation.
+\newblock \url{https://docs.rs/io-uring/latest/io_uring/}, 2025.
+\newblock Implementation reference for the low-level Linux backend.
 
 \bibitem{silva2021snapshot}
 Paulo Silva and Thiago~Emmanuel Pereira.
@@ -64,9 +90,17 @@ British~Computer Society.
 \newblock \url{https://www.bcs.org/media/4411/code-of-conduct.pdf}, 2023.
 \newblock Accessed: 2025.
 
-\bibitem{vllm}
-vLLM Team.
-\newblock vllm: Easy, fast, and cheap llm serving with pagedattention.
+\bibitem{vllm_repo}
+vLLM Contributors.
+\newblock vllm project repository.
 \newblock \url{https://github.com/vllm-project/vllm}, 2024.
+\newblock GitHub repository.
+
+\bibitem{orca}
+Gyeong-In Yu, Joo~Seong Jeong, Geon-Woo Kim, Soojeong Kim, and Byung-Gon Chun.
+\newblock Orca: A distributed serving system for transformer-based generative
+  models.
+\newblock In {\em 16th USENIX Symposium on Operating Systems Design and
+  Implementation (OSDI 22)}, pages 521--538. USENIX Association, 2022.
 
 \end{thebibliography}

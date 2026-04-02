@@ -3,22 +3,20 @@
 
 \section{Overview}
 
-The final results show that checkpoint loading performance is strongly workload-dependent. The clearest practical framing is an adaptive heuristic: use a simple synchronous path for smaller eager loads, and switch to io\_uring once checkpoint size and shard structure become large enough to justify a deeper submission path.
+The final results support one dominant practical conclusion: LLM checkpoint loading should be treated as an adaptive heuristic problem. At the Rust layer, smaller eager loads favour a simpler synchronous path, while larger checkpoints increasingly reward the final multi-worker \texttt{io\_uring} backend. The exact crossover depends on format, but the broad rule is stable. Python and vLLM then show how much of that backend advantage survives once higher-layer overheads are introduced.
 
-At the Rust layer, \texttt{SafeTensors} and \texttt{ServerlessLLM} show different backend preferences. At the Python layer, binding overhead and tensor materialisation partially obscure raw Rust backend gains. At the vLLM layer, the effect of backend choice is strongest for model initialisation and time-to-first-token, while steady-state decode is comparatively insensitive.
-
-These results support the main thesis of this project: the practical goal is to build a workload-aware heuristic for LLM checkpoint loading, not to prove that a single backend should replace all others.
+This chapter therefore presents the evidence in three layers. First, the Rust harness isolates checkpoint loading itself and provides the cleanest backend-attribution results. Second, the Python benchmarks show the cost of crossing the binding and tensor-materialisation boundary. Third, the vLLM matrix evaluates the same checkpoint-loading choices inside a serving stack where model initialisation, TTFT, and decode have different sensitivities to loader choice.
 
 \section{Rust-Layer Backend Results}
 
-The Rust harness provides the cleanest backend-attribution layer because it measures checkpoint loading directly, without Python tensor conversion or serving-engine setup costs. The full cold-cache matrix is stored in \texttt{results/h100/profile/full\_cold\_matrix.tsv}.
+The Rust harness is the authoritative backend-attribution layer because it measures checkpoint loading directly, without Python tensor conversion or serving-engine initialisation costs. The full cold-cache matrix is stored in \texttt{results/h100/profile/full\_cold\_matrix.tsv}.
 
 \subsection{SafeTensors}
 
-Table~\ref{tab:rust-safetensors} summarises the explicit backend comparison for \texttt{SafeTensors}. Two regimes are clear.
+Table~\ref{tab:rust-safetensors} summarises the explicit backend comparison for \texttt{SafeTensors}. Two regimes are immediately visible.
 
 \begin{table}[h]
-\caption{Rust cold-cache \texttt{SafeTensors} results (ms). Best explicit backend highlighted in prose.}
+\caption{Rust cold-cache \texttt{SafeTensors} results (ms).}
 \label{tab:rust-safetensors}
 \centering
 \begin{tabular}{lrrrr}
@@ -35,11 +33,36 @@ Qwen3-32B & 15454.45 & 28763.46 & 12119.50 & 12089.05 \\
 \end{tabular}
 \end{table}
 
-For smaller eager whole-file loads, synchronous loading remains highly effective. On SmolLM3-3B and Qwen3-4B, \texttt{sync} is the strongest explicit backend. The ranking flips on larger multi-shard checkpoints. On Qwen3-8B, Qwen3-14B, and Qwen3-32B, the multi-worker \texttt{io\_uring} backend is the fastest explicit backend. This yields the clearest high-level heuristic in the project: \texttt{sync} for smaller \texttt{SafeTensors} checkpoints and \texttt{io\_uring} for larger ones.
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+width=0.95\textwidth,
+height=7cm,
+ybar,
+bar width=6pt,
+ymode=log,
+ylabel={Cold load time (ms)},
+xlabel={Model},
+symbolic x coords={0.6B,3B,4B,8B,14B,32B},
+xtick=data,
+legend style={at={(0.5,1.18)},anchor=south,legend columns=4},
+ymajorgrids=true,
+]
+\addplot coordinates {(0.6B,555.28) (3B,1331.79) (4B,1820.85) (8B,3880.40) (14B,7030.25) (32B,15454.45)};
+\addplot coordinates {(0.6B,1416.19) (3B,5802.05) (4B,5039.21) (8B,7074.40) (14B,13489.00) (32B,28763.46)};
+\addplot coordinates {(0.6B,333.59) (3B,3722.35) (4B,3083.18) (8B,3844.35) (14B,6138.70) (32B,12119.50)};
+\addplot coordinates {(0.6B,1159.24) (3B,3812.35) (4B,2967.42) (8B,3172.37) (14B,5977.07) (32B,12089.05)};
+\legend{sync,async,default,io\_uring}
+\end{axis}
+\end{tikzpicture}
+\caption{Rust cold-cache \texttt{SafeTensors} crossover behaviour. The main regime change is from \texttt{sync}-favoured smaller models to \texttt{io\_uring}-favoured larger models.}
+\label{fig:rust-safetensors-crossover}
+\end{figure}
 
-The \texttt{async} backend is consistently the weakest choice for \texttt{SafeTensors}. This matches the workload structure: whole-file shard loading benefits from strong bulk parallelism, not from scheduler-heavy fine-grained async orchestration.
+For smaller eager whole-file loads, synchronous loading remains highly effective. On SmolLM3-3B and Qwen3-4B, \texttt{sync} is the strongest explicit backend. The ranking flips on larger multi-shard checkpoints. On Qwen3-8B, Qwen3-14B, and Qwen3-32B, the multi-worker \texttt{io\_uring} backend is the fastest explicit backend. The resulting rule is the clearest high-level heuristic in the project: \texttt{sync} for smaller \texttt{SafeTensors} checkpoints and \texttt{io\_uring} for larger ones.
 
-Repeated five-run anchor measurements reinforce this regime split. For the anchor set, the mean best backend is \texttt{sync} for Qwen3-0.6B and \texttt{io\_uring} for Qwen3-8B and Qwen3-32B.
+The \texttt{async} backend is consistently the weakest choice for \texttt{SafeTensors}. This matches the workload structure: whole-file shard loading benefits from strong bulk parallelism, not from scheduler-heavy fine-grained async orchestration. Repeated five-run anchor measurements reinforce the same split. For the anchor set, the mean best backend is \texttt{sync} for Qwen3-0.6B and \texttt{io\_uring} for Qwen3-8B and Qwen3-32B.
 
 \subsection{ServerlessLLM}
 
@@ -63,15 +86,38 @@ Qwen3-32B & 39822.09 & 29180.89 & 27659.78 & 29779.86 \\
 \end{tabular}
 \end{table}
 
-Here, \texttt{sync} is never the best backend. For smaller and mid-sized range-heavy workloads, \texttt{async} is often strong because grouped and coalesced range reads fit its execution model well. For larger cases, \texttt{io\_uring} becomes competitive or best. For example, Qwen3-14B is fastest with \texttt{io\_uring}, while SmolLM3-3B and Qwen3-4B favour \texttt{async}.
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+width=0.95\textwidth,
+height=7cm,
+ybar,
+bar width=6pt,
+ymode=log,
+ylabel={Cold load time (ms)},
+xlabel={Model},
+symbolic x coords={0.6B,3B,4B,8B,14B,32B},
+xtick=data,
+legend style={at={(0.5,1.18)},anchor=south,legend columns=4},
+ymajorgrids=true,
+]
+\addplot coordinates {(0.6B,1645.06) (3B,3941.88) (4B,5137.72) (8B,11048.40) (14B,18661.25) (32B,39822.09)};
+\addplot coordinates {(0.6B,1471.34) (3B,2391.24) (4B,3504.25) (8B,9463.37) (14B,16139.08) (32B,29180.89)};
+\addplot coordinates {(0.6B,1432.25) (3B,3182.28) (4B,3551.82) (8B,7589.47) (14B,13422.94) (32B,27659.78)};
+\addplot coordinates {(0.6B,1387.57) (3B,3091.49) (4B,3727.14) (8B,9043.51) (14B,13257.23) (32B,29779.86)};
+\legend{sync,async,default,io\_uring}
+\end{axis}
+\end{tikzpicture}
+\caption{Rust cold-cache \texttt{ServerlessLLM} crossover behaviour. The range-heavy layout shifts the strong contenders from \texttt{sync} toward \texttt{async} and \texttt{io\_uring}.}
+\label{fig:rust-serverless-crossover}
+\end{figure}
 
-The key result is not that one backend dominates, but that the partitioned layout changes the ranking. This is exactly the kind of workload sensitivity that motivates an adaptive \texttt{default} policy built around workload-aware heuristics rather than fixed backend dogma.
+Here, \texttt{sync} is never the best backend. For smaller and mid-sized range-heavy workloads, \texttt{async} is often strong because grouped and coalesced range reads fit its execution model well. For larger cases, \texttt{io\_uring} becomes competitive or best. For example, Qwen3-14B is fastest with \texttt{io\_uring}, while SmolLM3-3B and Qwen3-4B favour \texttt{async}. The partitioned layout therefore changes the ranking and makes a fixed backend recommendation less defensible.
 
 \subsection{Selector Behaviour}
 
-The final selector is not perfect on every single Rust matrix row, but it is materially better than the earlier cost-model-based selector. On the Rust matrix, \texttt{default} is exactly best for Qwen3-8B and Qwen3-32B in \texttt{ServerlessLLM}, and very close to best for the large \texttt{SafeTensors} cases. The remaining misses are concentrated around the medium-size crossover region, especially SmolLM3-3B and Qwen3-4B.
-
-The important point is that the selector now follows the correct \emph{regimes}: smaller \texttt{SafeTensors} loads lean toward \texttt{sync}; larger \texttt{SafeTensors} loads lean toward \texttt{io\_uring}; \texttt{ServerlessLLM} switches between \texttt{async} and \texttt{io\_uring} depending on workload size and structure. In other words, the final selector behaves like a practical checkpoint-loading heuristic rather than a static backend preference.
+The final selector is not perfect on every single Rust matrix row, but it is materially better than the earlier cost-model-based selector. On the Rust matrix, \texttt{default} is exactly best for Qwen3-8B and Qwen3-32B in \texttt{ServerlessLLM}, and very close to best for the large \texttt{SafeTensors} cases. The remaining misses are concentrated around the medium-size crossover region, especially SmolLM3-3B and Qwen3-4B. The important point is that the selector now follows the correct \emph{regimes}: smaller \texttt{SafeTensors} loads lean toward \texttt{sync}; larger \texttt{SafeTensors} loads lean toward \texttt{io\_uring}; \texttt{ServerlessLLM} switches between \texttt{async} and \texttt{io\_uring} depending on workload size and structure.
 
 \section{Python Binding Results}
 
@@ -81,37 +127,54 @@ Python benchmarks were collected on Qwen/Qwen3-8B to quantify user-facing overhe
 
 The most important Python result is that binding engineering mattered. Replacing per-call runtime setup with a shared Tokio runtime and reducing repeated Torch conversion work materially improved the public \texttt{default} API.
 
-For \texttt{SafeTensors} on Qwen3-8B:
+\begin{table}[h]
+\caption{Python eager-load times for Qwen3-8B before and after optimisation (seconds).}
+\label{tab:python-optimisation}
+\centering
+\begin{tabular}{lrrr}
+\toprule
+Case & Early default & Post-binding optimisation & Post-selector redesign \\
+\midrule
+SafeTensors default & 15.8831 & 14.5451 & 11.5498 \\
+ServerlessLLM default & 22.4547 & 20.5008 & 18.4518 \\
+\bottomrule
+\end{tabular}
+\end{table}
 
-\begin{itemize}
-\item pre-optimisation \texttt{default}: 15.8831~s
-\item post-binding-optimisation \texttt{default}: 14.5451~s
-\item post-selector-redesign \texttt{default}: 11.5498~s
-\end{itemize}
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+width=0.85\textwidth,
+height=6.5cm,
+ybar,
+bar width=12pt,
+ylabel={Time (s)},
+symbolic x coords={early,binding-opt,selector-redesign},
+xtick=data,
+legend style={at={(0.5,1.12)},anchor=south,legend columns=2},
+ymajorgrids=true,
+]
+\addplot coordinates {(early,15.8831) (binding-opt,14.5451) (selector-redesign,11.5498)};
+\addplot coordinates {(early,22.4547) (binding-opt,20.5008) (selector-redesign,18.4518)};
+\legend{SafeTensors default,ServerlessLLM default}
+\end{axis}
+\end{tikzpicture}
+\caption{Python \texttt{default} eager-load times on Qwen3-8B before and after binding and selector improvements.}
+\label{fig:python-default-improvement}
+\end{figure}
 
-This is a 20.6\% reduction between the post-optimisation and post-selector runs, and a much larger improvement relative to the earliest Python baseline.
-
-For \texttt{ServerlessLLM} on Qwen3-8B:
-
-\begin{itemize}
-\item early \texttt{default}: 22.4547~s
-\item post-binding-optimisation \texttt{default}: 20.5008~s
-\item post-selector-redesign \texttt{default}: 18.4518~s
-\end{itemize}
-
-This is a 10.0\% reduction between the post-optimisation and post-selector runs.
+For \texttt{SafeTensors} on Qwen3-8B, the \texttt{default} path improves from 15.8831~s to 11.5498~s, a 27.3\% reduction relative to the early Python baseline and a 20.6\% reduction relative to the post-binding baseline. For \texttt{ServerlessLLM}, the same sequence improves \texttt{default} from 22.4547~s to 18.4518~s, an overall reduction of 17.8\% and a 10.0\% reduction relative to the post-binding baseline.
 
 \subsection{Python Layer Interpretation}
 
-The Python numbers are much larger than the Rust-only numbers because eager loading at the binding layer includes substantial tensor materialisation and Python object construction. This is especially visible in the \texttt{SafeTensors} benchmark, where native \texttt{safetensors} loading remains much faster than the fully materialised \texttt{tensor\_store} eager paths.
-
-The key conclusion is that Python is not a transparent pass-through layer. Backend improvements matter, but they are filtered through the cost of converting checkpoint contents into Torch tensors and Python dictionaries. That is why the binding optimisations were necessary before the Python layer could reflect the improved Rust backends more faithfully.
+The Python numbers are much larger than the Rust-only numbers because eager loading at the binding layer includes substantial tensor materialisation and Python object construction. This is especially visible in the \texttt{SafeTensors} benchmark, where native \texttt{safetensors} loading remains much faster than the fully materialised \texttt{tensor\_store} eager paths. The key conclusion is that Python is not a transparent pass-through layer. Backend improvements matter, but they are filtered through the cost of converting checkpoint contents into Torch tensors and Python dictionaries.
 
 \section{vLLM Results}
 
 The final vLLM matrix completed successfully across all six models, all benchmark loaders, warm and cold cache conditions, and all three benchmark kinds. The completed summary is stored in \texttt{results/h100/vllm/full\_matrix.tsv}. The final matrix contains 672 successful rows and no failures.
 
-\subsection{Load-Only Results}
+\subsection{Cold Load-Only Results}
 
 For cold \texttt{load\_only}, the best loader varies with model size. Table~\ref{tab:vllm-load-only} shows the strongest loader in the final cold-load-only configuration.
 
@@ -133,19 +196,84 @@ Qwen3-32B & 88164.00 & ts\_safetensors\_io\_uring \\
 \end{tabular}
 \end{table}
 
-Two observations stand out. First, the best vLLM loader is usually from the \texttt{SafeTensors} family rather than the \texttt{ServerlessLLM} family. Second, the explicit \texttt{io\_uring} path becomes valuable again at the larger end of the ladder. It is the best \texttt{load\_only} choice for Qwen3-14B and Qwen3-32B.
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+width=0.95\textwidth,
+height=7cm,
+ybar,
+bar width=7pt,
+ymode=log,
+ylabel={Cold init time (ms)},
+xlabel={Model},
+symbolic x coords={0.6B,3B,4B,8B,14B,32B},
+xtick=data,
+legend style={at={(0.5,1.18)},anchor=south,legend columns=4},
+ymajorgrids=true,
+]
+\addplot coordinates {(0.6B,20577.94) (3B,27333.96) (4B,28475.27) (8B,35555.79) (14B,47792.01) (32B,88199.98)};
+\addplot coordinates {(0.6B,20417.42) (3B,27767.25) (4B,28478.77) (8B,36524.10) (14B,49435.10) (32B,92421.39)};
+\addplot coordinates {(0.6B,20867.14) (3B,29992.67) (4B,29727.16) (8B,35889.70) (14B,47751.38) (32B,88164.00)};
+\addplot coordinates {(0.6B,21191.06) (3B,29364.71) (4B,31792.30) (8B,42343.08) (14B,60669.99) (32B,111717.78)};
+\legend{ST default,ST sync,ST io\_uring,SLLM default}
+\end{axis}
+\end{tikzpicture}
+\caption{Cold vLLM \texttt{load\_only} times for the strongest loader families. SafeTensors loaders dominate, and \texttt{io\_uring} becomes best at the large end of the ladder.}
+\label{fig:vllm-load-only}
+\end{figure}
+
+Two observations stand out. First, the best vLLM loader is usually from the \texttt{SafeTensors} family rather than the \texttt{ServerlessLLM} family. Second, the explicit \texttt{io\_uring} path becomes valuable again at the larger end of the ladder. It is the best \texttt{load\_only} choice for Qwen3-14B and Qwen3-32B, albeit by a narrow margin over the adaptive \texttt{default} path (0.09\% on 14B and 0.04\% on 32B). For smaller models, the best loader is usually \texttt{sync} or \texttt{default}, which mirrors the core Rust heuristic story.
 
 \subsection{TTFT and Steady-State Decode}
 
-The backend effect is strongest for initialisation and TTFT, and much weaker for steady-state decode. This is exactly what one would expect: the loading backend can change how quickly weights become resident, but once the model is fully loaded, decode throughput is dominated by the GPU compute path.
+The backend effect is strongest for initialisation and TTFT, and much weaker for steady-state decode. Table~\ref{tab:vllm-ttft} shows the best cold TTFT result per model and the margin to the second-best loader.
 
-For cold TTFT, \texttt{ts\_safetensors\_default} is the strongest loader for Qwen3-4B, Qwen3-8B, and Qwen3-14B, while \texttt{ts\_safetensors\_sync} remains best for Qwen3-0.6B and SmolLM3-3B. For steady-state decode, differences are much smaller and the winning loader varies more irregularly. This confirms that backend choice is primarily a cold-start and initialisation problem rather than a decode-throughput problem.
+\begin{table}[h]
+\caption{Best cold TTFT result by model, with margin to second-best loader.}
+\label{tab:vllm-ttft}
+\centering
+\begin{tabular}{lrrl}
+\toprule
+Model & Best TTFT (ms) & Margin & Best loader \\
+\midrule
+Qwen3-0.6B & 20272.60 & 0.21\% & ts\_safetensors\_sync \\
+SmolLM3-3B & 27463.41 & 1.22\% & ts\_safetensors\_sync \\
+Qwen3-4B & 28529.77 & 0.26\% & ts\_safetensors\_default \\
+Qwen3-8B & 35099.84 & 0.80\% & ts\_safetensors\_default \\
+Qwen3-14B & 48201.50 & 1.59\% & ts\_safetensors\_default \\
+Qwen3-32B & 88550.77 & 0.83\% & ts\_safetensors\_default \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+For cold TTFT, \texttt{ts\_safetensors\_default} is strongest on four of the six models, while \texttt{ts\_safetensors\_sync} is strongest on the two smallest models. The margins are small but consistent, which is exactly what one would expect once model loading is only one component of the overall TTFT path.
+
+The steady-state decode results tell a different story. Table~\ref{tab:vllm-decode} summarises the best cold decode result per model. The differences are tiny: the best-vs-second-best margin never exceeds 0.67\% and is usually much smaller.
+
+\begin{table}[h]
+\caption{Best cold steady-state decode result by model.}
+\label{tab:vllm-decode}
+\centering
+\begin{tabular}{lrrl}
+\toprule
+Model & Best decode (ms) & Margin & Best loader \\
+\midrule
+Qwen3-0.6B & 17.21 & 0.67\% & native \\
+SmolLM3-3B & 35.91 & 0.39\% & ts\_serverlessllm\_default \\
+Qwen3-4B & 39.02 & 0.06\% & ts\_safetensors\_io\_uring \\
+Qwen3-8B & 58.10 & 0.05\% & ts\_serverlessllm\_io\_uring \\
+Qwen3-14B & 94.21 & 0.19\% & ts\_safetensors\_default \\
+Qwen3-32B & 194.20 & 0.02\% & native \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+This confirms that backend choice is primarily a cold-start and model-initialisation problem rather than a decode-throughput problem. Once the model is resident, GPU compute dominates and the loader's influence becomes marginal.
 
 \subsection{Large-Model Feasibility}
 
-The 14B and 32B models initially failed in vLLM. These were not backend failures. The raw logs showed that the benchmark harness was too conservative in its vLLM memory budget, leaving insufficient KV-cache allocation headroom. After increasing the vLLM memory budget and reducing \texttt{max\_model\_len}, all previously failing rows succeeded.
-
-This matters for interpretation. The initial failures were a serving-harness configuration issue, not evidence that the checkpoint backends could not support the large models.
+The 14B and 32B models initially failed in vLLM. These were not backend failures. The raw logs showed that the benchmark harness was too conservative in its vLLM memory budget, leaving insufficient KV-cache allocation headroom. After increasing the vLLM memory budget and reducing \texttt{max\_model\_len}, all previously failing rows succeeded. This matters for interpretation: the initial failures were a serving-harness configuration issue, not evidence that the checkpoint backends could not support the large models.
 
 \section{Negative and Turnaround Results}
 

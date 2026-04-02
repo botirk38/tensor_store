@@ -8,7 +8,7 @@ Large language models are increasingly deployed in serverless and multi-tenant i
 
 Modern NVMe storage devices provide aggregate bandwidth measured in gigabytes per second. Despite this, checkpoint loading performance in practice frequently falls well below hardware limits. This gap suggests that the bottleneck is not the storage medium itself but the path taken by loading requests through the operating system and across the software stack. In particular, synchronous I/O submission models can limit the depth of outstanding requests that a loader can maintain, preventing NVMe devices from fully exploiting their internal parallelism.
 
-The core problem this project investigates is whether alternative I/O submission strategies, specifically Linux io\_uring, can improve checkpoint loading performance for LLM inference systems in a meaningful and reproducible way.
+The core problem this project investigates is how an LLM checkpoint loader should choose between alternative I/O submission strategies in a meaningful and reproducible way. The project begins from the observation that Linux io\_uring is a promising candidate for large checkpoints, but the final goal is broader: to derive an adaptive heuristic for checkpoint loading rather than to champion one backend in every case.
 
 \section{Objectives}
 \addcontentsline{toc}{section}{Objectives}
@@ -17,20 +17,20 @@ The primary objectives of this project are as follows.
 
 First, the project builds a unified checkpoint loading framework called TensorStore that supports multiple I/O backends and checkpoint formats under a consistent interface. This enables controlled comparison of submission strategies using identical byte-range workloads.
 
-Second, the project implements and evaluates synchronous POSIX I/O and Linux io\_uring as the initial backend pair. These represent the two fundamental submission models available on Linux: blocking calls with per-request thread blocking, and shared-ring asynchronous submission with batched completion.
+Second, the project implements and evaluates synchronous POSIX I/O, Tokio-based async loading, and Linux io\_uring under a common loading interface. These represent the main eager-loading execution models available in the project: blocking calls with thread-parallelism, runtime-managed async scheduling, and low-level ring-based submission.
 
 Third, the project develops a reproducible benchmarking methodology that measures checkpoint loading under conditions representative of real serverless inference systems, including true cold-start evaluation where the operating system page cache does not cache checkpoint data between runs.
 
 Fourth, the project exposes the loading framework through Python bindings so that it can be evaluated within representative inference workflows, including integration with vLLM as a concrete serving engine example.
 
-Fifth, the project analyses results to identify where performance is gained or lost, and to draw out design principles for checkpoint format designers and inference system architects.
+Fifth, the project analyses results to identify where performance is gained or lost, and to draw out design principles for checkpoint format designers and inference system architects. The intended final output is an adaptive loading heuristic, not just a backend ranking table.
 
 \section{Scope}
 \addcontentsline{toc}{section}{Scope}
 
 This project focuses on checkpoint loading from NVMe storage on Linux. The primary checkpoint formats examined are SafeTensors and a partitioned ServerlessLLM-style layout. The primary I/O backends are synchronous POSIX I/O and Linux io\_uring. Memory-mapped loading is also supported as a third backend option representing lazy on-demand page faulting. Python bindings are provided to enable integration testing.
 
-The project does not attempt to build a full inference runtime, optimise model execution, or evaluate GPU-direct storage paths. These are legitimate extensions but fall outside the scope of the present work.
+The project does not attempt to build a full inference runtime, optimise model execution kernels, or evaluate GPU-direct storage paths. These are legitimate extensions but fall outside the scope of the present work.
 
 \section{Evolution from the Interim Plan}
 \addcontentsline{toc}{section}{Evolution from the Interim Plan}
@@ -39,7 +39,7 @@ The interim report established the initial motivation and a preliminary evaluati
 
 During the subsequent development period, several changes were made to the project scope and direction. The benchmarking methodology was revised to use true cold-start conditions, addressing an initial flaw where cached data had obscured the actual loading cost. The project expanded to include Python bindings and vLLM integration, which provided a more realistic integration context than standalone microbenchmarks alone. A partitioned ServerlessLLM-style format was added to evaluate the effect of checkpoint layout on backend behaviour. An async vLLM loader path was prototyped but later removed when investigation confirmed that vLLM exposes no async model loading interface at the Python boundary, making the async path an artificial bridge rather than a genuine integration point.
 
-These changes reflect a shift from a narrow I/O mechanism comparison towards a broader systems artefact evaluation. The final project is better characterised as an examination of checkpoint loading as a full-stack systems problem rather than solely as a low-level I/O comparison.
+These changes reflect a shift from a narrow I/O mechanism comparison towards a broader systems artefact evaluation. The final project is better characterised as an examination of checkpoint loading as an adaptive systems problem rather than solely as a low-level I/O comparison.
 
 \section{Planning and Time-scale}
 \addcontentsline{toc}{section}{Planning and Time-scale}

@@ -3,139 +3,97 @@
 
 \section{Rust Core Implementation}
 
-The Rust core of TensorStore is implemented in the \texttt{tensor-store} crate. It provides the format parsers, backend implementations, and the normalised request interface.
+The Rust core of TensorStore is implemented in the main crate and provides four kinds of functionality: format parsing, backend execution, conversion between formats, and command-line tooling for profiling and conversion. The implementation is organised so that format logic, backend logic, and benchmark logic remain distinct.
 
-The crate is structured into three modules. The \texttt{format} module contains the SafeTensors and ServerlessLLM format parsers. The \texttt{backend} module contains the synchronous, memory-mapped, and io\_uring backend implementations. The \texttt{api} module exposes the public interface used by the Python bindings.
+The format layer contains the \texttt{SafeTensors} and \texttt{ServerlessLLM} implementations. The backend layer contains the synchronous, async, io\_uring, and mmap-backed loading paths. The converter layer provides SafeTensors-to-ServerlessLLM conversion. The CLI binaries provide small operational tools for conversion, profiling, and demonstration.
 
-The format layer for SafeTensors reads the header from the checkpoint file, parses each tensor entry, and produces a sequence of file-offset-length triples. The header parsing is straightforward because SafeTensors stores the header length in the first eight bytes of the file, allowing direct seeking to the header region.
+\section{Backend Implementation}
 
-The format layer for the ServerlessLLM-style layout reads the index file to build a mapping from tensor names to partition files and offsets. It then produces the same file-offset-length triples as the SafeTensors format, but with the additional constraint that each request may reference a different partition file.
+The final backend implementation reflects the main engineering lessons of the project.
 
-The final io\_uring backend uses the low-level \texttt{io-uring} crate rather than \texttt{tokio-uring}. The shipping design is also different from the early prototype: instead of one shared ring and one issuer thread, the final backend uses multiple worker-owned rings with dynamic planning for chunk size, queue depth, and batching. This reduces the single-thread bottleneck that appeared in the earlier implementation.
+\subsection{Synchronous Backend}
 
-The synchronous backend uses standard \texttt{std::fs::File::read\_at} for positional reads. The memory-mapped backend uses the \texttt{MemMap} crate for portable mmap support.
+The synchronous backend uses blocking file I/O but does not stay purely serial. Large whole-file loads are chunked and executed with host-side parallelism. Range-batch requests use coalescing and dynamic concurrency. This design is intentionally stronger than a naive one-thread baseline, because the project aims to compare practical backend implementations rather than caricatures.
+
+\subsection{Async Backend}
+
+The async backend is implemented on top of Tokio. The final version groups work by file, limits unnecessary task fanout, and uses coalesced range-batch execution where appropriate. This backend proved particularly relevant for range-heavy \texttt{ServerlessLLM} workloads, where grouped per-file execution is often a good fit for the request structure.
+
+\subsection{io\_uring Backend}
+
+The final \texttt{io\_uring} backend uses the low-level \texttt{io-uring} crate~\cite{io_uring_crate} rather than \texttt{tokio-uring}. The most important implementation change was architectural: the early prototype used one shared ring, but the final backend uses multiple worker-owned rings with lazy ring initialisation, dynamic ring sizing, dynamic chunk planning, and dynamic in-flight depth. This redesign was driven by profiling evidence rather than by a priori preference.
+
+This matters because the final results depend on the final architecture, not just on the backend family label. A poorly designed \texttt{io\_uring} backend underperformed badly; a better designed one became competitive or best in several important regimes.
+
+\subsection{Buffer Management}
+
+The implementation uses pooled buffers for the eager-loading backends, plus aligned buffers where direct I/O makes sense. Buffer pooling reduces repeated allocation pressure in hot loading paths. This design was preserved deliberately even as other parts of the system were cleaned up, because it reflects a real implementation concern rather than a benchmark-only optimisation.
+
+\section{Format Implementations}
+
+The \texttt{SafeTensors} model loader discovers shard files, parses the header metadata, and loads tensors through the selected backend. The final selector does not use an opaque synthetic cost model; instead, it uses a small workload-aware regime decision driven primarily by shard count and total bytes.
+
+The \texttt{ServerlessLLM} model loader reads the partition index, groups and coalesces range requests, and then loads the required data through the selected backend. The selector is again workload-aware, but the relevant signals differ because the partitioned format produces a range-heavy workload.
+
+The converter from \texttt{SafeTensors} to \texttt{ServerlessLLM} was also an important implementation focus. Earlier converter iterations reloaded whole files repeatedly and did not always respect planned destination offsets. The final converter writes partition files correctly and is covered by roundtrip and failure-path tests.
 
 \section{Python Bindings}
 
-The Python bindings are implemented in \texttt{bindings/python/rust\_ext/src/}. Each public Rust function is exposed as a PyO3 wrapper.
+The Python bindings are implemented in \texttt{bindings/python/rust\_ext/src/}. Public Rust functions are exposed through PyO3 wrappers.
 
-For synchronous loading, the Rust function is called directly from Python and blocks until the result is returned. The GIL is released during I/O via \texttt{py.allow\_threads()} to avoid blocking other Python threads.
+For synchronous loading, the Rust function is called directly and the GIL is released during I/O using \texttt{py.allow\_threads()}. For mmap-backed lazy access, Rust handle types are wrapped as Python classes. For async loading, the bindings run the Rust async path on a shared Tokio runtime. This avoids repeatedly constructing a runtime for each call and was one of the practical optimisations that improved Python benchmark results.
 
-For memory-mapped loading, the \texttt{MmapModel} type from the Rust core is wrapped as a Python class. Accessing a tensor triggers a page fault and loads the relevant pages on demand.
+The binding layer also required optimisation of Torch conversion. The final implementation reuses a shared runtime, reduces repeated dtype lookups, and cuts down repeated conversion work when materialising tensors into Python dictionaries.
 
-For asynchronous loading, the bindings execute the Rust async path on a shared Tokio runtime and expose it through the Python API. This avoids repeatedly constructing a runtime for each call and was one of the practical binding optimisations applied during the project. The async interface is designed for use in async Python applications, but it is not used in the vLLM integration path because vLLM's model loader interface remains synchronous.
+\section{vLLM Loader Integration}
 
-Listing~\ref{fig:backend_interface} shows the core Rust interface for loading a checkpoint synchronously.
+The vLLM integration lives in the Python benchmark layer rather than in the public end-user API. This is intentional. The public Python API keeps \texttt{io\_uring} behind \texttt{default}, while the benchmark layer exposes explicit loader paths so that the serving experiments can isolate loader behaviour.
 
-\begin{figure}[h]
-\begin{lstlisting}[language=C, numbers=none]
-pub fn load_safetensors_sync(
-    path: PathBuf,
-    framework: &str,
-    device: &str,
-) -> PyResult<PyObject> {
-    validate_path_exists(&path)?;
-    let handle: Model = py
-        .allow_threads(|| safetensors::Model::load_sync(path_ref))
-        .map_err(map_reader_error)?;
-    let result = builtins.getattr("dict")?.call0()?;
-    for k in handle.tensor_names() {
-        let view = handle.tensor(k).map_err(map_reader_error)?;
-        let tensor = convert_tensor(py, framework, view, device)?;
-        result.call_method1("__setitem__", (&k, tensor))?;
-    }
-    Ok(result.into())
-}
-\end{lstlisting}
-\caption{Core Rust backend interface for synchronous checkpoint loading.}
-\label{fig:backend_interface}
-\end{figure}
+The vLLM loader path reuses vLLM's normal checkpoint-preparation logic and substitutes the TensorStore-backed loading step. In the final benchmark matrix, this loader family was tested across all six fixtures, warm and cold cache conditions, and all three benchmark kinds.
 
 \section{Module Structure}
 
-The Rust crate structure is as follows:
+The final codebase is structured around a small number of high-value modules rather than a large number of benchmark-specific fragments.
 
 \begin{itemize}
-\item \texttt{src/format/safetensors.rs} --- SafeTensors format parser
-\item \texttt{src/format/serverlessllm.rs} --- ServerlessLLM index and partition reader
-\item \texttt{src/backend/sync.rs} --- synchronous POSIX backend
-\item \texttt{src/backend/mmap.rs} --- memory-mapped backend
-\item \texttt{src/backend/iouring.rs} --- io\_uring backend
-\item \texttt{src/api/mod.rs} --- public API definitions
-\item \texttt{src/api/safetensors.rs} --- PyO3 bindings for SafeTensors
-\item \texttt{src/api/serverlessllm.rs} --- PyO3 bindings for ServerlessLLM
+\item \texttt{src/backends/} --- core eager-loading implementations and shared planning logic
+\item \texttt{src/formats/safetensors/} --- SafeTensors loaders and serializer
+\item \texttt{src/formats/serverlessllm/} --- ServerlessLLM loaders, index, serializer, and helpers
+\item \texttt{src/converters/} --- format conversion logic
+\item \texttt{src/bin/convert/} --- conversion CLI
+\item \texttt{src/bin/profile/} --- profiling CLI used for the Rust benchmark matrices
+\item \texttt{bindings/python/rust\_ext/} --- PyO3 binding layer
+\item \texttt{bindings/python/benchmarks/} --- Python and vLLM benchmark harnesses
 \end{itemize}
 
-The Python package structure is:
+This structure matters to the software-engineering story of the project. One of the later cleanup phases removed many one-off scripts and stale interfaces so that the final submission would reflect the actual completed experiment flow rather than every intermediate iteration.
 
-\begin{itemize}
-\item \texttt{bench\_safetensors.py} --- SafeTensors benchmarks
-\item \texttt{bench\_serverlessllm.py} --- ServerlessLLM benchmarks
-\item \texttt{bench\_vllm.py} --- vLLM integration benchmarks
-\item \texttt{vllm\_loaders.py} --- custom vLLM loader implementations
-\item \texttt{fixtures.py} --- pytest fixtures for checkpoint management
-\item \texttt{vllm\_runner.py} --- subprocess runner for vLLM benchmarks
-\end{itemize}
+\section{Build and Validation Process}
 
-\section{Building the Project}
+The Rust crate is built with Cargo, and the Python bindings are built with \texttt{maturin}. The final validation process used three layers of checking.
 
-The Rust crate is built with Cargo. A \texttt{Makefile} in the repository root automates the build process:
+\begin{enumerate}
+\item Rust correctness and linting: \texttt{cargo test}, \texttt{cargo clippy}, and Linux cross-build checks.
+\item Python binding correctness: unit and integration tests for the public binding surface.
+\item Benchmark-level validation: Rust matrices, Python benchmarks, and the completed vLLM matrix saved under \texttt{results/h100/}.
+\end{enumerate}
 
-\begin{lstlisting}[language=bash, numbers=none]
-# Build Rust extension
-cargo build --release
-
-# Build Python bindings
-cd bindings/python && maturin develop
-
-# Run tests
-cargo test && pytest benchmarks/
-\end{lstlisting}
-
-The Python bindings use \texttt{maturin} for building. The \texttt{maturin develop} command compiles the Rust crate and installs the resulting Python package in editable mode, so that changes to the Rust code are immediately reflected in the Python environment without requiring a reinstall.
-
-The project was developed on Linux with kernel 6.x, which fully supports io\_uring. The io\_uring backend checks at runtime whether io\_uring is available and falls back to the synchronous backend if it is not.
-
-\section{Benchmark Infrastructure}
-
-The benchmark suite is located in \texttt{bindings/python/benchmarks/}. It uses pytest and pytest-benchmark to run reproducible performance tests.
-
-The fixture system downloads real HuggingFace checkpoints on demand and caches them locally. The final experiment ladder uses Qwen3 and SmolLM3 checkpoints rather than the earlier small-model development fixtures.
-
-Cold-cache control in the final experiment flow is handled outside the code using \texttt{sync} followed by \texttt{echo 3 > /proc/sys/vm/drop\_caches}. The earlier in-code cache eviction path based on \texttt{posix\_fadvise} was removed from the final measurement harness.
-
-The vLLM integration benchmarks use a subprocess runner in \texttt{vllm\_runner.py} that spawns vLLM with the custom TensorStore loader and records timing metrics. Three benchmark kinds are supported: load-only measures the time to initialise the model and load its weights; TTFT measures time-to-first-token for a single generated token; steady-state decode measures per-token latency during continued generation.
+This layered validation strategy was important because the project's contribution spans more than one execution layer. A fast backend alone is not enough if the binding layer or serving integration quietly nullifies the gain.
 
 \section{Testing Strategy}
 
-The implementation uses three testing layers.
+The final testing strategy combines unit, integration, and benchmark validation.
 
-Unit tests cover format parsing in Rust. These tests use small synthetic checkpoint files created in-memory and verify that the format layer produces the correct sequence of read requests. The Rust crate uses \texttt{cargo test} to run these tests.
+Rust unit tests cover format parsing, batching/coalescing logic, selector boundaries, backend parity, converter error cases, and converter roundtrips. Linux-specific correctness tests were added for the \texttt{io\_uring} backend, and additional parity tests were added for the synchronous and async backends. CLI smoke coverage is included inline in the binaries so that help surfaces and basic error cases are also tested.
 
-Integration tests cover the Python bindings. These tests load real checkpoints downloaded from HuggingFace and verify that the loaded tensors have the correct shape and dtype. These tests do not measure performance; they only verify correctness.
+Python unit tests cover the public binding API, including Linux-only \texttt{io\_uring} surfaces where appropriate. Additional tests were added for the vLLM benchmark loader dispatch logic to ensure that the serving benchmarks were not relying on untested glue code.
 
-Correctness tests verify tensor data integrity after loading. After each backend loads a checkpoint, the test compares the resulting tensor dictionary against a reference dictionary produced by the HuggingFace \texttt{safetensors} library. Any discrepancy in shape, dtype, or numeric value is treated as a test failure.
+The completed benchmark artifacts provide a third layer of validation. The project therefore treats benchmarking not only as performance evaluation but also as a form of high-level system validation.
 
-The Rust crate uses \texttt{clippy} for linting and \texttt{cargo fmt} for formatting compliance. These tools are run as part of the CI pipeline to enforce code quality.
+\section{Implementation Problems and Resolutions}
 
-\section{Correctness Issues and Resolutions}
+Two implementation problems were especially important.
 
-One significant correctness issue was discovered and resolved during development.
+The first was cold-cache measurement drift. Early runs were polluted by page-cache reuse, which made supposedly cold runs behave like warm runs. The final resolution was to remove in-code cache eviction and adopt an explicit Linux-side cold-cache procedure.
 
-Early benchmark runs had inadvertently measured warm-cache performance because the page cache had retained checkpoint pages from previous runs. This produced misleading results that appeared to show little difference between backends, which was inconsistent with the known performance characteristics of io\_uring on NVMe storage.
-
-The issue was identified by examining iostat output during benchmark runs and noticing that the storage device was largely idle during supposedly cold runs. The disk utilisation was consistently below 5 percent, which is inconsistent with loading a multi-gigabyte checkpoint from cold storage. This indicated that the data was being served from the page cache rather than from the disk.
-
-The final fix was to remove in-code cache eviction and perform cold-cache control manually from the Linux shell using \texttt{sync} and \texttt{drop\_caches}. After this change, cold runs consistently showed real storage activity and the backend differences became interpretable again.
-
-A second issue involved the async vLLM loader path. Initial design documents described an async integration with vLLM that would allow the model loader to issue non-blocking reads. However, investigation of the vLLM source code revealed that the \texttt{DefaultModelLoader} class is entirely synchronous: it yields weights through a generator, and each weight must be fully loaded and returned before the next is requested. There is no async variant of this interface, and no hook that allows the loader to return a coroutine instead of a concrete value.
-
-An attempt was made to work around this by running a Tokio event loop inside the synchronous loader callback, manually polling the event loop to completion before returning each weight. This approach was fragile because it required the event loop to be driven to completion inside a synchronous context, it did not interoperate with vLLM's existing threading model, and it would break if vLLM changed its loader implementation. After confirming that no stable async loader interface exists in vLLM, the async vLLM path was removed. The async Python interface is retained for non-vLLM use cases.
-
-\section{vLLM Loader Path}
-
-The vLLM integration uses a custom loader registered under the name \texttt{tensor\_store}. This loader extends \texttt{DefaultModelLoader} and overrides the weight-loading method. It reads checkpoint metadata using the standard vLLM preparation logic, then routes each weight file through the TensorStore backend selected in the loader configuration.
-
-The loader supports the \texttt{sync} and \texttt{mmap} backends. The async backend is not supported in the vLLM path because vLLM's loader interface is synchronous and does not provide an async hook. This was confirmed by examining the vLLM source code (\texttt{base\_loader.py}), which defines only synchronous methods.
-
-The loader is registered via \texttt{register\_model\_loader} and is invoked automatically when vLLM starts with a model whose type is configured to use the \texttt{tensor\_store} loader.
+The second was the early single-ring \texttt{io\_uring} architecture. Profiling showed that the backend was underutilising the machine and spending too much time in one submission/completion path. The redesign to multi-worker rings changed both the performance and the interpretation of the entire project. It is therefore not just an implementation detail, but one of the central pieces of technical decision-making in the report.
