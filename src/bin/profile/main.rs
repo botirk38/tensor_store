@@ -133,3 +133,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn clap_help_contains_summary() {
+        let mut cmd = Cli::command();
+        let help = cmd.render_long_help().to_string();
+        assert!(help.contains("Profiling harness for tensor_store"));
+        assert!(help.contains("safetensors"));
+        assert!(help.contains("serverlessllm"));
+    }
+
+    #[test]
+    fn case_string_mappings_are_stable() {
+        assert_eq!(SafeTensorsCase::Default.as_str(), "default");
+        assert_eq!(SafeTensorsCase::Sync.as_str(), "sync");
+        assert_eq!(ServerlessLLMCase::Async.as_str(), "async");
+        assert_eq!(ServerlessLLMCase::Mmap.as_str(), "mmap");
+    }
+}

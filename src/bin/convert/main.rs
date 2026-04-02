@@ -133,3 +133,34 @@ fn main() {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn clap_help_contains_summary() {
+        let mut cmd = Args::command();
+        let help = cmd.render_long_help().to_string();
+        assert!(help.contains("Convert SafeTensors to ServerlessLLM format"));
+        assert!(help.contains("--partitions"));
+        assert!(help.contains("--backend"));
+    }
+
+    #[test]
+    fn backend_value_variants_include_core_choices() {
+        use clap::ValueEnum;
+
+        let mut names = Backend::value_variants()
+            .iter()
+            .filter_map(|variant| variant.to_possible_value())
+            .map(|value| value.get_name().to_string())
+            .collect::<Vec<_>>();
+        names.sort();
+
+        assert!(names.contains(&"default".to_string()));
+        assert!(names.contains(&"sync".to_string()));
+        assert!(names.contains(&"async".to_string()));
+    }
+}

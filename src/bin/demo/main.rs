@@ -113,3 +113,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn clap_help_contains_summary() {
+        let mut cmd = Cli::command();
+        let help = cmd.render_long_help().to_string();
+        assert!(help.contains("Showcase SafeTensors and ServerlessLLM loaders"));
+        assert!(help.contains("safetensors"));
+        assert!(help.contains("serverlessllm"));
+    }
+
+    #[test]
+    fn scenario_string_mappings_are_stable() {
+        assert_eq!(SafeTensorsScenario::ParallelSync.as_str(), "parallel-sync");
+        assert_eq!(SafeTensorsScenario::Metadata.as_str(), "metadata");
+        assert_eq!(ServerlessLLMScenario::ParallelSync.as_str(), "parallel-sync");
+        assert_eq!(ServerlessLLMScenario::All.as_str(), "all");
+    }
+}
