@@ -2,6 +2,14 @@
 
 Real-model benchmarks using `pytest-benchmark`.
 
+## Setup
+
+```bash
+cd bindings/python
+uv sync --group dev --group vllm  # For vLLM benchmarks
+uv run maturin develop --release
+```
+
 ## Quick Start
 
 ```bash

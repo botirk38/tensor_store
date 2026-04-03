@@ -4,7 +4,7 @@ PyTorch-first Python bindings for the [tensor_store](../README.md) Rust library.
 
 ## Installation
 
-Requires Rust 1.92+ (`rustup update`) and Python 3.9–3.12.
+Requires Rust 1.92+ (`rustup update`) and Python 3.12+.
 
 ### Core bindings
 
@@ -14,18 +14,22 @@ uv sync --group dev
 uv run maturin develop --release
 ```
 
-### Benchmark setup (non-vLLM)
+### PyTorch examples
 
 ```bash
-uv sync --group dev --group bench
-uv run maturin develop --release
+uv sync --group dev --group torch
 ```
 
-### Benchmark setup (with vLLM)
+### TensorFlow examples
 
 ```bash
-uv sync --group dev --group bench-vllm
-uv run maturin develop --release
+uv sync --group dev --group tensorflow
+```
+
+### vLLM examples and benchmarks
+
+```bash
+uv sync --group dev --group vllm
 ```
 
 ## Import layout
@@ -89,9 +93,7 @@ weights = tf_load_file("model.safetensors", device="/CPU:0")
 
 ## Requirements
 
-- Python 3.9+
-- PyTorch 2.1+
-- TensorFlow 2.11+
+- Python 3.12+
 - Linux or macOS (ServerlessLLM mmap is Linux-only; owned fallback elsewhere)
 
 ## Backends
