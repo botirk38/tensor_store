@@ -1,6 +1,6 @@
 # TensorStore Examples
 
-This directory contains runnable examples demonstrating how to use TensorStore to load model checkpoints and run inference with different frameworks (PyTorch, TensorFlow, vLLM).
+This directory contains runnable examples demonstrating how to use TensorStore to load model checkpoints and run inference with PyTorch and vLLM.
 
 ## Setup
 
@@ -9,7 +9,6 @@ Install dependencies:
 ```bash
 cd bindings/python
 uv sync --group dev --group torch       # For PyTorch examples
-uv sync --group dev --group tensorflow # For TensorFlow examples
 uv sync --group dev --group vllm       # For vLLM examples
 uv run maturin develop --release
 ```
@@ -36,27 +35,11 @@ Arguments:
 - `--max_tokens`: Maximum tokens to generate (default: 64)
 - `--temperature`: Sampling temperature (default: 1.0)
 
-### TensorFlow Example
-
-```bash
-cd bindings/python
-uv run python examples/tensorflow.py gpt2 --prompt "Hello, world!"
-```
-
-Arguments:
-- `model`: HuggingFace model ID
-- `--prompt`: Prompt for text generation
-- `--backend`: TensorStore I/O backend (default, sync, io-uring)
-- `--format`: Checkpoint format (safetensors, serverlessllm) - defaults to safetensors
-- `--device`: Device to load tensors to (default: /CPU:0)
-- `--max_tokens`: Maximum tokens to generate (default: 64)
-- `--temperature`: Sampling temperature (default: 1.0)
-
 ### vLLM Example
 
 ```bash
 cd bindings/python
-uv run python examples/vllm.py --model gpt2 --prompt "Hello, world!"
+uv run python examples/vllm_infer.py --model gpt2 --prompt "Hello, world!"
 ```
 
 Arguments:
@@ -68,17 +51,19 @@ Arguments:
 
 ## Formats
 
-### SafeTensors (default for PyTorch and TensorFlow)
-SafeTensors format stores all tensor data contiguously in one or more files with a metadata header. This is the default format for PyTorch and TensorFlow examples.
+### SafeTensors (default for PyTorch)
+SafeTensors format stores all tensor data contiguously in one or more files with a metadata header. This is the default format for the PyTorch example.
 
 ### ServerlessLLM (default for vLLM)
 ServerlessLLM format partitions tensor data across multiple files, increasing request count and file-switching overhead. This is the default format for vLLM examples.
 
-To use ServerlessLLM format with PyTorch or TensorFlow, add `--format serverlessllm`:
+To use ServerlessLLM format with PyTorch, add `--format serverlessllm`:
 
 ```bash
 uv run python examples/pytorch.py gpt2 --prompt "Hello" --format serverlessllm
 ```
+
+Note: vLLM example uses serverlessllm format by default (see `vllm_infer.py`).
 
 The first run will automatically convert the model to ServerlessLLM format. Subsequent runs use the cached conversion.
 
