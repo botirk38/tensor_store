@@ -44,16 +44,32 @@ def ensure_serverlessllm(hf_folder: str) -> str:
     return cache_dir
 
 
+def get_model_max_len(model_id: str) -> int:
+    from transformers import AutoConfig
+
+    config = AutoConfig.from_pretrained(model_id)
+    max_len = getattr(config, "max_position_embeddings", None)
+    if max_len is None:
+        max_len = getattr(config, "n_positions", None)
+    if max_len is None:
+        max_len = getattr(config, "model_max_length", 4096)
+    return max_len
+
+
 def run_inference(
     model_id: str,
     prompt: str,
     backend: str = "default",
     max_tokens: int = 64,
     temperature: float = 1.0,
-    gpu_memory_utilization: float = 0.8,
-    max_model_len: int = 4096,
+    gpu_memory_utilization: float = 0.7,
+    max_model_len: int | None = None,
 ) -> str:
     warnings.filterwarnings("ignore")
+
+    if max_model_len is None:
+        max_model_len = get_model_max_len(model_id)
+        print(f"Auto-detected max_model_len: {max_model_len}")
 
     from benchmarks.vllm_loaders import register_tensor_store_loader
 
@@ -116,14 +132,14 @@ def main():
     parser.add_argument(
         "--gpu-memory-utilization",
         type=float,
-        default=0.8,
-        help="GPU memory utilization (default: 0.8)",
+        default=0.7,
+        help="GPU memory utilization (default: 0.7)",
     )
     parser.add_argument(
         "--max-model-len",
         type=int,
-        default=4096,
-        help="Maximum model sequence length (default: 4096)",
+        default=None,
+        help="Maximum model sequence length (default: auto-detect from model config)",
     )
 
     args = parser.parse_args()
