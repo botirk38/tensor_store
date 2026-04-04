@@ -2,7 +2,7 @@
 """Runnable example: run vLLM inference with TensorStore-backed loading.
 
 Usage:
-    python examples/vllm.py --model gpt2 --prompt "Hello, world!"
+    python examples/vllm_infer.py --model gpt2 --prompt "Hello, world!"
 
 Requirements:
     uv sync --group dev --group vllm
@@ -53,15 +53,6 @@ def run_inference(
 ) -> str:
     warnings.filterwarnings("ignore")
 
-    print(f"Downloading model {model_id}...")
-    from huggingface_hub import snapshot_download
-
-    local_path = snapshot_download(model_id, local_files_only=False)
-
-    # Auto-detect format: check for serverlessllm cache first, else use safetensors
-    local_path = ensure_serverlessllm(local_path)
-    print(f"Using serverlessllm format")
-
     from benchmarks.vllm_loaders import register_tensor_store_loader
 
     register_tensor_store_loader()
@@ -69,9 +60,9 @@ def run_inference(
     from vllm import LLM
     from vllm.sampling_params import SamplingParams
 
-    print(f"Loading model with TensorStore backend={backend}")
+    print(f"Loading model {model_id} with TensorStore backend={backend}")
     llm = LLM(
-        model=local_path,
+        model=model_id,
         tensor_parallel_size=1,
         gpu_memory_utilization=0.95,
         max_model_len=16384,
