@@ -1,3 +1,5 @@
+//! Request batching for parallel I/O.
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -131,7 +133,7 @@ pub fn coalesce_requests(
 
 #[cfg(test)]
 mod tests {
-    use super::{BatchResult, coalesce_requests, flatten_results, group_requests_by_file};
+    use super::{coalesce_requests, flatten_results, group_requests_by_file, BatchResult};
     use std::path::Path;
     use std::sync::Arc;
 
