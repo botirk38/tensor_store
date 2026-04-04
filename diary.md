@@ -1,5 +1,20 @@
 # Project Development Diary
 
+## 2026-04-04
+
+Final submission and demo setup:
+- Created submission folder in report/final_report/submission/ with README.md
+- Added PDF report and code.zip to submission folder
+- Pinned transformers<5.0 in pyproject.toml to fix vLLM compatibility (Qwen3 tokenizer issue)
+- Added auto-detection of max_model_len from model config in vllm_infer.py
+- Reduced default gpu_memory_utilization to 0.7 for smaller GPUs
+- Added --gpu-memory-utilization and --max-model-len CLI args to vllm_infer.py
+- Fixed vLLM loader to pass model ID instead of local path (vLLM handles downloading internally)
+- Renamed vllm.py to vllm_infer.py to avoid shadowing the vLLM package
+- Removed TensorFlow example (TFAutoModelForCausalLM not available in transformers 4.x)
+- Revamped dependency groups in pyproject.toml: merged bench into dev, added torch/tensorflow/vllm groups
+- Created examples/ folder with pytorch.py and vllm_infer.py runnable examples
+
 ## 2026-03-27
 
 Making Python bindings blocking by default with io_uring backend. This was prompted by discovering that vLLM's model loader interface is fundamentally synchronous - the existing async path was a fragile hack (manual event loop inside sync callback) that didn't integrate properly.
