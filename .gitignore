@@ -106,6 +106,5 @@ report/final_report/*.log
 # vLLM raw benchmark logs (too large for git)
 results/h100/vllm/raw/
 
-# Report and submission (do not track in git)
+# Report tree (LaTeX/PDF); diary.md at repo root is tracked
 report/
-diary.md
