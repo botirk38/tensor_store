@@ -7,18 +7,19 @@ Real-model benchmarks using `pytest-benchmark`. Results can be exported as **JSO
 From the **repository root**:
 
 ```bash
-export TENSOR_STORE_BENCH_MODEL=openai-community/gpt2   # required
+export TENSOR_STORE_BENCH_MODELS=openai-community/gpt2   # required (one or more ids)
 ./scripts/run_benchmarks.sh
 ```
 
-This runs `uv sync` (dev + vLLM groups), `maturin develop --release`, then pytest on `bench_safetensors.py`, `bench_serverlessllm.py`, and `bench_vllm.py`. JSON is written to `results/benchmarks/pytest_benchmark.json` unless you set **`TENSOR_STORE_BENCH_JSON`** to another path.
+This runs `uv sync` (dev + vLLM groups), `maturin develop --release`, then pytest on `bench_safetensors.py`, `bench_serverlessllm.py`, and `bench_vllm.py`. JSON is written to **`results/benchmarks/pytest_benchmark_<slug>.json`** per model (slug: repo id with `/` → `-`, lowercased). Set **`TENSOR_STORE_BENCH_JSON`** to an **output directory** to place those files elsewhere. Each run uses a distinct **`--cache-dir`** under that directory’s `.cache/<slug>/` so parallel jobs do not collide.
 
 ### Environment variables
 
 | Variable | Meaning |
 |----------|---------|
-| `TENSOR_STORE_BENCH_MODEL` | **Required.** HuggingFace model id (`pytest --model-id`). |
-| `TENSOR_STORE_BENCH_JSON` | Optional. Path for pytest-benchmark JSON output (default: `results/benchmarks/pytest_benchmark.json` under repo root). |
+| `TENSOR_STORE_BENCH_MODELS` | **Required.** One or more HuggingFace model ids (`pytest --model-id`), space- and/or comma-separated. |
+| `TENSOR_STORE_BENCH_JSON` | Optional. **Directory** for pytest-benchmark JSON files (default: `results/benchmarks/` under repo root). Must not be a `.json` file path. |
+| `TENSOR_STORE_BENCH_JOBS` | Optional. Max concurrent pytest processes when **`TENSOR_STORE_BENCH_NO_VLLM=1`** (default: `min(4, number of models)`). Ignored when vLLM benchmarks run (always one job). |
 | `TENSOR_STORE_SKIP_MAURIN=1` | Skip `maturin develop --release` if the extension is already built. |
 | `TENSOR_STORE_BENCH_NO_VLLM=1` | Run only SafeTensors + ServerlessLLM benchmarks (omit `bench_vllm.py`). Uses `uv sync --group dev --group torch` instead of the `vllm` group. |
 

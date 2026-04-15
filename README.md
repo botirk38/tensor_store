@@ -44,7 +44,7 @@ pdflatex -interaction=nonstopmode main.tex
 
 **Needs:** Linux (`io_uring` is Linux-only), Rust (see `rust-version` in [`Cargo.toml`](Cargo.toml)), [`uv`](https://docs.astral.sh/uv/) for Python scripts. **GPU** only for vLLM / GPU-backed Python paths. Cold-cache replication assumes you can run `sync` and `echo 3 > /proc/sys/vm/drop_caches` (usually root); use a dedicated machine so cache drops do not affect other workloads.
 
-**Models:** pass a **Hugging Face model id** everywhere (Python: `--model-id` / `TENSOR_STORE_BENCH_MODEL`; Rust `profile` / `demo`: `--model-id`; Criterion benches: `TENSOR_STORE_MODEL_ID`). SafeTensors shards are read from the **Hugging Face Hub cache**; ServerlessLLM conversions are stored under **`$XDG_CACHE_HOME/tensor_store/<slug>/serverlessllm`** (or the platform cache/temp equivalent). Nothing is required under a repository `fixtures/` directory.
+**Models:** pass a **Hugging Face model id** everywhere (Python: `--model-id` / `TENSOR_STORE_BENCH_MODELS` in `run_benchmarks.sh`; Rust `profile` / `demo`: `--model-id`; Criterion benches: `TENSOR_STORE_MODEL_ID`). SafeTensors shards are read from the **Hugging Face Hub cache**; ServerlessLLM conversions are stored under **`$XDG_CACHE_HOME/tensor_store/<slug>/serverlessllm`** (or the platform cache/temp equivalent). Nothing is required under a repository `fixtures/` directory.
 
 **Rust profiling binary** (single run — downloads via Hub if needed):
 
@@ -59,7 +59,7 @@ Formats: `safetensors` or `serverlessllm`. Backends: `sync`, `async`, `io-uring`
 
 | Script | Typical output |
 |--------|----------------|
-| [`scripts/run_benchmarks.sh`](scripts/run_benchmarks.sh) | pytest-benchmark JSON under `results/benchmarks/` (set `TENSOR_STORE_BENCH_MODEL` to a Hugging Face model id; includes SafeTensors, ServerlessLLM, and vLLM pytest suites unless `TENSOR_STORE_BENCH_NO_VLLM=1`) |
+| [`scripts/run_benchmarks.sh`](scripts/run_benchmarks.sh) | pytest-benchmark JSON under `results/benchmarks/` as `pytest_benchmark_<slug>.json` (set `TENSOR_STORE_BENCH_MODELS` to one or more Hugging Face model ids; includes SafeTensors, ServerlessLLM, and vLLM pytest suites unless `TENSOR_STORE_BENCH_NO_VLLM=1`; vLLM runs are serialized to one process at a time) |
 
 Script setup and notes: [`scripts/README.md`](scripts/README.md).
 
@@ -115,13 +115,13 @@ cargo clippy --lib --locked -- -D warnings
 
 ## Python benchmarks
 
-From the repo root, set `TENSOR_STORE_BENCH_MODEL` to a Hugging Face model id, then:
+From the repo root, set `TENSOR_STORE_BENCH_MODELS` to one or more Hugging Face model ids (space- or comma-separated), then:
 
 ```bash
 ./scripts/run_benchmarks.sh
 ```
 
-Default JSON: `results/benchmarks/pytest_benchmark.json`. Details: [`bindings/python/benchmarks/README.md`](bindings/python/benchmarks/README.md).
+Default output: `results/benchmarks/pytest_benchmark_<slug>.json` per model. With `TENSOR_STORE_BENCH_NO_VLLM=1`, multiple models can run in parallel (see `TENSOR_STORE_BENCH_JOBS`). Details: [`bindings/python/benchmarks/README.md`](bindings/python/benchmarks/README.md).
 
 ## Component docs
 

@@ -70,7 +70,7 @@ export TENSOR_STORE_MODEL_ID=openai-community/gpt2
 cargo bench --bench safetensors
 ```
 
-Pytest benchmarks use `--model-id` / `TENSOR_STORE_BENCH_MODEL` instead; see the repository root [README.md](../README.md).
+Pytest benchmarks use `--model-id` / `TENSOR_STORE_BENCH_MODELS` in `scripts/run_benchmarks.sh` instead; see the repository root [README.md](../README.md).
 
 ## Understanding Results
 

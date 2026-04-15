@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # Run pytest benchmarks under bindings/python/benchmarks via uv.
-# Writes pytest-benchmark JSON (--benchmark-json).
+# Writes pytest-benchmark JSON (--benchmark-json), one file per model.
 #
 # Required:
-#   TENSOR_STORE_BENCH_MODEL   HuggingFace model id (pytest --model-id)
+#   TENSOR_STORE_BENCH_MODELS   One or more Hugging Face model ids (space- and/or comma-separated)
 #
 # Optional:
-#   TENSOR_STORE_BENCH_JSON         Output JSON path (default: <repo>/results/benchmarks/pytest_benchmark.json)
-#   TENSOR_STORE_SKIP_MAURIN=1      Skip maturin develop --release
-#   TENSOR_STORE_BENCH_NO_VLLM=1    Omit bench_vllm.py; uv sync uses --group dev --group torch (no vLLM stack)
+#   TENSOR_STORE_BENCH_JSON          Output directory for JSON files (default: <repo>/results/benchmarks/)
+#   TENSOR_STORE_BENCH_JOBS          Max concurrent pytest processes (default: min(4, number of models); ignored when vLLM runs)
+#   TENSOR_STORE_SKIP_MAURIN=1       Skip maturin develop --release
+#   TENSOR_STORE_BENCH_NO_VLLM=1     Omit bench_vllm.py; uv sync uses --group dev --group torch (no vLLM stack)
 
 set -euo pipefail
 
@@ -18,14 +19,41 @@ if git -C "${repo_root}" rev-parse --show-toplevel &>/dev/null; then
   repo_root="$(git -C "${repo_root}" rev-parse --show-toplevel)"
 fi
 
-if [[ -z "${TENSOR_STORE_BENCH_MODEL:-}" ]]; then
-  echo "error: set TENSOR_STORE_BENCH_MODEL to a Hugging Face model id (example: gpt2)" >&2
+py_dir="${repo_root}/bindings/python"
+
+if [[ -z "${TENSOR_STORE_BENCH_MODELS:-}" ]]; then
+  echo "error: set TENSOR_STORE_BENCH_MODELS to one or more Hugging Face model ids (space/comma-separated; example: gpt2 or Qwen/Qwen3-8B)" >&2
   exit 1
 fi
 
-py_dir="${repo_root}/bindings/python"
-bench_json="${TENSOR_STORE_BENCH_JSON:-${repo_root}/results/benchmarks/pytest_benchmark.json}"
-mkdir -p "$(dirname "${bench_json}")"
+_normalized="${TENSOR_STORE_BENCH_MODELS//,/ }"
+read -r -a models <<< "${_normalized}"
+if [[ ${#models[@]} -eq 0 ]]; then
+  echo "error: TENSOR_STORE_BENCH_MODELS produced no model ids after parsing" >&2
+  exit 1
+fi
+
+if [[ -n "${TENSOR_STORE_BENCH_JSON:-}" ]]; then
+  if [[ -f "${TENSOR_STORE_BENCH_JSON}" ]]; then
+    echo "error: TENSOR_STORE_BENCH_JSON must be a directory path, not an existing file (${TENSOR_STORE_BENCH_JSON})" >&2
+    exit 1
+  fi
+  if [[ "${TENSOR_STORE_BENCH_JSON}" == *.json ]] && [[ ! -d "${TENSOR_STORE_BENCH_JSON}" ]]; then
+    echo "error: TENSOR_STORE_BENCH_JSON must be a directory; remove the .json suffix or create the directory" >&2
+    exit 1
+  fi
+  out_dir="${TENSOR_STORE_BENCH_JSON}"
+else
+  out_dir="${repo_root}/results/benchmarks"
+fi
+mkdir -p "${out_dir}"
+
+slugify() {
+  local s="${1//\//-}"
+  echo "${s,,}"
+}
+
+n_models=${#models[@]}
 
 if [[ "${TENSOR_STORE_BENCH_NO_VLLM:-}" == "1" ]]; then
   echo "==> uv sync (dev + torch; skipping vLLM dependency group)"
@@ -49,9 +77,56 @@ else
   echo "==> skipping bench_vllm.py (TENSOR_STORE_BENCH_NO_VLLM=1)"
 fi
 
-echo "==> pytest -> ${bench_json}"
-uv --directory "${py_dir}" run pytest "${tests[@]}" -v \
-  --model-id "${TENSOR_STORE_BENCH_MODEL}" \
-  --benchmark-json="${bench_json}"
+if [[ "${TENSOR_STORE_BENCH_NO_VLLM:-}" != "1" ]]; then
+  effective_jobs=1
+  if [[ -n "${TENSOR_STORE_BENCH_JOBS:-}" ]] && [[ "${TENSOR_STORE_BENCH_JOBS}" != "1" ]]; then
+    echo "==> vLLM benchmarks: forcing parallel jobs to 1 (TENSOR_STORE_BENCH_JOBS=${TENSOR_STORE_BENCH_JOBS} ignored; single GPU / single vLLM process)" >&2
+  fi
+else
+  if [[ -n "${TENSOR_STORE_BENCH_JOBS:-}" ]]; then
+    effective_jobs="${TENSOR_STORE_BENCH_JOBS}"
+  else
+    effective_jobs=$n_models
+    (( effective_jobs > 4 )) && effective_jobs=4
+  fi
+  (( effective_jobs < 1 )) && effective_jobs=1
+  (( effective_jobs > n_models )) && effective_jobs=$n_models
+fi
 
-echo "Done: ${bench_json}"
+run_pytest_model() {
+  local model_id="$1"
+  local slug
+  slug="$(slugify "${model_id}")"
+  local bench_json_path="${out_dir}/pytest_benchmark_${slug}.json"
+  local cache_dir="${out_dir}/.cache/${slug}"
+  mkdir -p "${cache_dir}"
+  echo "==> pytest model=${model_id} -> ${bench_json_path} (cache: ${cache_dir})"
+  uv --directory "${py_dir}" run pytest "${tests[@]}" -v \
+    --model-id "${model_id}" \
+    --cache-dir "${cache_dir}" \
+    --benchmark-json="${bench_json_path}"
+}
+
+if (( effective_jobs == 1 )); then
+  for model_id in "${models[@]}"; do
+    run_pytest_model "${model_id}"
+  done
+else
+  echo "==> running up to ${effective_jobs} pytest job(s) in parallel (CPU-only benchmarks)"
+  idx=0
+  while (( idx < n_models )); do
+    batch_pids=()
+    for (( j = 0; j < effective_jobs && idx < n_models; j++, idx++ )); do
+      model_id="${models[idx]}"
+      (
+        run_pytest_model "${model_id}"
+      ) &
+      batch_pids+=($!)
+    done
+    for pid in "${batch_pids[@]}"; do
+      wait "${pid}"
+    done
+  done
+fi
+
+echo "Done. JSON under ${out_dir}/pytest_benchmark_<slug>.json"
