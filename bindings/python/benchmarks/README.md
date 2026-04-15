@@ -1,31 +1,44 @@
 # Tensor Store Benchmarks
 
-Real-model benchmarks using `pytest-benchmark`.
+Real-model benchmarks using `pytest-benchmark`. Results can be exported as **JSON** via pytest-benchmark’s `--benchmark-json` (wired in `scripts/run_benchmarks.sh`).
 
-## Setup
+## Run all pytest benchmarks (recommended)
+
+From the **repository root**:
+
+```bash
+export TENSOR_STORE_BENCH_MODEL=openai-community/gpt2   # required
+./scripts/run_benchmarks.sh
+```
+
+This runs `uv sync` (dev + vLLM groups), `maturin develop --release`, then pytest on `bench_safetensors.py`, `bench_serverlessllm.py`, and `bench_vllm.py`. JSON is written to `results/benchmarks/pytest_benchmark.json` unless you set **`TENSOR_STORE_BENCH_JSON`** to another path.
+
+### Environment variables
+
+| Variable | Meaning |
+|----------|---------|
+| `TENSOR_STORE_BENCH_MODEL` | **Required.** HuggingFace model id (`pytest --model-id`). |
+| `TENSOR_STORE_BENCH_JSON` | Optional. Path for pytest-benchmark JSON output (default: `results/benchmarks/pytest_benchmark.json` under repo root). |
+| `TENSOR_STORE_SKIP_MAURIN=1` | Skip `maturin develop --release` if the extension is already built. |
+| `TENSOR_STORE_BENCH_NO_VLLM=1` | Run only SafeTensors + ServerlessLLM benchmarks (omit `bench_vllm.py`). Uses `uv sync --group dev --group torch` instead of the `vllm` group. |
+
+## Manual pytest (single suite)
 
 ```bash
 cd bindings/python
-uv sync --group dev --group vllm  # For vLLM benchmarks
+uv sync --group dev --group vllm
 uv run maturin develop --release
+
+uv run pytest benchmarks/bench_safetensors.py -v --model-id openai-community/gpt2
+uv run pytest benchmarks/bench_serverlessllm.py -v --model-id openai-community/gpt2
+uv run pytest benchmarks/bench_vllm.py -v --model-id openai-community/gpt2
 ```
 
-## Quick Start
+Add `--benchmark-json=path.json` to capture machine-readable timings.
 
-```bash
-cd bindings/python
+**Rust cold matrices and archived TSVs:** Large sweeps that produced `results/h100/profile/*.tsv` and `results/h100/vllm/*.tsv` were run on a dedicated host by invoking the `profile` binary (Rust) and pytest/vLLM benchmarks with the cold-cache procedure from the paper—not via a bundled shell matrix. Treat those paths as **archival**; reproduce **ordering and regime behaviour** on your machine.
 
-# SafeTensors benchmarks (supports multi-shard models)
-uv run pytest benchmarks/bench_safetensors.py -v --model-id gpt2
-
-# ServerlessLLM benchmarks (multi-shard supported)
-uv run pytest benchmarks/bench_serverlessllm.py -v --model-id gpt2
-
-# vLLM integration benchmarks
-uv run pytest benchmarks/bench_vllm.py -v --model-id gpt2
-```
-
-## CLI Options
+## CLI Options (pytest)
 
 | Option | Description |
 |--------|-------------|
@@ -43,6 +56,7 @@ uv run pytest benchmarks/bench_vllm.py -v --model-id gpt2
 ## SafeTensors Benchmarks
 
 **Backends:**
+
 - `native` - `safetensors.torch.load_file`
 - `tensor_store sync` - `tensor_store.load_safetensors_sync`
 - `tensor_store async` - `tensor_store.load_safetensors_async`
@@ -56,6 +70,7 @@ uv run pytest benchmarks/bench_vllm.py -v --model-id gpt2
 Uses the shared size-based heuristic for partition count: `max(1, ceil(total_bytes / 512 MiB))`.
 
 **Backends:**
+
 - `sync`
 - `async`
 - `default`
@@ -66,13 +81,12 @@ Uses the shared size-based heuristic for partition count: `max(1, ceil(total_byt
 ## vLLM Benchmarks
 
 **Loaders:**
+
 - `native` - default vLLM loader
-- `ts_safetensors_sync` - tensor_store safetensors, sync backend
-- `ts_safetensors_mmap` - tensor_store safetensors, mmap backend
-- `ts_serverlessllm_sync` - tensor_store ServerlessLLM, sync backend
-- `ts_serverlessllm_mmap` - tensor_store ServerlessLLM, mmap backend
+- `ts_safetensors_*` / `ts_serverlessllm_*` - tensor_store loaders (see `vllm_runner.py`)
 
 **Benchmark kinds:**
+
 - `load_only` - model initialization time
 - `ttft` - time to first token
 - `steady_state_decode` - average decode time after warmup
@@ -96,6 +110,7 @@ arguments if you need a different layout.
 ## Recommended Models (H100 Box)
 
 For the H100 box with 180GB RAM, use this fixture ladder:
+
 - Tiny: `openai-community/gpt2`
 - Small: `Qwen/Qwen2.5-0.5B-Instruct`
 - Medium-small: `Qwen/Qwen2.5-1.5B-Instruct`

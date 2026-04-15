@@ -16,4 +16,4 @@ Experimental results from the H100 benchmark suite.
 
 ## Reproducing
 
-Rust profiling results were generated on a dedicated H100 Linux server. See `scripts/README.md` for the runner scripts used to produce these artifacts.
+Rust profiling results were generated on a dedicated H100 Linux server. Use the `profile` binary and cold-cache procedure in the repository root `README.md`; Python/vLLM numbers use `scripts/run_benchmarks.sh` (see `bindings/python/benchmarks/README.md`). These TSVs are **archival** checkpoints from that host.

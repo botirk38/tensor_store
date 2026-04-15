@@ -1,23 +1,9 @@
 # Scripts
 
-This directory now keeps only the scripts that were actually useful in the final experiment flow.
+## Entry points
 
-## Keepers
-
-- `download_models.py`
-  - downloads SafeTensors fixtures from Hugging Face
-  - optionally converts them to `ServerlessLLM`
-- `run_anchor_reps.sh`
-  - runs 5 cold reps on the Rust anchor set
-  - writes `results/h100/profile/anchor_reps.tsv`
-- `run_full_cold_matrix.sh`
-  - runs the full Rust cold matrix across formats, fixtures, and backends
-  - writes `results/h100/profile/full_cold_matrix.tsv`
-- `run_vllm_full_matrix.sh`
-  - runs the full vLLM matrix across the fixture ladder and all benchmark loaders
-  - writes `results/h100/vllm/full_matrix.tsv`
-- `rerun_failed_vllm.sh`
-  - reruns only the failed rows from the vLLM matrix after harness/config changes
+- **`download_models.py`** — downloads SafeTensors fixtures from Hugging Face (optional ServerlessLLM conversion).
+- **`run_benchmarks.sh`** — from the **repository root**, runs all pytest benchmarks under `bindings/python/benchmarks/` via `uv`, builds the extension with `maturin`, and writes pytest-benchmark JSON (default `results/benchmarks/pytest_benchmark.json`). Requires **`TENSOR_STORE_BENCH_MODEL`** (Hugging Face model id).
 
 ## Setup
 
@@ -26,41 +12,22 @@ cd scripts
 uv sync
 ```
 
-## Typical Usage
+## Typical usage
 
-Download fixtures:
+Download a fixture:
 
 ```bash
 uv run python download_models.py Qwen/Qwen3-8B --verify
 ```
 
-Run Rust anchor reps:
+Run Python benchmarks (from repo root):
 
 ```bash
-./scripts/run_anchor_reps.sh
-```
-
-Run the full Rust cold matrix:
-
-```bash
-./scripts/run_full_cold_matrix.sh
-```
-
-Run the full vLLM matrix:
-
-```bash
-./scripts/run_vllm_full_matrix.sh
-```
-
-Rerun only failed vLLM rows after a harness update:
-
-```bash
-./scripts/rerun_failed_vllm.sh
+export TENSOR_STORE_BENCH_MODEL=Qwen/Qwen3-8B
+./scripts/run_benchmarks.sh
 ```
 
 ## Notes
 
-- Results are saved under `results/h100/...`.
-- The one-off debugging runners used during development were removed on purpose.
-- `run_vllm_full_matrix.sh` is resumable: it skips rows that are already recorded.
-- `rerun_failed_vllm.sh` rewrites failed rows in place after a successful retry.
+- Rust-layer timings use the `profile` binary (`cargo build --release --bin profile`); see the repository root `README.md` for invocation and cold-cache procedure.
+- Archived TSV/JSON under `results/h100/` were produced on a dedicated experiment host; replicate **ordering and regime behaviour**, not byte-identical paths.
