@@ -1,4 +1,4 @@
-"""Benchmark fixtures: real-model loading, conversion, and utilities."""
+"""Hugging Face model resolution and ServerlessLLM cache helpers for benchmarks."""
 
 import hashlib
 import os
@@ -46,24 +46,21 @@ class ModelDescriptor:
     partition_count: int
 
 
-def get_model_safetensors(model_name: str, fixtures_dir: Path) -> list[Path]:
+def get_model_safetensors(model_name: str, cache_dir: Path) -> list[Path]:
     """Download model from HuggingFace and return all safetensors shard paths.
 
     Args:
         model_name: HuggingFace model ID (e.g., 'gpt2', 'Qwen/Qwen2-0.5B')
-        fixtures_dir: Directory to store downloaded models
+        cache_dir: Directory to store downloaded models
 
     Returns:
         List of paths to all .safetensors shard files, sorted by name for determinism
     """
     from huggingface_hub import snapshot_download
 
-    fixtures_dir = Path(fixtures_dir)
-    model_dir = fixtures_dir / repo_dir_name(model_name)
+    cache_dir = Path(cache_dir)
+    model_dir = cache_dir / repo_dir_name(model_name)
 
-    stale_single = model_dir / "model.safetensors"
-    if stale_single.exists():
-        stale_single.unlink()
     stale_artifact = model_dir / "model_serverlessllm"
     if stale_artifact.exists():
         import shutil
@@ -101,13 +98,13 @@ def get_model_safetensors(model_name: str, fixtures_dir: Path) -> list[Path]:
     return safetensors_files
 
 
-def get_model_descriptor(model_name: str, fixtures_dir: Path) -> ModelDescriptor:
+def get_model_descriptor(model_name: str, cache_dir: Path) -> ModelDescriptor:
     """Get full metadata for a real model.
 
     Returns a ModelDescriptor with file list, shard count, total size, and
     recommended partition count based on the size heuristic.
     """
-    files = get_model_safetensors(model_name, fixtures_dir)
+    files = get_model_safetensors(model_name, cache_dir)
     total_bytes = sum(f.stat().st_size for f in files)
     parts = recommended_partition_count(total_bytes)
 
@@ -124,7 +121,7 @@ def ensure_serverlessllm_artifact(
     model_name: str,
     safetensors_files: list[Path],
     revision: str | None = None,
-    fixtures_dir: Path | None = None,
+    cache_dir: Path | None = None,
 ) -> Path:
     """Ensure a ServerlessLLM artifact exists for the model, converting if needed.
 
@@ -135,15 +132,15 @@ def ensure_serverlessllm_artifact(
         model_name: HuggingFace model ID
         safetensors_files: List of source safetensors shard paths
         revision: Optional revision (defaults to 'main')
-        fixtures_dir: Optional fixtures directory for caching
+        cache_dir: Optional base directory for ServerlessLLM conversion cache
 
     Returns:
         Path to the ServerlessLLM artifact directory
     """
-    if fixtures_dir is None:
-        fixtures_dir = _cache_root() / "serverlessllm"
+    if cache_dir is None:
+        cache_dir = _cache_root() / "serverlessllm"
     else:
-        fixtures_dir = Path(fixtures_dir) / "serverlessllm"
+        cache_dir = Path(cache_dir) / "serverlessllm"
 
     total_bytes = sum(f.stat().st_size for f in safetensors_files)
     partition_count_override = recommended_partition_count(total_bytes)
@@ -154,7 +151,7 @@ def ensure_serverlessllm_artifact(
 
     key_input = f"{source_dir.resolve()}:{revision_str}:{partition_count_override}:{shard_names}:v3"
     cache_key = hashlib.sha256(key_input.encode()).hexdigest()[:16]
-    out_dir = fixtures_dir / repo_dir_name(model_name) / cache_key
+    out_dir = cache_dir / repo_dir_name(model_name) / cache_key
 
     index_path = out_dir / "tensor_index.json"
     if index_path.exists():
@@ -178,19 +175,19 @@ def ensure_serverlessllm_artifact(
 
 def get_or_build_serverlessllm(
     model_name: str,
-    fixtures_dir: Path,
+    cache_dir: Path,
 ) -> tuple[Path, ModelDescriptor]:
     """Convenience helper to get both the ServerlessLLM artifact and model metadata.
 
     Returns:
         Tuple of (serverlessllm_dir, model_descriptor)
     """
-    desc = get_model_descriptor(model_name, fixtures_dir)
+    desc = get_model_descriptor(model_name, cache_dir)
 
     sllm_dir = ensure_serverlessllm_artifact(
         model_name,
         desc.safetensors_files,
-        fixtures_dir=fixtures_dir,
+        cache_dir=cache_dir,
     )
 
     return sllm_dir, desc

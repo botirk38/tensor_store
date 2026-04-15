@@ -10,70 +10,10 @@ use tensor_store::formats::safetensors;
 use crate::config::{ProfileConfig, ProfileError, ProfileResult};
 use crate::stats::summarize;
 
-fn discover_fixtures() -> Vec<(String, PathBuf)> {
-    let fixtures_dir = Path::new("fixtures");
-    let mut fixtures = Vec::new();
-
-    if let Ok(entries) = std::fs::read_dir(fixtures_dir) {
-        for entry in entries.flatten() {
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if !file_type.is_dir() {
-                continue;
-            }
-
-            let dir = entry.path();
-            let has_safetensors = std::fs::read_dir(&dir)
-                .ok()
-                .into_iter()
-                .flatten()
-                .flatten()
-                .any(|file| {
-                    file.path()
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .is_some_and(|name| name.ends_with(".safetensors"))
-                });
-
-            if has_safetensors {
-                fixtures.push((entry.file_name().to_string_lossy().to_string(), dir));
-            }
-        }
-    }
-
-    fixtures.sort_by(|a, b| a.0.cmp(&b.0));
-    fixtures
-}
-
-fn fixtures(config: &ProfileConfig) -> Result<Vec<(String, PathBuf)>, ProfileError> {
-    let fixtures = discover_fixtures();
-    if fixtures.is_empty() {
-        return Err(ProfileError::new(
-            "No safetensors fixtures found under 'fixtures/'.",
-        ));
-    }
-
-    if let Some(name) = &config.fixture {
-        let filtered: Vec<_> = fixtures
-            .into_iter()
-            .filter(|(fixture_name, _)| fixture_name == name)
-            .collect();
-        if filtered.is_empty() {
-            return Err(ProfileError::new(format!(
-                "Fixture '{}' not found. Available: {}",
-                name,
-                discover_fixtures()
-                    .into_iter()
-                    .map(|(n, _)| n)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )));
-        }
-        Ok(filtered)
-    } else {
-        Ok(fixtures)
-    }
+fn resolved_dir(config: &ProfileConfig) -> Result<(String, PathBuf), ProfileError> {
+    let dir = tensor_store::hf_model::ensure_safetensors_hub_dir(&config.model_id)
+        .map_err(|e| ProfileError::new(e.to_string()))?;
+    Ok((config.model_id.clone(), dir))
 }
 
 fn total_file_bytes(dir: &Path) -> std::io::Result<u64> {
@@ -95,137 +35,93 @@ fn total_file_bytes(dir: &Path) -> std::io::Result<u64> {
 }
 
 fn profile_load_sync(config: &ProfileConfig) -> ProfileResult {
-    let fixtures = fixtures(config)?;
-    for (fixture, dir) in fixtures {
-        let iterations = config.normalized_iterations();
-        let total_bytes = total_file_bytes(&dir)?;
-        let mut durations = Vec::with_capacity(iterations);
+    let (label, dir) = resolved_dir(config)?;
+    let iterations = config.normalized_iterations();
+    let total_bytes = total_file_bytes(&dir)?;
+    let mut durations = Vec::with_capacity(iterations);
 
+    println!(
+        "Running sync safetensors load for '{}' ({iterations}x)",
+        label
+    );
+    for i in 0..iterations {
+        let start = Instant::now();
+        let data = safetensors::Model::load_sync(&dir)?;
+        let elapsed = start.elapsed();
+        durations.push(elapsed);
         println!(
-            "Running sync safetensors load for '{}' ({iterations}x)",
-            fixture
+            "  iteration {}: {} tensors, {} bytes, {:.2}ms",
+            i + 1,
+            data.len(),
+            total_bytes,
+            elapsed.as_secs_f64() * 1000.0
         );
-        for i in 0..iterations {
-            let start = Instant::now();
-            let data = safetensors::Model::load_sync(&dir)?;
-            let elapsed = start.elapsed();
-            durations.push(elapsed);
-            println!(
-                "  iteration {}: {} tensors, {} bytes, {:.2}ms",
-                i + 1,
-                data.len(),
-                total_bytes,
-                elapsed.as_secs_f64() * 1000.0
-            );
-            black_box((data.len(), total_bytes));
-        }
+        black_box((data.len(), total_bytes));
+    }
 
-        if let Some(summary) = summarize(&durations) {
-            println!(
-                "  summary: mean {:.2}ms | min {:.2}ms | max {:.2}ms",
-                summary.mean_ms, summary.min_ms, summary.max_ms
-            );
-        }
+    if let Some(summary) = summarize(&durations) {
+        println!(
+            "  summary: mean {:.2}ms | min {:.2}ms | max {:.2}ms",
+            summary.mean_ms, summary.min_ms, summary.max_ms
+        );
     }
     Ok(())
 }
 
 fn profile_load_mmap(config: &ProfileConfig) -> ProfileResult {
-    let fixtures = fixtures(config)?;
-    for (fixture, dir) in fixtures {
-        let iterations = config.normalized_iterations();
-        let total_bytes = total_file_bytes(&dir)?;
-        let mut durations = Vec::with_capacity(iterations);
+    let (label, dir) = resolved_dir(config)?;
+    let iterations = config.normalized_iterations();
+    let total_bytes = total_file_bytes(&dir)?;
+    let mut durations = Vec::with_capacity(iterations);
 
+    println!(
+        "Running mmap safetensors load for '{}' ({iterations}x)",
+        label
+    );
+    for i in 0..iterations {
+        let start = Instant::now();
+        let data = safetensors::MmapModel::open(&dir)?;
+        let elapsed = start.elapsed();
+        durations.push(elapsed);
         println!(
-            "Running mmap safetensors load for '{}' ({iterations}x)",
-            fixture
+            "  iteration {}: {} tensors, {} bytes, {:.2}ms",
+            i + 1,
+            data.len(),
+            total_bytes,
+            elapsed.as_secs_f64() * 1000.0
         );
-        for i in 0..iterations {
-            let start = Instant::now();
-            let data = safetensors::MmapModel::open(&dir)?;
-            let elapsed = start.elapsed();
-            durations.push(elapsed);
-            println!(
-                "  iteration {}: {} tensors, {} bytes, {:.2}ms",
-                i + 1,
-                data.len(),
-                total_bytes,
-                elapsed.as_secs_f64() * 1000.0
-            );
-            black_box((data.len(), total_bytes));
-        }
+        black_box((data.len(), total_bytes));
+    }
 
-        if let Some(summary) = summarize(&durations) {
-            println!(
-                "  summary: mean {:.2}ms | min {:.2}ms | max {:.2}ms",
-                summary.mean_ms, summary.min_ms, summary.max_ms
-            );
-        }
+    if let Some(summary) = summarize(&durations) {
+        println!(
+            "  summary: mean {:.2}ms | min {:.2}ms | max {:.2}ms",
+            summary.mean_ms, summary.min_ms, summary.max_ms
+        );
     }
     Ok(())
 }
 
 fn profile_load_async(config: &ProfileConfig, default: bool) -> ProfileResult {
-    let fixtures = fixtures(config)?;
+    let (label, dir) = resolved_dir(config)?;
     let rt = tokio::runtime::Runtime::new()?;
-    for (fixture, dir) in fixtures {
-        let iterations = config.normalized_iterations();
-        let total_bytes = total_file_bytes(&dir)?;
-        let mut durations = Vec::with_capacity(iterations);
-        let label = if default { "default" } else { "async" };
+    let iterations = config.normalized_iterations();
+    let total_bytes = total_file_bytes(&dir)?;
+    let mut durations = Vec::with_capacity(iterations);
+    let case_label = if default { "default" } else { "async" };
 
-        println!(
-            "Running {label} safetensors load for '{}' ({iterations}x)",
-            fixture
-        );
-        rt.block_on(async {
-            for i in 0..iterations {
-                let start = Instant::now();
-                let data = if default {
-                    safetensors::Model::load(&dir).await?
-                } else {
-                    safetensors::Model::load_async(&dir).await?
-                };
-                let elapsed = start.elapsed();
-                durations.push(elapsed);
-                println!(
-                    "  iteration {}: {} tensors, {} bytes, {:.2}ms",
-                    i + 1,
-                    data.len(),
-                    total_bytes,
-                    elapsed.as_secs_f64() * 1000.0
-                );
-                black_box((data.len(), total_bytes));
-            }
-
-            if let Some(summary) = summarize(&durations) {
-                println!(
-                    "  summary: mean {:.2}ms | min {:.2}ms | max {:.2}ms",
-                    summary.mean_ms, summary.min_ms, summary.max_ms
-                );
-            }
-            Ok::<_, tensor_store::ReaderError>(())
-        })?;
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn profile_load_io_uring(config: &ProfileConfig) -> ProfileResult {
-    let fixtures = fixtures(config)?;
-    for (fixture, dir) in fixtures {
-        let iterations = config.normalized_iterations();
-        let total_bytes = total_file_bytes(&dir)?;
-        let mut durations = Vec::with_capacity(iterations);
-
-        println!(
-            "Running io-uring safetensors load for '{}' ({iterations}x)",
-            fixture
-        );
+    println!(
+        "Running {case_label} safetensors load for '{}' ({iterations}x)",
+        label
+    );
+    rt.block_on(async {
         for i in 0..iterations {
             let start = Instant::now();
-            let data = safetensors::Model::load_io_uring(&dir)?;
+            let data = if default {
+                safetensors::Model::load(&dir).await?
+            } else {
+                safetensors::Model::load_async(&dir).await?
+            };
             let elapsed = start.elapsed();
             durations.push(elapsed);
             println!(
@@ -244,6 +140,42 @@ fn profile_load_io_uring(config: &ProfileConfig) -> ProfileResult {
                 summary.mean_ms, summary.min_ms, summary.max_ms
             );
         }
+        Ok::<_, tensor_store::ReaderError>(())
+    })?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn profile_load_io_uring(config: &ProfileConfig) -> ProfileResult {
+    let (label, dir) = resolved_dir(config)?;
+    let iterations = config.normalized_iterations();
+    let total_bytes = total_file_bytes(&dir)?;
+    let mut durations = Vec::with_capacity(iterations);
+
+    println!(
+        "Running io-uring safetensors load for '{}' ({iterations}x)",
+        label
+    );
+    for i in 0..iterations {
+        let start = Instant::now();
+        let data = safetensors::Model::load_io_uring(&dir)?;
+        let elapsed = start.elapsed();
+        durations.push(elapsed);
+        println!(
+            "  iteration {}: {} tensors, {} bytes, {:.2}ms",
+            i + 1,
+            data.len(),
+            total_bytes,
+            elapsed.as_secs_f64() * 1000.0
+        );
+        black_box((data.len(), total_bytes));
+    }
+
+    if let Some(summary) = summarize(&durations) {
+        println!(
+            "  summary: mean {:.2}ms | min {:.2}ms | max {:.2}ms",
+            summary.mean_ms, summary.min_ms, summary.max_ms
+        );
     }
     Ok(())
 }

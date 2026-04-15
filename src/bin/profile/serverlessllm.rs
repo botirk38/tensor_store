@@ -1,7 +1,7 @@
 //! ServerlessLLM profiling scenarios.
 
 use std::hint::black_box;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Instant;
 
 use tensor_store::formats::serverlessllm;
@@ -9,195 +9,105 @@ use tensor_store::formats::serverlessllm;
 use crate::config::{ProfileConfig, ProfileError, ProfileResult};
 use crate::stats::summarize;
 
-fn discover_fixtures() -> Vec<(String, PathBuf)> {
-    let fixtures_dir = Path::new("fixtures");
-    let mut fixtures = Vec::new();
-
-    if let Ok(entries) = std::fs::read_dir(fixtures_dir) {
-        for entry in entries.flatten() {
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if !file_type.is_dir() {
-                continue;
-            }
-
-            let model_dir = entry.path().join("model_serverlessllm");
-            if model_dir.exists() && model_dir.is_dir() {
-                fixtures.push((entry.file_name().to_string_lossy().to_string(), model_dir));
-            }
-        }
-    }
-
-    fixtures.sort_by(|a, b| a.0.cmp(&b.0));
-    fixtures
-}
-
-fn fixtures(config: &ProfileConfig) -> Result<Vec<(String, PathBuf)>, ProfileError> {
-    let fixtures = discover_fixtures();
-    if fixtures.is_empty() {
-        return Err(ProfileError::new(
-            "No serverlessllm fixtures found under 'fixtures/'.",
-        ));
-    }
-
-    if let Some(name) = &config.fixture {
-        let filtered: Vec<_> = fixtures
-            .into_iter()
-            .filter(|(fixture_name, _)| fixture_name == name)
-            .collect();
-        if filtered.is_empty() {
-            return Err(ProfileError::new(format!(
-                "Fixture '{}' not found. Available: {}",
-                name,
-                discover_fixtures()
-                    .into_iter()
-                    .map(|(n, _)| n)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )));
-        }
-        Ok(filtered)
-    } else {
-        Ok(fixtures)
-    }
+fn resolved_dir(config: &ProfileConfig) -> Result<(String, PathBuf), ProfileError> {
+    let safetensors_dir = tensor_store::hf_model::ensure_safetensors_hub_dir(&config.model_id)
+        .map_err(|e| ProfileError::new(e.to_string()))?;
+    let dir = tensor_store::hf_model::ensure_serverlessllm_cache_dir(&config.model_id, &safetensors_dir)
+        .map_err(|e| ProfileError::new(e.to_string()))?;
+    Ok((config.model_id.clone(), dir))
 }
 
 fn profile_load_sync(config: &ProfileConfig) -> ProfileResult {
-    let fixtures = fixtures(config)?;
-    for (fixture, dir) in fixtures {
-        let iterations = config.normalized_iterations();
-        let mut durations = Vec::with_capacity(iterations);
+    let (label, dir) = resolved_dir(config)?;
+    let iterations = config.normalized_iterations();
+    let mut durations = Vec::with_capacity(iterations);
 
+    println!(
+        "Running sync serverlessllm load for '{}' ({iterations}x)",
+        label
+    );
+    for i in 0..iterations {
+        let start = Instant::now();
+        let model = serverlessllm::Model::load_sync(&dir)?;
+        let elapsed = start.elapsed();
+        durations.push(elapsed);
+        let bytes: usize = (&model).into_iter().map(|(_, t)| t.data().len()).sum();
         println!(
-            "Running sync serverlessllm load for '{}' ({iterations}x)",
-            fixture
+            "  iteration {}: {} tensors, {} bytes, {:.2}ms",
+            i + 1,
+            model.len(),
+            bytes,
+            elapsed.as_secs_f64() * 1000.0
         );
-        for i in 0..iterations {
-            let start = Instant::now();
-            let model = serverlessllm::Model::load_sync(&dir)?;
-            let elapsed = start.elapsed();
-            durations.push(elapsed);
-            let bytes: usize = (&model).into_iter().map(|(_, t)| t.data().len()).sum();
-            println!(
-                "  iteration {}: {} tensors, {} bytes, {:.2}ms",
-                i + 1,
-                model.len(),
-                bytes,
-                elapsed.as_secs_f64() * 1000.0
-            );
-            black_box((model.len(), bytes));
-        }
+        black_box((model.len(), bytes));
+    }
 
-        if let Some(summary) = summarize(&durations) {
-            println!(
-                "  summary: mean {:.2}ms | min {:.2}ms | max {:.2}ms",
-                summary.mean_ms, summary.min_ms, summary.max_ms
-            );
-        }
+    if let Some(summary) = summarize(&durations) {
+        println!(
+            "  summary: mean {:.2}ms | min {:.2}ms | max {:.2}ms",
+            summary.mean_ms, summary.min_ms, summary.max_ms
+        );
     }
     Ok(())
 }
 
 fn profile_load_mmap(config: &ProfileConfig) -> ProfileResult {
-    let fixtures = fixtures(config)?;
-    for (fixture, dir) in fixtures {
-        let iterations = config.normalized_iterations();
-        let mut durations = Vec::with_capacity(iterations);
+    let (label, dir) = resolved_dir(config)?;
+    let iterations = config.normalized_iterations();
+    let mut durations = Vec::with_capacity(iterations);
 
+    println!(
+        "Running mmap serverlessllm load for '{}' ({iterations}x)",
+        label
+    );
+    for i in 0..iterations {
+        let start = Instant::now();
+        let model = serverlessllm::MmapModel::open(&dir)?;
+        let elapsed = start.elapsed();
+        durations.push(elapsed);
+        let bytes: usize = model
+            .tensor_names()
+            .iter()
+            .map(|name| model.tensor(name).unwrap().data().len())
+            .sum();
         println!(
-            "Running mmap serverlessllm load for '{}' ({iterations}x)",
-            fixture
+            "  iteration {}: {} tensors, {} bytes, {:.2}ms",
+            i + 1,
+            model.len(),
+            bytes,
+            elapsed.as_secs_f64() * 1000.0
         );
-        for i in 0..iterations {
-            let start = Instant::now();
-            let model = serverlessllm::MmapModel::open(&dir)?;
-            let elapsed = start.elapsed();
-            durations.push(elapsed);
-            let bytes: usize = model
-                .tensor_names()
-                .iter()
-                .map(|name| model.tensor(name).unwrap().data().len())
-                .sum();
-            println!(
-                "  iteration {}: {} tensors, {} bytes, {:.2}ms",
-                i + 1,
-                model.len(),
-                bytes,
-                elapsed.as_secs_f64() * 1000.0
-            );
-            black_box((model.len(), bytes));
-        }
+        black_box((model.len(), bytes));
+    }
 
-        if let Some(summary) = summarize(&durations) {
-            println!(
-                "  summary: mean {:.2}ms | min {:.2}ms | max {:.2}ms",
-                summary.mean_ms, summary.min_ms, summary.max_ms
-            );
-        }
+    if let Some(summary) = summarize(&durations) {
+        println!(
+            "  summary: mean {:.2}ms | min {:.2}ms | max {:.2}ms",
+            summary.mean_ms, summary.min_ms, summary.max_ms
+        );
     }
     Ok(())
 }
 
 fn profile_load_async(config: &ProfileConfig, default: bool) -> ProfileResult {
-    let fixtures = fixtures(config)?;
+    let (label, dir) = resolved_dir(config)?;
     let rt = tokio::runtime::Runtime::new()?;
-    for (fixture, dir) in fixtures {
-        let iterations = config.normalized_iterations();
-        let mut durations = Vec::with_capacity(iterations);
-        let label = if default { "default" } else { "async" };
+    let iterations = config.normalized_iterations();
+    let mut durations = Vec::with_capacity(iterations);
+    let case_label = if default { "default" } else { "async" };
 
-        println!(
-            "Running {label} serverlessllm load for '{}' ({iterations}x)",
-            fixture
-        );
-        rt.block_on(async {
-            for i in 0..iterations {
-                let start = Instant::now();
-                let model = if default {
-                    serverlessllm::Model::load(&dir).await?
-                } else {
-                    serverlessllm::Model::load_async(&dir).await?
-                };
-                let elapsed = start.elapsed();
-                durations.push(elapsed);
-                let bytes: usize = (&model).into_iter().map(|(_, t)| t.data().len()).sum();
-                println!(
-                    "  iteration {}: {} tensors, {} bytes, {:.2}ms",
-                    i + 1,
-                    model.len(),
-                    bytes,
-                    elapsed.as_secs_f64() * 1000.0
-                );
-                black_box((model.len(), bytes));
-            }
-
-            if let Some(summary) = summarize(&durations) {
-                println!(
-                    "  summary: mean {:.2}ms | min {:.2}ms | max {:.2}ms",
-                    summary.mean_ms, summary.min_ms, summary.max_ms
-                );
-            }
-            Ok::<_, tensor_store::ReaderError>(())
-        })?;
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn profile_load_io_uring(config: &ProfileConfig) -> ProfileResult {
-    let fixtures = fixtures(config)?;
-    for (fixture, dir) in fixtures {
-        let iterations = config.normalized_iterations();
-        let mut durations = Vec::with_capacity(iterations);
-
-        println!(
-            "Running io-uring serverlessllm load for '{}' ({iterations}x)",
-            fixture
-        );
+    println!(
+        "Running {case_label} serverlessllm load for '{}' ({iterations}x)",
+        label
+    );
+    rt.block_on(async {
         for i in 0..iterations {
             let start = Instant::now();
-            let model = serverlessllm::Model::load_io_uring(&dir)?;
+            let model = if default {
+                serverlessllm::Model::load(&dir).await?
+            } else {
+                serverlessllm::Model::load_async(&dir).await?
+            };
             let elapsed = start.elapsed();
             durations.push(elapsed);
             let bytes: usize = (&model).into_iter().map(|(_, t)| t.data().len()).sum();
@@ -217,6 +127,42 @@ fn profile_load_io_uring(config: &ProfileConfig) -> ProfileResult {
                 summary.mean_ms, summary.min_ms, summary.max_ms
             );
         }
+        Ok::<_, tensor_store::ReaderError>(())
+    })?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn profile_load_io_uring(config: &ProfileConfig) -> ProfileResult {
+    let (label, dir) = resolved_dir(config)?;
+    let iterations = config.normalized_iterations();
+    let mut durations = Vec::with_capacity(iterations);
+
+    println!(
+        "Running io-uring serverlessllm load for '{}' ({iterations}x)",
+        label
+    );
+    for i in 0..iterations {
+        let start = Instant::now();
+        let model = serverlessllm::Model::load_io_uring(&dir)?;
+        let elapsed = start.elapsed();
+        durations.push(elapsed);
+        let bytes: usize = (&model).into_iter().map(|(_, t)| t.data().len()).sum();
+        println!(
+            "  iteration {}: {} tensors, {} bytes, {:.2}ms",
+            i + 1,
+            model.len(),
+            bytes,
+            elapsed.as_secs_f64() * 1000.0
+        );
+        black_box((model.len(), bytes));
+    }
+
+    if let Some(summary) = summarize(&durations) {
+        println!(
+            "  summary: mean {:.2}ms | min {:.2}ms | max {:.2}ms",
+            summary.mean_ms, summary.min_ms, summary.max_ms
+        );
     }
     Ok(())
 }

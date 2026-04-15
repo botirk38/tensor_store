@@ -1042,7 +1042,7 @@ fn file_worker_count(file_count: usize, total_bytes: usize, max_file_bytes: usiz
 
     let workers = chunk_budget().clamp(1, 8).min(file_count);
     if max_file_bytes < 512 * 1024 * 1024 {
-        workers.min(4).max(1)
+        workers.clamp(1, 4)
     } else {
         workers.max(1)
     }

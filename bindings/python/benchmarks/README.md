@@ -43,7 +43,7 @@ Add `--benchmark-json=path.json` to capture machine-readable timings.
 | Option | Description |
 |--------|-------------|
 | `--model-id` | **Required.** HuggingFace model ID |
-| `--fixtures-dir` | Directory for downloaded models and cached artifacts |
+| `--cache-dir` | Directory for downloaded models and conversion cache (default: pytest temp dir) |
 
 ## Benchmark Suites
 

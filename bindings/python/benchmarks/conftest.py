@@ -1,4 +1,4 @@
-"""Pytest configuration for benchmarks: CLI options and fixtures."""
+"""Pytest configuration for benchmarks: CLI options and shared setup."""
 
 from pathlib import Path
 
@@ -14,10 +14,10 @@ def pytest_addoption(parser):
         help="HuggingFace model ID (e.g., gpt2, Qwen/Qwen2-0.5B)",
     )
     parser.addoption(
-        "--fixtures-dir",
+        "--cache-dir",
         action="store",
         default=None,
-        help="Directory to store downloaded models and artifacts",
+        help="Directory to store downloaded models and conversion artifacts",
     )
 
 
@@ -28,20 +28,20 @@ def model_id(request):
 
 
 @pytest.fixture(scope="session")
-def fixtures_dir(tmp_path_factory, request):
+def cache_dir(tmp_path_factory, request):
     """Base directory for model downloads and cached artifacts."""
-    user_dir = request.config.getoption("--fixtures-dir")
+    user_dir = request.config.getoption("--cache-dir")
     if user_dir:
         return Path(user_dir)
-    return tmp_path_factory.mktemp("fixtures")
+    return tmp_path_factory.mktemp("bench_cache")
 
 
 @pytest.fixture(scope="session")
-def model_descriptor(model_id, fixtures_dir):
+def model_descriptor(model_id, cache_dir):
     """Full metadata for the benchmark model."""
-    from benchmarks.fixtures import get_model_descriptor
+    from benchmarks.hub_model import get_model_descriptor
 
-    return get_model_descriptor(model_id, fixtures_dir)
+    return get_model_descriptor(model_id, cache_dir)
 
 
 @pytest.fixture(scope="session")
@@ -63,12 +63,12 @@ def safetensors_path(model_descriptor):
 
 
 @pytest.fixture(scope="session")
-def serverlessllm_dir(model_id, fixtures_dir):
+def serverlessllm_dir(model_id, cache_dir):
     """Path to a ServerlessLLM artifact for the model.
 
     Uses the shared size-based heuristic for partition count and supports multi-shard models.
     """
-    from benchmarks.fixtures import get_or_build_serverlessllm
+    from benchmarks.hub_model import get_or_build_serverlessllm
 
-    sllm_dir, _ = get_or_build_serverlessllm(model_id, fixtures_dir)
+    sllm_dir, _ = get_or_build_serverlessllm(model_id, cache_dir)
     return str(sllm_dir)

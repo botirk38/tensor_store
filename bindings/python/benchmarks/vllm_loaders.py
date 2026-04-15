@@ -8,7 +8,7 @@ from collections.abc import Generator
 
 import torch
 
-from benchmarks.fixtures import recommended_partition_count
+from benchmarks.hub_model import recommended_partition_count
 
 
 def _cache_root() -> str:

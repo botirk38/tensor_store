@@ -1,6 +1,6 @@
 //! SafeTensors demo scenarios.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use tensor_store::TensorView;
@@ -8,12 +8,37 @@ use tensor_store::formats::safetensors;
 
 use crate::config::{DemoConfig, DemoError, DemoResult, format_bytes};
 
+fn resolve_dir(config: &DemoConfig) -> Result<PathBuf, DemoError> {
+    tensor_store::hf_model::ensure_safetensors_hub_dir(&config.model_id)
+        .map_err(|e| DemoError::new(e.to_string()))
+}
+
+fn dir_safetensors_total_bytes(dir: &Path) -> std::io::Result<u64> {
+    let mut total = 0u64;
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path
+            .extension()
+            .is_some_and(|e| e == "safetensors")
+            && path.is_file()
+        {
+            total += path.metadata()?.len();
+        }
+    }
+    Ok(total)
+}
+
 pub fn run(scenario: &str, config: &DemoConfig) -> DemoResult {
     match scenario {
         "async" => demo_async(config),
         "sync" => demo_sync(config),
         "mmap" => demo_mmap(config),
         "metadata" => demo_metadata(config),
+        "parallel-sync" => Err(DemoError::new(
+            "parallel-sync demo is not wired for Hub-backed models yet",
+        )
+        .into()),
         "all" => {
             demo_async(config)?;
             println!();
@@ -28,95 +53,38 @@ pub fn run(scenario: &str, config: &DemoConfig) -> DemoResult {
     }
 }
 
-fn discover_fixtures() -> Vec<(String, PathBuf)> {
-    let fixtures_dir = std::path::Path::new("fixtures");
-    let mut fixtures = Vec::new();
-
-    if let Ok(entries) = std::fs::read_dir(fixtures_dir) {
-        for entry in entries.flatten() {
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if !file_type.is_dir() {
-                continue;
-            }
-
-            let model_dir = entry.path();
-            if model_dir.join("model.safetensors").exists() {
-                let model_name = entry.file_name().to_string_lossy().to_string();
-                fixtures.push((model_name, model_dir));
-            }
-        }
-    }
-
-    fixtures.sort_by(|a, b| a.0.cmp(&b.0));
-    fixtures
-}
-
-fn fixtures(config: &DemoConfig) -> Result<Vec<(String, PathBuf)>, DemoError> {
-    let fixtures = discover_fixtures();
-    if fixtures.is_empty() {
-        return Err(DemoError::new(
-            "No safetensors fixtures found under 'fixtures/'.",
-        ));
-    }
-
-    if let Some(name) = &config.fixture {
-        let filtered: Vec<_> = fixtures
-            .into_iter()
-            .filter(|(fixture_name, _)| fixture_name == name)
-            .collect();
-        if filtered.is_empty() {
-            return Err(DemoError::new(format!(
-                "Fixture '{}' not found. Available: {}",
-                name,
-                discover_fixtures()
-                    .into_iter()
-                    .map(|(n, _)| n)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )));
-        }
-        Ok(filtered)
-    } else {
-        Ok(fixtures)
-    }
-}
-
 fn demo_async(config: &DemoConfig) -> DemoResult {
     println!("=== SafeTensors Async Sequential Loading Demo (tokio) ===\n");
 
-    let fixtures = fixtures(config)?;
+    let path = resolve_dir(config)?;
+    let name = &config.model_id;
+    println!("Model: {}", name);
+    let file_size = dir_safetensors_total_bytes(&path)?;
+    println!("  Hub snapshot dir: {}", path.display());
+    println!("  Total safetensors size: {}", format_bytes(file_size));
+
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(num_cpus::get())
         .enable_all()
         .build()?;
 
     rt.block_on(async {
-        for (name, path) in fixtures {
-            println!("Fixture: {}", name);
+        let io_before = crate::io_metrics::capture_disk_snapshot().ok();
 
-            let file_size = std::fs::metadata(path.join("model.safetensors"))?.len();
-            println!("  Dir: {}", path.file_name().unwrap().to_str().unwrap());
-            println!("  Size: {}", format_bytes(file_size));
+        let start = Instant::now();
+        let data = safetensors::Model::load(&path).await?;
+        let duration = start.elapsed();
 
-            let io_before = crate::io_metrics::capture_disk_snapshot().ok();
+        println!("  Loaded in: {:.2}ms", duration.as_secs_f64() * 1000.0);
 
-            let start = Instant::now();
-            let data = safetensors::Model::load(&path).await?;
-            let duration = start.elapsed();
+        let tensor_count = data.tensor_names().len();
+        println!("  Tensors: {}", tensor_count);
 
-            println!("  Loaded in: {:.2}ms", duration.as_secs_f64() * 1000.0);
+        let throughput = file_size as f64 / duration.as_secs_f64().max(1e-9) / 1e9;
+        println!("  Throughput: {:.2} GB/s", throughput);
 
-            let tensor_count = data.tensor_names().len();
-            println!("  Tensors: {}", tensor_count);
-
-            let throughput = file_size as f64 / duration.as_secs_f64() / 1e9;
-            println!("  Throughput: {:.2} GB/s", throughput);
-
-            crate::io_metrics::display_io_metrics_delta(io_before, duration);
-            println!();
-        }
+        crate::io_metrics::display_io_metrics_delta(io_before, duration);
+        println!();
 
         Ok::<_, tensor_store::ReaderError>(())
     })?;
@@ -127,33 +95,29 @@ fn demo_async(config: &DemoConfig) -> DemoResult {
 fn demo_sync(config: &DemoConfig) -> DemoResult {
     println!("=== SafeTensors Sync Loading Demo ===\n");
 
-    let fixtures = fixtures(config)?;
+    let path = resolve_dir(config)?;
+    let name = &config.model_id;
+    println!("Model: {}", name);
+    let file_size = dir_safetensors_total_bytes(&path)?;
+    println!("  Hub snapshot dir: {}", path.display());
+    println!("  Total safetensors size: {}", format_bytes(file_size));
 
-    for (name, path) in fixtures {
-        println!("Fixture: {}", name);
+    let io_before = crate::io_metrics::capture_disk_snapshot().ok();
 
-        let file_size = std::fs::metadata(path.join("model.safetensors"))?.len();
-        println!("  Dir: {}", path.file_name().unwrap().to_str().unwrap());
-        println!("  Size: {}", format_bytes(file_size));
+    let start = Instant::now();
+    let data = safetensors::Model::load_sync(&path)?;
+    let duration = start.elapsed();
 
-        let io_before = crate::io_metrics::capture_disk_snapshot().ok();
+    println!("  Loaded in: {:.2}ms", duration.as_secs_f64() * 1000.0);
 
-        let start = Instant::now();
-        let data = safetensors::Model::load_sync(&path)?;
-        let duration = start.elapsed();
+    let tensor_count = data.tensor_names().len();
+    println!("  Tensors: {}", tensor_count);
 
-        println!("  Loaded in: {:.2}ms", duration.as_secs_f64() * 1000.0);
+    let throughput = file_size as f64 / duration.as_secs_f64().max(1e-9) / 1e9;
+    println!("  Throughput: {:.2} GB/s", throughput);
 
-        let tensor_count = data.tensor_names().len();
-        println!("  Tensors: {}", tensor_count);
-
-        let throughput = file_size as f64 / duration.as_secs_f64() / 1e9;
-        println!("  Throughput: {:.2} GB/s", throughput);
-
-        // Always attempt to display IO metrics, even if minimal activity
-        crate::io_metrics::display_io_metrics_delta(io_before, duration);
-        println!();
-    }
+    crate::io_metrics::display_io_metrics_delta(io_before, duration);
+    println!();
 
     Ok(())
 }
@@ -161,32 +125,29 @@ fn demo_sync(config: &DemoConfig) -> DemoResult {
 fn demo_mmap(config: &DemoConfig) -> DemoResult {
     println!("=== SafeTensors Memory-Mapped Loading Demo ===\n");
 
-    let fixtures = fixtures(config)?;
+    let path = resolve_dir(config)?;
+    let name = &config.model_id;
+    println!("Model: {}", name);
+    let file_size = dir_safetensors_total_bytes(&path)?;
+    println!("  Hub snapshot dir: {}", path.display());
+    println!("  Total safetensors size: {}", format_bytes(file_size));
 
-    for (name, path) in fixtures {
-        println!("Fixture: {}", name);
+    let io_before = crate::io_metrics::capture_disk_snapshot().ok();
 
-        let file_size = std::fs::metadata(path.join("model.safetensors"))?.len();
-        println!("  Dir: {}", path.file_name().unwrap().to_str().unwrap());
-        println!("  Size: {}", format_bytes(file_size));
+    let start = Instant::now();
+    let data = safetensors::MmapModel::open(&path)?;
+    let duration = start.elapsed();
 
-        let io_before = crate::io_metrics::capture_disk_snapshot().ok();
+    println!("  Loaded in: {:.2}ms", duration.as_secs_f64() * 1000.0);
 
-        let start = Instant::now();
-        let data = safetensors::MmapModel::open(&path)?;
-        let duration = start.elapsed();
+    let tensor_count = data.tensor_names().len();
+    println!("  Tensors: {}", tensor_count);
 
-        println!("  Loaded in: {:.2}ms", duration.as_secs_f64() * 1000.0);
+    let throughput = file_size as f64 / duration.as_secs_f64().max(1e-9) / 1e9;
+    println!("  Throughput: {:.2} GB/s", throughput);
 
-        let tensor_count = data.tensor_names().len();
-        println!("  Tensors: {}", tensor_count);
-
-        let throughput = file_size as f64 / duration.as_secs_f64() / 1e9;
-        println!("  Throughput: {:.2} GB/s", throughput);
-
-        crate::io_metrics::display_io_metrics_delta(io_before, duration);
-        println!();
-    }
+    crate::io_metrics::display_io_metrics_delta(io_before, duration);
+    println!();
 
     Ok(())
 }
@@ -194,34 +155,31 @@ fn demo_mmap(config: &DemoConfig) -> DemoResult {
 fn demo_metadata(config: &DemoConfig) -> DemoResult {
     println!("=== SafeTensors Metadata Exploration Demo ===\n");
 
-    let fixtures = fixtures(config)?;
+    let path = resolve_dir(config)?;
+    let name = &config.model_id;
+    println!("Model: {}", name);
+    let file_size = dir_safetensors_total_bytes(&path)?;
+    println!("  Hub snapshot dir: {}", path.display());
+    println!("  Total safetensors size: {}", format_bytes(file_size));
 
-    for (name, path) in fixtures {
-        println!("Fixture: {}", name);
+    let data = safetensors::Model::load_sync(&path)?;
+    let names = data.tensor_names();
 
-        let file_size = std::fs::metadata(&path)?.len();
-        println!("  File: {}", path.file_name().unwrap().to_str().unwrap());
-        println!("  Size: {}", format_bytes(file_size));
+    println!("  Tensors: {}\n", names.len());
 
-        let data = safetensors::Model::load_sync(&path)?;
-        let names = data.tensor_names();
-
-        println!("  Tensors: {}\n", names.len());
-
-        println!("  Sample tensors (first 10):");
-        for name in names.iter().take(10) {
-            if let Ok(tensor) = data.tensor(name) {
-                println!(
-                    "    - {}: {:?} ({:?}) - {}",
-                    name,
-                    tensor.shape(),
-                    tensor.dtype(),
-                    format_bytes(u64::try_from(tensor.data().len()).unwrap_or(u64::MAX))
-                );
-            }
+    println!("  Sample tensors (first 10):");
+    for tensor_name in names.iter().take(10) {
+        if let Ok(tensor) = data.tensor(tensor_name) {
+            println!(
+                "    - {}: {:?} ({:?}) - {}",
+                tensor_name,
+                tensor.shape(),
+                tensor.dtype(),
+                format_bytes(u64::try_from(tensor.data().len()).unwrap_or(u64::MAX))
+            );
         }
-        println!();
     }
+    println!();
 
     Ok(())
 }

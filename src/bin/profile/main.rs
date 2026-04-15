@@ -23,9 +23,9 @@ enum Commands {
         #[arg(value_enum)]
         case: SafeTensorsCase,
 
-        /// Fixture name (e.g., qwen2-0.5b, mistral-7b)
-        #[arg(short, long)]
-        fixture: Option<String>,
+        /// Hugging Face model id (weights are fetched into the Hub cache if needed)
+        #[arg(long)]
+        model_id: String,
 
         /// Number of iterations to run (default: 1)
         #[arg(short, long, default_value_t = 1)]
@@ -37,9 +37,8 @@ enum Commands {
         #[arg(value_enum)]
         case: ServerlessLLMCase,
 
-        /// Fixture name (e.g., qwen2-0.5b, mistral-7b)
-        #[arg(short, long)]
-        fixture: Option<String>,
+        #[arg(long)]
+        model_id: String,
 
         /// Number of iterations to run (default: 1)
         #[arg(short, long, default_value_t = 1)]
@@ -109,23 +108,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Commands::Safetensors {
             case,
-            fixture,
+            model_id,
             iterations,
         } => {
             let config = ProfileConfig {
                 iterations,
-                fixture,
+                model_id,
             };
             safetensors::run(case.as_str(), &config)?;
         }
         Commands::Serverlessllm {
             case,
-            fixture,
+            model_id,
             iterations,
         } => {
             let config = ProfileConfig {
                 iterations,
-                fixture,
+                model_id,
             };
             serverlessllm::run(case.as_str(), &config)?;
         }

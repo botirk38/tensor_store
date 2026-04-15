@@ -44,18 +44,18 @@ pdflatex -interaction=nonstopmode main.tex
 
 **Needs:** Linux (`io_uring` is Linux-only), Rust (see `rust-version` in [`Cargo.toml`](Cargo.toml)), [`uv`](https://docs.astral.sh/uv/) for Python scripts. **GPU** only for vLLM / GPU-backed Python paths. Cold-cache replication assumes you can run `sync` and `echo 3 > /proc/sys/vm/drop_caches` (usually root); use a dedicated machine so cache drops do not affect other workloads.
 
-**Fixtures:** download checkpoints with `scripts/download_models.py` (see [`scripts/README.md`](scripts/README.md) for setup: `cd scripts && uv sync`).
+**Models:** pass a **Hugging Face model id** everywhere (Python: `--model-id` / `TENSOR_STORE_BENCH_MODEL`; Rust `profile` / `demo`: `--model-id`; Criterion benches: `TENSOR_STORE_MODEL_ID`). SafeTensors shards are read from the **Hugging Face Hub cache**; ServerlessLLM conversions are stored under **`$XDG_CACHE_HOME/tensor_store/<slug>/serverlessllm`** (or the platform cache/temp equivalent). Nothing is required under a repository `fixtures/` directory.
 
-**Rust profiling binary** (single run example):
+**Rust profiling binary** (single run — downloads via Hub if needed):
 
 ```bash
 cargo build --release --bin profile
-cargo run --release --bin profile -- safetensors sync --fixture qwen-qwen3-8b --iterations 1
+cargo run --release --bin profile -- safetensors sync --model-id Qwen/Qwen3-8B --iterations 1
 ```
 
 Formats: `safetensors` or `serverlessllm`. Backends: `sync`, `async`, `io-uring`, `default`. Full cold-cache procedure (including cache drops) matches the paper’s Experimental Setup; invoke `profile` after each drop as in that section.
 
-**Benchmark entry point** (from repository root, after fixtures exist):
+**Benchmark entry point** (from repository root):
 
 | Script | Typical output |
 |--------|----------------|
@@ -63,7 +63,7 @@ Formats: `safetensors` or `serverlessllm`. Backends: `sync`, `async`, `io-uring`
 
 Script setup and notes: [`scripts/README.md`](scripts/README.md).
 
-**What counts as replicated:** same **ranking** of backends for the same fixture/format within jitter; SafeTensors crossover between sync-favoured and `io_uring`-favoured regimes at comparable scales; ServerlessLLM without sync at the front of the explicit ranking when methodology matches. Python/vLLM: expect **directional** effects, not identical milliseconds.
+**What counts as replicated:** same **ranking** of backends for the same model/format within jitter; SafeTensors crossover between sync-favoured and `io_uring`-favoured regimes at comparable scales; ServerlessLLM without sync at the front of the explicit ranking when methodology matches. Python/vLLM: expect **directional** effects, not identical milliseconds.
 
 ---
 
@@ -87,17 +87,15 @@ Kernel and CUDA versions affect `io_uring` behaviour and GPU initialisation.
 ## Quick start (development)
 
 ```bash
-cd scripts
-uv sync
-uv run python download_models.py Qwen/Qwen3-0.6B
-cd ..
+cargo build --release --bin profile
+cargo run --release --bin profile -- safetensors sync --model-id Qwen/Qwen3-0.6B --iterations 1
 ```
 
-Demos:
+Demos (requires network on first run to populate the Hub cache):
 
 ```bash
-cargo run --release --bin demo -- safetensors all
-cargo run --release --bin demo -- serverlessllm all
+cargo run --release --bin demo -- safetensors async --model-id Qwen/Qwen3-0.6B
+cargo run --release --bin demo -- serverlessllm async --model-id Qwen/Qwen3-0.6B
 ```
 
 ## Python

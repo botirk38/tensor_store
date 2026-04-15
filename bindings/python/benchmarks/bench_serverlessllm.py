@@ -5,7 +5,7 @@ the lazy open/get_tensor path. Partition count uses the shared size-based heuris
 """
 
 
-from benchmarks.fixtures import touch_tensor
+from benchmarks.hub_model import touch_tensor
 from tensor_store_py._tensor_store_rust import (
     load_serverlessllm,
     load_serverlessllm_async,

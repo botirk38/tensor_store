@@ -1,4 +1,4 @@
-# TensorStore Examples
+# TensorStore examples (`tensor_store_py`)
 
 ## Setup
 

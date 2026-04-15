@@ -8,17 +8,8 @@ use std::fmt;
 pub struct ProfileConfig {
     /// Number of iterations to run. Defaults to 1 to keep flamegraphs focused.
     pub iterations: usize,
-    /// Optional fixture name (matches entries under `fixtures/`).
-    pub fixture: Option<String>,
-}
-
-impl Default for ProfileConfig {
-    fn default() -> Self {
-        Self {
-            iterations: 1,
-            fixture: None,
-        }
-    }
+    /// Hugging Face model id (e.g. `Qwen/Qwen3-8B`).
+    pub model_id: String,
 }
 
 impl ProfileConfig {

@@ -2,7 +2,7 @@
 
 from safetensors.torch import load_file as safetensors_load_file
 
-from benchmarks.fixtures import touch_tensor
+from benchmarks.hub_model import touch_tensor
 from tensor_store_py._tensor_store_rust import (
     load_safetensors,
     load_safetensors_async,

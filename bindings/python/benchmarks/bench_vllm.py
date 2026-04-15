@@ -10,18 +10,7 @@ import sys
 
 import pytest
 
-
-LOADERS = [
-    "native",
-    "ts_safetensors_default",
-    "ts_safetensors_sync",
-    "ts_safetensors_io_uring",
-    "ts_serverlessllm_default",
-    "ts_serverlessllm_sync",
-    "ts_serverlessllm_io_uring",
-]
-
-BENCHMARK_KINDS = ["load_only", "ttft", "steady_state_decode"]
+from benchmarks.vllm_runner import BENCHMARK_KINDS, LOADERS
 CACHE_MODES = ["warm", "cold"]
 
 

@@ -4,10 +4,10 @@ use std::error::Error;
 use std::fmt;
 
 /// Configuration for demo runs.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct DemoConfig {
-    /// Optional fixture name to filter (matches entries under `fixtures/`).
-    pub fixture: Option<String>,
+    /// Hugging Face model id (e.g. `Qwen/Qwen3-0.6B`).
+    pub model_id: String,
 }
 
 /// Shared result alias for demo entry points.
@@ -36,7 +36,6 @@ pub fn format_bytes(bytes: u64) -> String {
     let bytes_f64 = f64::from(u32::try_from(bytes).unwrap_or(u32::MAX));
     if bytes >= 1_000_000_000 {
         let gb = if bytes > u64::from(u32::MAX) {
-            // For very large files, convert directly
             bytes as f64 / 1_000_000_000.0
         } else {
             bytes_f64 / 1_000_000_000.0

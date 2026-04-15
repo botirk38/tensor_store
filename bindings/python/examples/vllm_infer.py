@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run vLLM inference with TensorStore-backed loading.
+"""Run vLLM inference with TensorStore-backed loading (`tensor_store_py`).
 
 Usage:
     python examples/vllm_infer.py --model gpt2 --prompt "Hello, world!"
@@ -78,7 +78,7 @@ def run_inference(
     from vllm import LLM
     from vllm.sampling_params import SamplingParams
 
-    print(f"Loading model {model_id} with TensorStore backend={backend}")
+    print(f"Loading model {model_id} with TensorStore (tensor_store) backend={backend}")
     llm = LLM(
         model=model_id,
         tensor_parallel_size=1,
@@ -99,7 +99,7 @@ def run_inference(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Run vLLM inference with TensorStore-backed model loading"
+        description="Run vLLM inference with TensorStore-backed model loading (tensor_store_py)"
     )
     parser.add_argument(
         "--model",
@@ -115,7 +115,7 @@ def main():
         "--backend",
         default="default",
         choices=["default", "sync", "io-uring"],
-        help="TensorStore I/O backend (default: default)",
+        help="TensorStore / tensor_store I/O backend (default: default)",
     )
     parser.add_argument(
         "--max-tokens",

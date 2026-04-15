@@ -62,11 +62,7 @@ doc/
 *.bak
 *.swp
 
-# Test fixtures (large files)
-fixtures/**
-!fixtures/.gitkeep
-
-# Python binding fixtures
+# Optional local scratch dirs (legacy); checkpoints are resolved via Hub + cache dirs
 bindings/python/fixtures/**
 !bindings/python/fixtures/.gitkeep
 

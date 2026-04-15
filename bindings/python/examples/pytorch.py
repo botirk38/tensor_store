@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Load safetensors with PyTorch using TensorStore and run inference.
+"""Load safetensors with PyTorch using TensorStore (`tensor_store_py`) and run inference.
 
 Usage:
     python examples/pytorch.py gpt2 --prompt "Hello, world!"
@@ -68,7 +68,7 @@ def run_inference(
     else:
         print(f"Using safetensors format")
 
-    print(f"Loading weights with TensorStore backend={backend}")
+    print(f"Loading weights with TensorStore (tensor_store) backend={backend}")
     if fmt == "serverlessllm":
         if backend == "sync":
             from tensor_store_py._tensor_store_rust import load_serverlessllm_sync
@@ -116,7 +116,7 @@ def run_inference(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Load safetensors with PyTorch using TensorStore and run inference"
+        description="Load safetensors with PyTorch using TensorStore (tensor_store_py)"
     )
     parser.add_argument(
         "model",
@@ -131,13 +131,13 @@ def main():
         "--format",
         default="safetensors",
         choices=["safetensors", "serverlessllm"],
-        help="TensorStore checkpoint format (default: safetensors)",
+        help="Checkpoint format: safetensors or serverlessllm (default: safetensors)",
     )
     parser.add_argument(
         "--backend",
         default="default",
         choices=["default", "sync", "io-uring"],
-        help="TensorStore I/O backend (default: default)",
+        help="TensorStore / tensor_store I/O backend (default: default)",
     )
     parser.add_argument(
         "--device",

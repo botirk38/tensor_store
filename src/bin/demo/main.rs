@@ -23,9 +23,9 @@ enum Commands {
         #[arg(value_enum)]
         scenario: SafeTensorsScenario,
 
-        /// Fixture name (e.g., qwen2-0.5b, mistral-7b)
-        #[arg(short, long)]
-        fixture: Option<String>,
+        /// Hugging Face model id
+        #[arg(long)]
+        model_id: String,
     },
     /// Demonstrate ServerlessLLM loader
     Serverlessllm {
@@ -33,9 +33,8 @@ enum Commands {
         #[arg(value_enum)]
         scenario: ServerlessLLMScenario,
 
-        /// Fixture name (e.g., qwen2-0.5b, mistral-7b)
-        #[arg(short, long)]
-        fixture: Option<String>,
+        #[arg(long)]
+        model_id: String,
     },
 }
 
@@ -101,12 +100,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Safetensors { scenario, fixture } => {
-            let config = DemoConfig { fixture };
+        Commands::Safetensors { scenario, model_id } => {
+            let config = DemoConfig { model_id };
             safetensors::run(scenario.as_str(), &config)?;
         }
-        Commands::Serverlessllm { scenario, fixture } => {
-            let config = DemoConfig { fixture };
+        Commands::Serverlessllm { scenario, model_id } => {
+            let config = DemoConfig { model_id };
             serverlessllm::run(scenario.as_str(), &config)?;
         }
     }

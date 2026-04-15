@@ -61,42 +61,16 @@ Each format has benchmarks per backend (`safetensors_*`, `serverlessllm_*`):
 | `serverlessllm_mmap` | `load/{model}` | All | Memory-mapped loading |
 | `serverlessllm_async` | `load/{model}` | All | Async loading (io_uring on Linux, tokio elsewhere) |
 
-## Test Fixtures
+## Model selection
 
-Benchmarks automatically discover model fixtures in the `fixtures/` directory:
-
-### SafeTensors Format
-
-```
-fixtures/
-└── {model-name}/
-    ├── model.safetensors      # SafeTensors file
-    └── README.md              # Model metadata
-```
-
-### ServerlessLLM Format
-
-```
-fixtures/
-└── {model-name}/
-    ├── model_serverlessllm/
-    │   ├── tensor_index.json  # Metadata and tensor index
-    │   ├── tensor.data_0      # Partitioned data files
-    │   ├── tensor.data_1
-    │   └── ...
-    └── README.md
-```
-
-## Downloading Test Fixtures
-
-Use the provided Python script to download models from HuggingFace:
+Set **`TENSOR_STORE_MODEL_ID`** to a Hugging Face model id before running Criterion (e.g. `export TENSOR_STORE_MODEL_ID=openai-community/gpt2`). The harness calls `tensor_store::hf_model` to ensure SafeTensors shards exist in the Hub cache and (for ServerlessLLM benches) a converted layout under the OS cache.
 
 ```bash
-cd scripts
-uv run python download_models.py Qwen/Qwen2-0.5B --convert --verify
+export TENSOR_STORE_MODEL_ID=openai-community/gpt2
+cargo bench --bench safetensors
 ```
 
-See [scripts/README.md](../scripts/README.md) for details.
+Pytest benchmarks use `--model-id` / `TENSOR_STORE_BENCH_MODEL` instead; see the repository root [README.md](../README.md).
 
 ## Understanding Results
 
@@ -171,27 +145,20 @@ sudo cargo flamegraph --bench safetensors -- safetensors_async
 
 See [profiling/README.md](../profiling/README.md) for detailed profiling guide.
 
-### Using the profiling binaries
+### Using the `profile` binary
 
-For more control, use the dedicated profiling binaries:
+For more control than Criterion, use [`src/bin/profile`](../src/bin/profile/README.md):
 
 ```bash
-# SafeTensors profiling
-cargo run --bin safetensors_reader --release -- fixtures/model/model.safetensors
-
-# ServerlessLLM profiling
-cargo run --bin serverlessllm_reader --release -- fixtures/model/model_serverlessllm
+cargo run --release --bin profile -- safetensors sync --model-id openai-community/gpt2
+cargo run --release --bin profile -- serverlessllm sync --model-id openai-community/gpt2
 ```
 
 ## Benchmark Methodology
 
-### File Discovery
+### Model resolution
 
-Benchmarks automatically discover fixtures in `fixtures/` directory:
-- Scans all subdirectories
-- For SafeTensors: looks for `model.safetensors`
-- For ServerlessLLM: looks for `model_serverlessllm/` directory
-- Sorts by name for consistent ordering
+Benchmarks read **`TENSOR_STORE_MODEL_ID`** and resolve paths via `tensor_store::hf_model` (Hub cache for SafeTensors; OS cache for converted ServerlessLLM).
 
 ### Measurement Strategy
 
@@ -224,12 +191,13 @@ Example results from development machine (Linux 6.17.0, 16 cores):
 
 ## Troubleshooting
 
-### "No benchmarks found"
+### "Set TENSOR_STORE_MODEL_ID" / early exit
 
-Make sure test fixtures exist:
+Export a Hugging Face model id, e.g.:
+
 ```bash
-ls fixtures/*/model.safetensors
-ls fixtures/*/model_serverlessllm/
+export TENSOR_STORE_MODEL_ID=openai-community/gpt2
+cargo bench --bench safetensors
 ```
 
 ### io_uring benchmarks not running

@@ -616,12 +616,11 @@ mod tests {
             partition_count: 3,
             total_bytes: 2 * 1024 * 1024 * 1024,
         };
-        match choose_load_backend(&stats) {
-            #[cfg(target_os = "linux")]
-            LoadBackend::IoUring => {}
-            #[cfg(not(target_os = "linux"))]
-            LoadBackend::TokioAsync => {}
-        }
+        let b = choose_load_backend(&stats);
+        #[cfg(target_os = "linux")]
+        assert!(matches!(b, LoadBackend::IoUring));
+        #[cfg(not(target_os = "linux"))]
+        assert!(matches!(b, LoadBackend::TokioAsync));
     }
 
     #[test]
@@ -630,12 +629,11 @@ mod tests {
             partition_count: 16,
             total_bytes: 16 * 1024 * 1024 * 1024,
         };
-        match choose_load_backend(&stats) {
-            #[cfg(target_os = "linux")]
-            LoadBackend::IoUring => {}
-            #[cfg(not(target_os = "linux"))]
-            LoadBackend::TokioAsync => {}
-        }
+        let b = choose_load_backend(&stats);
+        #[cfg(target_os = "linux")]
+        assert!(matches!(b, LoadBackend::IoUring));
+        #[cfg(not(target_os = "linux"))]
+        assert!(matches!(b, LoadBackend::TokioAsync));
     }
 
     #[test]
@@ -644,14 +642,10 @@ mod tests {
             partition_count: 12,
             total_bytes: 524 * 1024 * 1024,
         };
-        match choose_load_backend(&stats) {
-            #[cfg(target_os = "linux")]
-            LoadBackend::TokioAsync => {}
-            #[cfg(not(target_os = "linux"))]
-            LoadBackend::TokioAsync => {}
-            #[cfg(target_os = "linux")]
-            LoadBackend::IoUring => {}
-        }
+        assert!(matches!(
+            choose_load_backend(&stats),
+            LoadBackend::TokioAsync
+        ));
     }
 
     #[test]
@@ -660,14 +654,10 @@ mod tests {
             partition_count: 16,
             total_bytes: 2 * 1024 * 1024 * 1024,
         };
-        match choose_load_backend(&stats) {
-            #[cfg(target_os = "linux")]
-            LoadBackend::TokioAsync => {}
-            #[cfg(not(target_os = "linux"))]
-            LoadBackend::TokioAsync => {}
-            #[cfg(target_os = "linux")]
-            LoadBackend::IoUring => {}
-        }
+        assert!(matches!(
+            choose_load_backend(&stats),
+            LoadBackend::TokioAsync
+        ));
     }
 
     #[cfg(target_os = "linux")]

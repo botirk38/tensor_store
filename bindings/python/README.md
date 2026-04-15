@@ -1,6 +1,6 @@
 # tensor_store Python Bindings
 
-PyTorch-first Python bindings for the [tensor_store](../README.md) Rust library.
+PyTorch-first Python bindings for the [tensor_store](../README.md) Rust library. The system is referred to as **TensorStore** in the paper; package name remains `tensor_store_py`.
 
 ## Installation
 
