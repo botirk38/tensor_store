@@ -69,6 +69,9 @@ def run_benchmark(
         "tensor_parallel_size": 1,
         "gpu_memory_utilization": 0.95,
         "max_model_len": 16384,
+        # Avoid TorchInductor/Triton JIT of tiny CUDA helpers on hosts where gcc/cuda headers
+        # are incomplete (common on minimal cloud images). Loader comparisons remain fair.
+        "enforce_eager": True,
     }
 
     if config is not None:

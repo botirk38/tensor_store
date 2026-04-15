@@ -21,6 +21,12 @@ export TENSOR_STORE_BENCH_NO_VLLM=1
 ./scripts/run_benchmarks.sh
 ```
 
+Paper six-model ladder (SafeTensors + ServerlessLLM + vLLM; long-running, needs GPU for vLLM):
+
+```bash
+./scripts/paper_pytest_ladder.sh
+```
+
 Python dependencies: `cd bindings/python && uv sync` (see [`bindings/python/README.md`](../bindings/python/README.md)).
 
 ## Notes

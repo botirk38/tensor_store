@@ -121,7 +121,7 @@ From the repo root, set `TENSOR_STORE_BENCH_MODELS` to one or more Hugging Face 
 ./scripts/run_benchmarks.sh
 ```
 
-Default output: `results/benchmarks/pytest_benchmark_<slug>.json` per model. With `TENSOR_STORE_BENCH_NO_VLLM=1`, multiple models can run in parallel (see `TENSOR_STORE_BENCH_JOBS`). Details: [`bindings/python/benchmarks/README.md`](bindings/python/benchmarks/README.md).
+Default output: `results/benchmarks/pytest_benchmark_<slug>.json` per model. With `TENSOR_STORE_BENCH_NO_VLLM=1`, multiple models can run in parallel (see `TENSOR_STORE_BENCH_JOBS`). To sweep the paper’s six public checkpoints in one invocation, run [`scripts/paper_pytest_ladder.sh`](scripts/paper_pytest_ladder.sh) from the repo root. Details: [`bindings/python/benchmarks/README.md`](bindings/python/benchmarks/README.md).
 
 ## Component docs
 

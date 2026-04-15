@@ -13,6 +13,9 @@
 
 set -euo pipefail
 
+# Non-login shells and minimal images often omit these; maturin needs rustc, uv may live in ~/.local/bin.
+export PATH="${HOME}/.local/bin:${HOME}/.cargo/bin:${PATH}"
+
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/.." && pwd)"
 if git -C "${repo_root}" rev-parse --show-toplevel &>/dev/null; then

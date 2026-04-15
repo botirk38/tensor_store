@@ -81,6 +81,8 @@ Uses the shared size-based heuristic for partition count: `max(1, ceil(total_byt
 
 ## vLLM Benchmarks
 
+The vLLM subprocess harness sets **`enforce_eager=True`** so runs do not depend on a full TorchInductor/Triton host toolchain (GCC plus CUDA headers). Relative loader comparisons are unchanged; absolute init times may differ from deployments that use CUDA graphs.
+
 **Loaders:**
 
 - `native` - default vLLM loader
