@@ -58,7 +58,7 @@ Removed async from vLLM benchmark loaders:
 - Deleted ts_safetensors_async and ts_serverlessllm_async from benchmark matrix
 - Removed async backend branch from loaders
 - Deleted _run_async() helper
-- Validated only 'sync' and 'mmap' backends in TensorStoreLoader
+- Validated only 'sync' and 'mmap' backends in TensoraLoader
 - Added AGENTS.md documenting benchmark architecture
 
 Public async Python APIs remain unchanged for normal async Python callers - this was specifically about vLLM integration.
@@ -311,7 +311,7 @@ Lesson: hypothesis-driven research needs discipline to evaluate the hypothesis b
 
 ## 2025-09-30
 
-Started with Zig, immediately pivoted to Rust due to WriterGate breaking changes in Zig I/O. Completed research phase - ServerlessLLM analysis, io_uring ecosystem research, TensorStore format design.
+Started with Zig, immediately pivoted to Rust due to WriterGate breaking changes in Zig I/O. Completed research phase - ServerlessLLM analysis, io_uring ecosystem research, Tensora format design.
 
 Zig pivot happened in one day. Zig's rapid evolution meant fighting the language instead of solving the research problem. Rust had mature io_uring support (tokio-uring) and stable ecosystem.
 

@@ -1,43 +1,45 @@
-%% Preprint / arXiv build: standard LaTeX article (natbib + plainnat). Single entrypoint.
-\documentclass[11pt]{article}
+\documentclass[10pt,letterpaper]{article}
 
+\usepackage{PRIMEarxiv}
+
+\usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
-\usepackage[margin=1in]{geometry}
-\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{url}
 \usepackage{booktabs}
-\usepackage{array}
-\usepackage{amsmath,amssymb}
+\usepackage{amsfonts}
 \usepackage[expansion=false]{microtype}
-\usepackage[round,authoryear]{natbib}
-\usepackage{xurl}
-\usepackage[hidelinks]{hyperref}
-\hypersetup{%
-  pdftitle={Format-Aware Checkpoint Loading: An Adaptive Backend Policy for LLMs},
-  pdfauthor={Botir Khaltaev},
-  pdfkeywords={large language models, checkpoint loading, io\_uring, cold start, vLLM, reproducibility}%
-}
-
-\usepackage{listings}
+\usepackage{graphicx}
+\usepackage{amsmath,amssymb}
 \usepackage{tikz}
 \usepackage{pgfplots}
 \usetikzlibrary{shapes.geometric,arrows,positioning,calc}
 \pgfplotsset{compat=1.18}
 
-\def\figdir{figures}
-
+\usepackage{listings}
 \lstset{%
   basicstyle=\ttfamily\small,
   breaklines=true,
   frame=single,
 }
 
-\title{Format-Aware Checkpoint Loading: An Adaptive Backend Policy for LLMs}
-\author{%
-  Botir Khaltaev\\%
-  \textit{Independent, United Kingdom}\\%
-  \texttt{btrghstk@gmail.com}%
+\def\figdir{figures}
+
+\hypersetup{%
+  pdftitle={Format-Aware Checkpoint Loading: An Adaptive Backend Policy for LLMs},
+  pdfauthor={Botir Khaltaev},
+  pdfkeywords={large language models, checkpoint loading, io\_uring, cold start, vLLM, reproducibility}%
 }
-\date{April 2026}
+
+%% Title
+\title{Format-Aware Checkpoint Loading: An Adaptive Backend Policy for LLMs}
+
+%% Authors
+\author{
+  Botir Khaltaev\\
+  Independent, United Kingdom\\
+  \texttt{btrghstk@gmail.com}
+}
 
 \begin{document}
 \maketitle
@@ -52,6 +54,8 @@ For contiguous SafeTensors, explicit sync wins at smaller scales while explicit 
 Deploy a format-aware adaptive \texttt{default} with explicit overrides, not a single universal loader. Python and vLLM results confirm that integration overhead can reorder backend rankings; loader choice matters most for initialisation and time-to-first-token.
 \end{abstract}
 
+\keywords{large language models \and checkpoint loading \and I/O policy \and io\_uring \and cold start \and vLLM \and reproducibility}
+
 \input{sections/introduction}
 \input{sections/related_work}
 \input{sections/design}
@@ -65,7 +69,7 @@ Deploy a format-aware adaptive \texttt{default} with explicit overrides, not a s
 \appendix
 \input{sections/appendix_reproducibility}
 
-\bibliographystyle{plainnat}
-\bibliography{bib/references}
+\bibliographystyle{unsrt}
+\bibliography{library}
 
 \end{document}

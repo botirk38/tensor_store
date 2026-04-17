@@ -8,7 +8,7 @@ This section describes the experimental methodology used to evaluate the checkpo
 The evaluation spans three distinct measurement layers, each answering a different question:
 
 \begin{enumerate}
-\item \textbf{Rust-layer microbenchmark.} This measures pure I/O and format deserialisation: reading checkpoint bytes from storage through the selected backend and assembling tensors in memory. It intentionally excludes Python interpreter overhead, tensor materialisation in other runtimes, and GPU allocation inside a serving engine. The purpose is backend attribution---isolating which submission policy (sync, async, io\_uring, default) produces the best raw loading performance for a given checkpoint layout.
+\item \textbf{Rust-layer microbenchmark.} This measures pure I/O and format deserialisation: reading checkpoint bytes from storage through the selected backend and assembling tensors in memory. It intentionally excludes Python interpreter overhead, tensor materialisation in other runtimes, and GPU allocation inside a serving engine. The purpose is backend attribution - isolating which submission policy (sync, async, io\_uring, default) produces the best raw loading performance for a given checkpoint layout.
 
 \item \textbf{Python-layer binding benchmark.} This measures what a Python client of the Tensora library observes: the full pipeline including FFI transitions, tensor construction, and any binding-specific overhead. It answers whether backend differences survive into the actual API that users would employ. It does not isolate I/O policy from the cost of crossing into Python.
 

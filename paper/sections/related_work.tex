@@ -19,7 +19,7 @@ The gap is therefore operational: \textbf{which backend policy to deploy for a g
 
 Recent database work shows io\_uring benefits depend on workload shape and queue depth \cite{IOURING_DATABASE_GUIDELINES}. Bulk sequential reads already amortise syscall overhead; fragmented many-small workloads benefit from batched submission. This is directly relevant because checkpoint loading spans both regimes: contiguous SafeTensors shards resemble bulk sequential access, while partitioned ServerlessLLM layouts resemble fragmented range workloads.
 
-Key qualitative translation: backend family (\texttt{sync}, \texttt{async}, \texttt{io\_uring}) is not enough---execution policy must match workload features (byte count, shard count, fragmentation). This motivates our adaptive policy as a heuristic, not a closed-form optimum.
+Key qualitative translation: backend family (\texttt{sync}, \texttt{async}, \texttt{io\_uring}) is not enough - execution policy must match workload features (byte count, shard count, fragmentation). This motivates our adaptive policy as a heuristic, not a closed-form optimum.
 
 Memory-mapped formats (GGUF) and page-cache strategies target a different optimisation: eliminating copies. They complement eager-loading policy; we hold mmap out of scope for cold-cache eager loads and treat it as a synthesis topic.
 

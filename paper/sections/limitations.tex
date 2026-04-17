@@ -19,7 +19,7 @@ Loader time is also not the same as ``time until the model is profitable to serv
 
 Heuristic imperfection. The default selector is not perfect on every Rust matrix row. The medium-size crossover region remains the most difficult area to classify cleanly.
 
-For SafeTensors, explicit sync substantially outperforms the adaptive \texttt{default} on SmolLM3-3B (3722ms vs 1332ms, a 2.8x gap) and Qwen3-4B (3083ms vs 1821ms, a 1.7x gap). These are not hidden failures---they are explicitly stated here and acknowledged in results.
+For SafeTensors, explicit sync substantially outperforms the adaptive \texttt{default} on SmolLM3-3B (3722ms vs 1332ms, a 2.8x gap) and Qwen3-4B (3083ms vs 1821ms, a 1.7x gap). These are not hidden failures - they are explicitly stated here and acknowledged in results.
 The selector correctly routes small and large SafeTensors loads to their dominant regimes but misclassifies the medium-scale crossover region where the heuristic's feature mapping is imprecise. For ServerlessLLM, the adaptive \texttt{default} lags explicit async on SmolLM3-3B (3182ms vs~2391ms) and is comparable on Qwen3-4B (3552ms vs~3504ms). The selector routes large partitioned loads to io\_uring but does not perfectly track the mid-sized async regime.
 
 These bounded misses are incorporated into the selector story, not buried. They inform where explicit overrides may be needed in production (force sync for SmolLM3-3B, force async for ServerlessLLM mid-size loads).
@@ -32,7 +32,7 @@ Scope. Our evaluation covers two checkpoint layouts and a six-model ladder; it d
 
 \textbf{Scope of claims.} The evidence in Section~\ref{sec:results} is written to match the tables that were actually measured. It does not prove that synchronous I/O is theoretically optimal for small checkpoints in all possible implementations, nor that io\_uring is theoretically optimal for large checkpoints on all Linux versions and all devices. It claims a consistent empirical pattern in a controlled harness and uses that pattern to motivate adaptive selection. The selector is an \textbf{engineering policy justified by evidence}, not a claim of universal optimality. Stronger claims would require broader sweeps across hardware, filesystems, and competing loader implementations, which is outside the scope of this work but a reasonable direction for future work.
 
-\textbf{Selector boundedness summary.} A reviewer can see from the tables why adaptation is justified: the data shows clear regime patterns (sync for small SafeTensors, io\_uring for large SafeTensors, async or io\_uring for ServerlessLLM). The selector automates these patterns while explicitly acknowledging known medium-scale misses on SmolLM3-3B, Qwen3-4B, and comparable rows. The boundedness is not a flaw---it is a known region where the heuristic is fragile and where explicit overrides are appropriate.
+\textbf{Selector boundedness summary.} A reviewer can see from the tables why adaptation is justified: the data shows clear regime patterns (sync for small SafeTensors, io\_uring for large SafeTensors, async or io\_uring for ServerlessLLM). The selector automates these patterns while explicitly acknowledging known medium-scale misses on SmolLM3-3B, Qwen3-4B, and comparable rows. The boundedness is not a flaw - it is a known region where the heuristic is fragile and where explicit overrides are appropriate.
 
 \subsection{What would falsify the adaptive heuristic?}
 
