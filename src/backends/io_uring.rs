@@ -1067,12 +1067,15 @@ fn file_worker_count(file_count: usize, total_bytes: usize, max_file_bytes: usiz
         return 1;
     }
 
-    let workers = chunk_budget().clamp(1, 8).min(file_count);
-    if max_file_bytes < 512 * 1024 * 1024 {
-        workers.clamp(1, 4)
+    let base_workers = chunk_budget().clamp(1, 8).min(file_count);
+    
+    let workers = if max_file_bytes >= 512 * 1024 * 1024 {
+        (base_workers * 2).min(16)
     } else {
-        workers.max(1)
-    }
+        base_workers.min(8)
+    };
+    
+    workers.max(1)
 }
 
 fn range_worker_count(groups: &[CoalescedRequestGroup], total_bytes: usize) -> usize {

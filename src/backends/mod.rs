@@ -165,13 +165,13 @@ pub fn file_chunk_plan(file_size: usize, backend: BackendKind) -> FileIoPlan {
         }
         BackendKind::IoUring => {
             let target_depth = if file_size < 64 * 1024 * 1024 {
-                8
-            } else if file_size < 512 * 1024 * 1024 {
                 16
-            } else if file_size < 4 * 1024 * 1024 * 1024 {
+            } else if file_size < 512 * 1024 * 1024 {
                 32
-            } else {
+            } else if file_size < 4 * 1024 * 1024 * 1024 {
                 64
+            } else {
+                128
             };
             let raw_chunk = file_size.div_ceil(target_depth.max(1));
             let chunk_size = clamp_chunk_size(raw_chunk, MAX_IO_URING_CHUNK_SIZE);
