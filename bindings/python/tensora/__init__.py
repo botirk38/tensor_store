@@ -2,6 +2,6 @@
 
 from importlib.metadata import version
 
-__version__ = version("tensor-store-py")
+__version__ = version("tensora-py")
 
 __all__ = ["__version__"]
