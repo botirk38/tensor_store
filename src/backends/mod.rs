@@ -179,12 +179,6 @@ pub fn file_chunk_plan(file_size: usize, backend: BackendKind) -> FileIoPlan {
             let target_inflight = chunk_count.min(target_depth).clamp(1, MAX_IO_URING_DEPTH);
             let wait_for = target_inflight.div_ceil(2).max(1);
             
-            #[cfg(feature = "debug-io-uring")]
-            eprintln!(
-                "DEBUG file_chunk_plan IoUring: file_size={}, chunk_size={}, chunk_count={}, target_inflight={}, wait_for={}",
-                file_size, chunk_size, chunk_count, target_inflight, wait_for
-            );
-            
             FileIoPlan {
                 chunk_size,
                 chunk_count,
