@@ -139,6 +139,8 @@ enum LoadBackend {
 ///
 /// The score is: score = log2(total_bytes) + 2*fanout_bucket + avg_shard_gb
 /// If score exceeds the threshold, use io_uring; otherwise sync.
+///
+/// Threshold tuned for H100 environments - sync generally better below ~20GB
 fn choose_load_backend(stats: &LoadStats) -> LoadBackend {
     #[cfg(target_os = "linux")]
     {
@@ -148,7 +150,7 @@ fn choose_load_backend(stats: &LoadStats) -> LoadBackend {
 
         let score = log2_bytes + 2.0 * fanout + avg_shard_gb;
 
-        if score >= 40.0 {
+        if score >= 48.0 {
             return LoadBackend::IoUring;
         }
         LoadBackend::Sync

@@ -105,6 +105,8 @@ enum LoadBackend {
 /// Uses a simple scoring function to estimate whether io_uring or async will perform better.
 /// Score = log2(total_bytes) + 2*fanout_bucket + avg_partition_gb
 /// If score exceeds threshold, use io_uring; otherwise async.
+///
+/// Threshold tuned for H100 environments - async generally better below large partition counts
 fn choose_load_backend(stats: &LoadStats) -> LoadBackend {
     #[cfg(target_os = "linux")]
     {
@@ -114,7 +116,7 @@ fn choose_load_backend(stats: &LoadStats) -> LoadBackend {
 
         let score = log2_bytes + 2.0 * fanout + avg_partition_gb;
 
-        if score >= 38.0 {
+        if score >= 44.0 {
             return LoadBackend::IoUring;
         }
         LoadBackend::TokioAsync
